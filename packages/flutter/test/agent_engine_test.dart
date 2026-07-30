@@ -2,9 +2,61 @@ import 'dart:convert';
 
 import 'package:napaxi_flutter/agent_engine.dart';
 import 'package:napaxi_flutter/models/agent.dart';
+import 'package:napaxi_flutter/models/chat_event.dart';
 import 'package:test/test.dart';
 
+class _DefaultAgentEngineExecutor extends AgentEngineExecutor {
+  @override
+  Future<AgentEngineTurnResult> startTurn(
+    AgentEngineTurnRequest request,
+    AgentEngineToolBroker tools,
+  ) async {
+    return AgentEngineTurnResult.response('ok');
+  }
+}
+
 void main() {
+  test('agent engine defaults and turn codecs use core wire shape', () async {
+    final executor = _DefaultAgentEngineExecutor();
+    final request = AgentEngineTurnRequest(
+      engineId: externalHostAgentEngineId,
+      engineProfileId: 'dev-loop',
+      engineConfig: const {'binary': 'custom-agent'},
+      runId: 'run-1',
+      filesDir: '/files',
+      workspaceFilesDir: '/files/workspaces/default',
+      accountId: 'acct',
+      agentId: 'builder',
+      sessionKeyJson: '{"thread_id":"t1"}',
+      message: 'implement this',
+      attachmentsJson: '[]',
+      configJson: '{"provider":"openai"}',
+    );
+
+    expect(
+      await executor.cancel(
+        runId: 'run-1',
+        sessionKeyJson: '{"thread_id":"t1"}',
+      ),
+      isFalse,
+    );
+    final unsupportedResume = await executor.resume(
+      request,
+      AgentEngineToolBroker(() => 1),
+    );
+    expect(unsupportedResume.events.single['type'], 'error');
+    expect(request.toMap()['workspace_files_dir'], '/files/workspaces/default');
+
+    final response = AgentEngineTurnResult.response('done');
+    expect(response.events.single, {'type': 'response', 'content': 'done'});
+    final fromEvents = AgentEngineTurnResult.fromEvents(const [
+      ResponseEvent(content: 'hello'),
+      ThinkingEvent(content: 'planning'),
+    ]);
+    expect(fromEvents.events.first, {'type': 'response', 'content': 'hello'});
+    expect(fromEvents.events.last, {'type': 'thinking', 'content': 'planning'});
+  });
+
   test('agent engine turn request decodes core wire shape', () {
     final request = AgentEngineTurnRequest.fromMap({
       'engine_id': 'external_host',
@@ -44,10 +96,7 @@ void main() {
     final request = AgentEngineRunEventRequest(
       runId: 'run-1',
       sessionKeyJson: '{"thread_id":"t1"}',
-      event: {
-        'type': 'completed',
-        'tool_call_count': 1,
-      },
+      event: {'type': 'completed', 'tool_call_count': 1},
     );
 
     final encoded = jsonDecode(request.toJsonString()) as Map;
@@ -113,7 +162,10 @@ void main() {
   test(
     'agent definition engine fields preserve old default and new config',
     () {
-      final legacy = AgentDefinition.fromMap({'id': 'napaxi', 'name': 'Napaxi'});
+      final legacy = AgentDefinition.fromMap({
+        'id': 'napaxi',
+        'name': 'Napaxi',
+      });
       expect(legacy.engineId, napaxiCoreAgentEngineId);
       expect(legacy.engineProfileId, isEmpty);
       expect(legacy.engineConfig, isEmpty);
@@ -136,4 +188,63 @@ void main() {
       expect(decoded.engineConfig['binary'], 'custom-agent');
     },
   );
+
+  test('Codex model sync result decodes validation and write status', () {
+    final result = CodexAgentEngineConfigResult.fromMap({
+      'success': true,
+      'providerAvailable': true,
+      'modelUsable': true,
+      'errorCode': null,
+      'model': 'gpt-5',
+      'configChanged': true,
+    });
+
+    expect(result.success, isTrue);
+    expect(result.providerAvailable, isTrue);
+    expect(result.modelUsable, isTrue);
+    expect(result.errorCode, isNull);
+    expect(result.model, 'gpt-5');
+    expect(result.configChanged, isTrue);
+
+    final unsupported = CodexAgentEngineConfigResult.fromMap({
+      'success': false,
+      'providerAvailable': false,
+      'modelUsable': false,
+      'errorCode': 'unsupported_platform',
+      'error': 'unsupported',
+    });
+    expect(unsupported.errorCode, 'unsupported_platform');
+    expect(unsupported.model, isEmpty);
+    expect(unsupported.configChanged, isFalse);
+  });
+
+  test('Codex native history result decodes threads and messages', () {
+    final result = CodexAgentEngineHistoryResult.fromMap({
+      'success': true,
+      'providerAvailable': true,
+      'nativeThreadId': 'thread-1',
+      'threads': [
+        {
+          'id': 'thread-1',
+          'name': 'Greeting',
+          'preview': 'hello',
+          'createdAt': 1700000000000,
+          'updatedAt': 1700000001000,
+        },
+      ],
+      'messages': [
+        {'id': 'message-1', 'role': 'user', 'content': 'hello'},
+        {'id': 'message-2', 'role': 'assistant', 'content': 'world'},
+      ],
+    });
+
+    expect(result.success, isTrue);
+    expect(result.threads.single.id, 'thread-1');
+    expect(result.threads.single.updatedAtMs, 1700000001000);
+    expect(result.messages.map((message) => message.role), [
+      'user',
+      'assistant',
+    ]);
+    expect(result.nativeThreadId, 'thread-1');
+  });
 }

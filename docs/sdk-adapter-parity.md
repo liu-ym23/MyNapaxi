@@ -28,7 +28,7 @@ For SDK-facing changes, include at least one of:
 - Flutter model/wrapper tests.
 - Android Kotlin contract/model tests.
 - iOS Swift contract/model tests.
-- Documentation of an explicit unsupported state.
+- Documentation of an explicit unsupported state (for example, `napaxi.agent_engine.codex` is API-visible on Flutter/Android/iOS but currently runs only on Android and returns a clear unsupported error elsewhere).
 
 ## Required Updates
 
@@ -51,6 +51,20 @@ cd packages/flutter && flutter analyze --no-fatal-infos && flutter test
 ```
 
 Native iOS checks are documented in [`sdk-integration.md`](sdk-integration.md).
+
+## Codex Model Configuration
+
+Flutter, Android, and iOS expose matching typed model sync and clear methods.
+The result contract contains `success`, `providerAvailable`, `modelUsable`,
+`errorCode`, `error`, `model`, and `configChanged`. Android materializes the
+selected main model into its Linux sandbox; iOS and other platforms return
+`unsupported_platform`. The raw TOML method remains deprecated compatibility
+surface and is not a second configuration source.
+
+The same adapters expose `listCodexAgentEngineThreads`,
+`readCodexAgentEngineThread`, and `bindCodexAgentEngineThread`. Android queries
+the core-owned app-server native thread store; iOS returns the typed
+`unsupported_platform` result.
 
 ## Avoid
 

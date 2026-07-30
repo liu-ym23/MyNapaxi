@@ -35,6 +35,22 @@ object SmartHomeActionRunner {
     ): VirtualHomeState {
         when (actionId) {
             SmartHomePackage.ACTION_LIGHT_SET -> YeelightLanClient.applyLightIfMapped(context, argsJson)
+            SmartHomePackage.ACTION_LIGHT_MATRIX_PRESET -> {
+                val result = YeelightLanClient.drawPresetFromArgs(context, argsJson)
+                return VirtualHomeStore.recordAgentNote(
+                    context,
+                    "Yeelight Cube",
+                    "已执行点阵预设：${result.optString("preset", "preset")}。",
+                )
+            }
+            SmartHomePackage.ACTION_LIGHT_MATRIX_ANIMATION -> {
+                val result = YeelightLanClient.playAnimationFromArgs(context, argsJson)
+                return VirtualHomeStore.recordAgentNote(
+                    context,
+                    "Yeelight Cube",
+                    "已执行点阵动画：${result.optString("animation", "animation")}。",
+                )
+            }
             SmartHomePackage.ACTION_LIGHT_MATRIX_DRAW -> {
                 val result = YeelightLanClient.drawMatrixFromArgs(context, argsJson)
                 return VirtualHomeStore.recordAgentNote(
@@ -136,15 +152,98 @@ object YeelightLanClient {
         return response ?: JSONObject().put("status", "connected_without_response")
     }
 
-    fun drawPreset(context: Context, preset: String): JSONObject {
-        val colors = when (preset) {
-            "checker" -> List(MATRIX_PIXEL_COUNT) { index ->
-                if (index % 2 == 0) 0x00FF00 else 0x0000FF
+    fun drawPreset(
+        context: Context,
+        preset: String,
+        color: String? = null,
+        backgroundColor: String? = null,
+        accentColor: String? = null,
+    ): JSONObject {
+        val colors = MatrixPresetLibrary.renderPreset(
+            presetId = preset,
+            colorHex = color,
+            backgroundHex = backgroundColor,
+            accentHex = accentColor,
+        )
+        val result = drawMatrix100(context, colors)
+        result.put("preset", preset)
+        return result
+    }
+
+    fun drawPresetFromArgs(context: Context, argsJson: String): JSONObject {
+        val args = JSONObject(argsJson)
+        val preset = args.optString("preset")
+        check(preset.isNotBlank()) { "preset is required" }
+        return drawPreset(
+            context = context,
+            preset = preset,
+            color = args.optString("color").takeIf { it.isNotBlank() },
+            backgroundColor = args.optString("background_color").takeIf { it.isNotBlank() },
+            accentColor = args.optString("accent_color").takeIf { it.isNotBlank() },
+        )
+    }
+
+    fun playAnimation(
+        context: Context,
+        animation: String,
+        color: String? = null,
+        backgroundColor: String? = null,
+        accentColor: String? = null,
+        loops: Int? = null,
+        frameDelayMs: Int? = null,
+    ): JSONObject {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return runOffMainResult {
+                playAnimation(
+                    context = context,
+                    animation = animation,
+                    color = color,
+                    backgroundColor = backgroundColor,
+                    accentColor = accentColor,
+                    loops = loops,
+                    frameDelayMs = frameDelayMs,
+                )
             }
-            "off" -> List(MATRIX_PIXEL_COUNT) { 0x000000 }
-            else -> List(MATRIX_PIXEL_COUNT) { 0xFF0000 }
         }
-        return drawMatrix100(context, colors)
+        val frames = MatrixAnimationLibrary.renderAnimationFrames(
+            animationId = animation,
+            colorHex = color,
+            backgroundHex = backgroundColor,
+            accentHex = accentColor,
+        )
+        val effectiveLoops = (loops ?: MatrixAnimationLibrary.defaultLoopCount(animation))
+            .coerceIn(1, 6)
+        val effectiveDelay = (frameDelayMs ?: MatrixAnimationLibrary.defaultFrameDelayMs(animation))
+            .coerceIn(80, 1000)
+        repeat(effectiveLoops) { loopIndex ->
+            frames.forEachIndexed { frameIndex, frame ->
+                drawMatrix100(context, frame)
+                val isLastFrame = loopIndex == effectiveLoops - 1 && frameIndex == frames.lastIndex
+                if (!isLastFrame) Thread.sleep(effectiveDelay.toLong())
+            }
+        }
+        return JSONObject()
+            .put("status", "ok")
+            .put("animation", animation)
+            .put("frames", frames.size)
+            .put("loops", effectiveLoops)
+            .put("frame_delay_ms", effectiveDelay)
+            .put("layout", "20x5")
+    }
+
+    fun playAnimationFromArgs(context: Context, argsJson: String): JSONObject {
+        val args = JSONObject(argsJson)
+        val animation = args.optString("animation")
+        check(animation.isNotBlank()) { "animation is required" }
+        return playAnimation(
+            context = context,
+            animation = animation,
+            color = args.optString("color").takeIf { it.isNotBlank() },
+            backgroundColor = args.optString("background_color").takeIf { it.isNotBlank() },
+            accentColor = args.optString("accent_color").takeIf { it.isNotBlank() },
+            loops = args.optInt("loops").takeIf { it > 0 },
+            frameDelayMs = args.optInt("frame_delay_ms").takeIf { it > 0 },
+        )
     }
 
     fun drawMatrix100(context: Context, colors: List<Int>): JSONObject {

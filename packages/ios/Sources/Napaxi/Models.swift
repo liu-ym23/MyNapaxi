@@ -985,6 +985,100 @@ public enum NapaxiChannelContentFormat {
     public static let markdown = "markdown"
 }
 
+
+public struct NapaxiCodexAgentEngineConfigResult: Codable, Equatable, Sendable {
+    public var success: Bool
+    public var providerAvailable: Bool
+    public var modelUsable: Bool
+    public var errorCode: String?
+    public var error: String?
+    public var model: String
+    public var configChanged: Bool
+
+    public init(
+        success: Bool,
+        providerAvailable: Bool,
+        modelUsable: Bool = false,
+        errorCode: String? = nil,
+        error: String? = nil,
+        model: String = "",
+        configChanged: Bool = false
+    ) {
+        self.success = success
+        self.providerAvailable = providerAvailable
+        self.modelUsable = modelUsable
+        self.errorCode = errorCode
+        self.error = error
+        self.model = model
+        self.configChanged = configChanged
+    }
+
+    public init(json: [String: NapaxiJSONValue]) {
+        self.success = json["success"]?.boolValue ?? false
+        self.providerAvailable = json["providerAvailable"]?.boolValue ?? json["provider_available"]?.boolValue ?? false
+        self.modelUsable = json["modelUsable"]?.boolValue ?? json["model_usable"]?.boolValue ?? false
+        self.errorCode = json["errorCode"]?.stringValue ?? json["error_code"]?.stringValue
+        self.error = json["error"]?.stringValue
+        self.model = json["model"]?.stringValue ?? ""
+        self.configChanged = json["configChanged"]?.boolValue ?? json["config_changed"]?.boolValue ?? false
+    }
+}
+
+public struct NapaxiCodexAgentEngineThread: Codable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    public var preview: String
+    public var createdAtMs: Int64
+    public var updatedAtMs: Int64
+
+    public init(
+        id: String,
+        name: String = "",
+        preview: String = "",
+        createdAtMs: Int64 = 0,
+        updatedAtMs: Int64 = 0
+    ) {
+        self.id = id
+        self.name = name
+        self.preview = preview
+        self.createdAtMs = createdAtMs
+        self.updatedAtMs = updatedAtMs
+    }
+
+    public init(json: [String: NapaxiJSONValue]) {
+        self.id = json["id"]?.stringValue ?? ""
+        self.name = json["name"]?.stringValue ?? ""
+        self.preview = json["preview"]?.stringValue ?? ""
+        self.createdAtMs = Int64(json["createdAt"]?.numberValue ?? 0)
+        self.updatedAtMs = Int64(json["updatedAt"]?.numberValue ?? 0)
+    }
+}
+
+public struct NapaxiCodexAgentEngineHistoryResult: Equatable, Sendable {
+    public var success: Bool
+    public var providerAvailable: Bool
+    public var errorCode: String?
+    public var error: String?
+    public var threads: [NapaxiCodexAgentEngineThread]
+    public var messages: [NapaxiChatMessage]
+    public var nativeThreadId: String
+
+    public init(json: [String: NapaxiJSONValue]) {
+        self.success = json["success"]?.boolValue ?? false
+        self.providerAvailable = json["providerAvailable"]?.boolValue ?? false
+        self.errorCode = json["errorCode"]?.stringValue
+        self.error = json["error"]?.stringValue
+        self.threads = json["threads"]?.arrayValue?.compactMap { value in
+            value.objectValue.map(NapaxiCodexAgentEngineThread.init(json:))
+        } ?? []
+        self.messages = json["messages"]?.arrayValue?.compactMap { value in
+            guard let object = value.objectValue else { return nil }
+            return try? NapaxiChatMessage.fromMap(object)
+        } ?? []
+        self.nativeThreadId = json["nativeThreadId"]?.stringValue ?? ""
+    }
+}
+
 public enum NapaxiChannelCapability {
     public static let im = "napaxi.channel.im"
     public static let device = "napaxi.channel.device"

@@ -221,12 +221,58 @@ Agent engines are core-owned runtime loop capabilities. The default
 `napaxi.agent_engine.napaxi_core` capability keeps the existing Napaxi tool loop
 enabled when no Agent definition selects another engine.
 
+`napaxi.agent_engine.codex` is the core-owned Codex app-server engine. The
+capability and adapter API are visible across Flutter, Android, and iOS. The
+first runtime implementation is Android-only: core starts `codex app-server`
+inside the Android Linux sandbox PTY, owns the app-server JSON-RPC session,
+maps Codex events to Napaxi `ChatEvent`s, and persists the Napaxi session to
+Codex native thread mapping. iOS and other platforms return the explicit error
+`napaxi.agent_engine.codex is unsupported on this platform` until they provide a
+compatible sandbox runner.
+
+The selected main `LlmConfig` is the only supported source for Codex model and
+credential configuration. Hosts call `syncCodexAgentEngineModel` after the main
+model is persisted and `clearCodexAgentEngineModelConfig` when it is removed.
+On Android, core validates the provider and writes `config.toml` plus
+`auth.json` atomically into the Linux sandbox. OpenAI and OpenAI-compatible
+providers use the Responses wire API required by current Codex releases.
+Anthropic, Gemini, and other incompatible protocols are rejected. Every Codex
+turn repeats this sync from the turn's `config_json`, invalidates stale native
+thread mappings when the configuration fingerprint changes, and refuses to run
+if the model config is missing or invalid. The deprecated raw TOML API is
+retained only for source compatibility and must not be used by host
+applications.
+
+`CodexAgentEngineConfigResult` reports `success`, `providerAvailable`,
+`modelUsable`, `errorCode`, `error`, `model`, and `configChanged`. Stable errors
+are `missing_main_model`, `missing_api_key`, `missing_base_url`,
+`unsupported_provider`, `model_not_available`, `model_check_failed`,
+`config_write_failed`, and `unsupported_platform`. Model-list checks are a host
+preflight: an explicit missing model, authentication error, timeout, or server
+failure blocks Codex; endpoints that return `404`, `405`, or `501` for model
+listing fall back to core's local protocol validation.
+
+Codex conversation recovery uses the same core-owned app-server boundary as
+turn execution. On Android, `listCodexAgentEngineThreads` calls `thread/list`,
+`readCodexAgentEngineThread` resumes or reads the native thread and maps its
+items to SDK `ChatMessage` values, `bindCodexAgentEngineThread` associates a
+recovered native thread with an SDK session before the next turn, and
+`deleteCodexAgentEngineThread` forwards deletes to Codex `thread/delete` so
+removed conversations do not reappear on the next native history restore. This
+retains the working native history behavior without restoring the removed
+developer workbench configuration or Flutter-owned Codex PTY runtime. Other platforms
+return `unsupported_platform` through the same typed result. History-specific
+failures use `history_query_failed` and `missing_native_thread`.
+Flutter dispatches these potentially blocking app-server history operations on
+the FRB worker pool so startup restoration never blocks the UI isolate.
+
 Hosts may declare `napaxi.agent_engine.external_host` when they carry an
 external agent loop executor. The external executor owns turn planning and
 model interaction, but it must call back through the Napaxi ToolBroker for tool
 listing and tool calls. Tool descriptor admission, invocation admission, shell
 policy, workspace scope, approval, rate limiting, output sanitization, run
-evidence, and emitted `ChatEvent` mapping remain core-controlled.
+evidence, and emitted `ChatEvent` mapping remain core-controlled. The `codex`
+alias no longer routes to `external_host`; only `external_host` does.
 
 The core-owned internal JSON protocol has three stable operations:
 `tools/list` returns the current Agent's admitted tool descriptors,
@@ -242,11 +288,12 @@ JSON objects; core stringifies those fields before mapping them to the existing
 Napaxi LLM loop; external engines do not depend on those fields except when the
 host executor chooses to read them from the turn request.
 
-Flutter v1 can register a host-carried `AgentEngineExecutor`. Android and iOS
-v1 expose the stable wire models and explicit unsupported placeholders, but do
-not yet provide native executor registration. Selecting
-`external_host` without a declared and enabled host capability is rejected by
-core capability admission.
+Flutter v1 can register a host-carried `AgentEngineExecutor` for true external
+engines such as demo CLI integrations. Android and iOS v1 expose the stable wire
+models and explicit unsupported placeholders for host executors. Selecting
+`external_host` or `codex` without the declared and enabled capability is
+rejected by core capability admission; selecting `codex` on a non-Android
+runtime returns the platform unsupported error above.
 
 ## LLM And Media Capabilities
 
@@ -278,7 +325,10 @@ LLM config. Core owns automatic long-session compaction, stores summary state
 under engine files, injects summaries through prompt sections, and exposes
 manual compact/status operations through the common session API. Adapters
 should configure it with `context_engine`; they should not rewrite session
-history or own a separate compression pipeline.
+history or own a separate compression pipeline. Flutter, Android, and iOS
+configuration selections may also persist a selection-level `context_engine`;
+hosts should apply it to the active profile so one global context policy follows
+model switches. Profile-level context settings remain readable for migration.
 
 ## Shell Command Safety
 

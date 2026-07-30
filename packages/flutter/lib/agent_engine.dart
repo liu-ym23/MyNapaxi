@@ -3,12 +3,16 @@ import 'dart:convert';
 import 'api/json_codec.dart';
 import 'models/chat_event.dart';
 import 'models/custom_tool.dart';
+import 'models/session.dart';
 
 /// Engine id identifying the built-in Napaxi core agent loop.
 const String napaxiCoreAgentEngineId = 'napaxi_core';
 
 /// Engine id identifying a host-supplied external agent loop.
 const String externalHostAgentEngineId = 'external_host';
+
+/// Engine id identifying the core-owned Codex app-server agent loop.
+const String codexAgentEngineId = 'napaxi.agent_engine.codex';
 
 /// Host-carried agent loop executor.
 ///
@@ -92,19 +96,19 @@ class AgentEngineTurnRequest {
   }
 
   Map<String, dynamic> toMap() => {
-        'engine_id': engineId,
-        'engine_profile_id': engineProfileId,
-        'engine_config': engineConfig,
-        'run_id': runId,
-        'files_dir': filesDir,
-        'workspace_files_dir': workspaceFilesDir,
-        'account_id': accountId,
-        'agent_id': agentId,
-        'session_key_json': sessionKeyJson,
-        'message': message,
-        'attachments_json': attachmentsJson,
-        'config_json': configJson,
-      };
+    'engine_id': engineId,
+    'engine_profile_id': engineProfileId,
+    'engine_config': engineConfig,
+    'run_id': runId,
+    'files_dir': filesDir,
+    'workspace_files_dir': workspaceFilesDir,
+    'account_id': accountId,
+    'agent_id': agentId,
+    'session_key_json': sessionKeyJson,
+    'message': message,
+    'attachments_json': attachmentsJson,
+    'config_json': configJson,
+  };
 }
 
 /// Result of a turn: the ordered list of [ChatEvent]s (as maps) the engine
@@ -157,10 +161,10 @@ class AgentEngineRunEventRequest {
   });
 
   Map<String, dynamic> toMap() => {
-        'run_id': runId,
-        'session_key_json': sessionKeyJson,
-        'event': event,
-      };
+    'run_id': runId,
+    'session_key_json': sessionKeyJson,
+    'event': event,
+  };
 
   String toJsonString() => jsonEncode(toMap());
 }
@@ -203,8 +207,8 @@ class AgentEngineToolBroker {
     this._handle, {
     Future<String> Function(int handle, String requestJson)? listToolsJson,
     Future<String> Function(int handle, String requestJson)? callToolJson,
-  })  : _listToolsJson = listToolsJson,
-        _callToolJson = callToolJson;
+  }) : _listToolsJson = listToolsJson,
+       _callToolJson = callToolJson;
 
   final int Function() _handle;
   final Future<String> Function(int handle, String requestJson)? _listToolsJson;
@@ -308,17 +312,17 @@ class AgentEngineToolCallResult {
 Map<String, dynamic> chatEventToMap(ChatEvent event) {
   return switch (event) {
     RunStartedEvent(:final runId, :final sessionKey, :final agentId) => {
-        'type': 'run_started',
-        'run_id': runId,
-        'session_key': sessionKey,
-        'agent_id': agentId,
-      },
+      'type': 'run_started',
+      'run_id': runId,
+      'session_key': sessionKey,
+      'agent_id': agentId,
+    },
     RunProgressEvent(:final runId, :final kind, :final message) => {
-        'type': 'run_progress',
-        'run_id': runId,
-        'kind': kind,
-        'message': message,
-      },
+      'type': 'run_progress',
+      'run_id': runId,
+      'kind': kind,
+      'message': message,
+    },
     RunCompletedEvent(
       :final runId,
       :final status,
@@ -335,11 +339,11 @@ Map<String, dynamic> chatEventToMap(ChatEvent event) {
         'tool_call_count': toolCallCount,
       },
     ToolCallEvent(:final callId, :final name, :final arguments) => {
-        'type': 'tool_call',
-        'call_id': callId,
-        'name': name,
-        'arguments': arguments,
-      },
+      'type': 'tool_call',
+      'call_id': callId,
+      'name': name,
+      'arguments': arguments,
+    },
     ToolCallDeltaEvent(
       :final callId,
       :final name,
@@ -368,23 +372,173 @@ Map<String, dynamic> chatEventToMap(ChatEvent event) {
       },
     ResponseEvent(:final content) => {'type': 'response', 'content': content},
     ResponseDeltaEvent(:final content) => {
-        'type': 'response_delta',
-        'content': content,
-      },
+      'type': 'response_delta',
+      'content': content,
+    },
     ReasoningDeltaEvent(:final content) => {
-        'type': 'reasoning_delta',
-        'content': content,
-      },
+      'type': 'reasoning_delta',
+      'content': content,
+    },
     ThinkingEvent(:final content) => {'type': 'thinking', 'content': content},
     ErrorEvent(:final message) => {'type': 'error', 'message': message},
     ToolOutputChunkEvent(:final callId, :final content, :final stream) => {
-        'type': 'tool_output_chunk',
-        'call_id': callId,
-        'content': content,
-        'stream': stream,
-      },
+      'type': 'tool_output_chunk',
+      'call_id': callId,
+      'content': content,
+      'stream': stream,
+    },
     InterruptedEvent() => {'type': 'interrupted'},
-    StreamResetEvent(:final reason) => {'type': 'stream_reset', 'reason': reason},
+    StreamResetEvent(:final reason) => {
+      'type': 'stream_reset',
+      'reason': reason,
+    },
     _ => {'type': 'error', 'message': 'Unsupported ChatEvent encoding'},
   };
+}
+
+/// Result returned when configuring the core-owned Codex agent engine.
+class CodexAgentEngineConfigResult {
+  /// Creates a configuration result for the core-owned Codex engine.
+  const CodexAgentEngineConfigResult({
+    required this.success,
+    required this.providerAvailable,
+    this.modelUsable = false,
+    this.errorCode,
+    this.error,
+    this.model = '',
+    this.configChanged = false,
+  });
+
+  /// Whether the configuration request succeeded.
+  final bool success;
+
+  /// Whether this platform has a Codex provider/runtime implementation.
+  final bool providerAvailable;
+
+  /// Whether the selected main model is compatible with the Codex runtime.
+  final bool modelUsable;
+
+  /// Stable machine-readable failure code.
+  final String? errorCode;
+
+  /// Error message when [success] is false.
+  final String? error;
+
+  /// Main model ID validated by Core.
+  final String model;
+
+  /// Whether the sandbox configuration changed during this request.
+  final bool configChanged;
+
+  /// Decodes a configuration result from the bridge JSON map.
+  factory CodexAgentEngineConfigResult.fromMap(Map<String, dynamic> map) {
+    return CodexAgentEngineConfigResult(
+      success: map['success'] == true,
+      providerAvailable: map['providerAvailable'] == true,
+      modelUsable: map['modelUsable'] == true,
+      errorCode: map['errorCode'] as String?,
+      error: map['error'] as String?,
+      model: map['model'] as String? ?? '',
+      configChanged: map['configChanged'] == true,
+    );
+  }
+}
+
+/// One conversation persisted in the Codex sandbox native thread store.
+class CodexAgentEngineThread {
+  /// Creates a native Codex thread summary.
+  const CodexAgentEngineThread({
+    required this.id,
+    this.name = '',
+    this.preview = '',
+    this.createdAtMs = 0,
+    this.updatedAtMs = 0,
+  });
+
+  /// Codex app-server thread identifier.
+  final String id;
+
+  /// Codex-generated conversation name, when available.
+  final String name;
+
+  /// Native conversation preview.
+  final String preview;
+
+  /// Creation timestamp in Unix milliseconds.
+  final int createdAtMs;
+
+  /// Last-update timestamp in Unix milliseconds.
+  final int updatedAtMs;
+
+  /// Decodes a native thread summary from bridge JSON.
+  factory CodexAgentEngineThread.fromMap(Map<String, dynamic> map) {
+    return CodexAgentEngineThread(
+      id: map['id'] as String? ?? '',
+      name: map['name'] as String? ?? '',
+      preview: map['preview'] as String? ?? '',
+      createdAtMs: (map['createdAt'] as num?)?.toInt() ?? 0,
+      updatedAtMs: (map['updatedAt'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// Result of listing, reading, or binding Codex native history.
+class CodexAgentEngineHistoryResult {
+  /// Creates a Codex native history result.
+  const CodexAgentEngineHistoryResult({
+    required this.success,
+    required this.providerAvailable,
+    this.errorCode,
+    this.error,
+    this.threads = const [],
+    this.messages = const [],
+    this.nativeThreadId = '',
+  });
+
+  /// Whether the history operation succeeded.
+  final bool success;
+
+  /// Whether the current platform provides the Codex runtime.
+  final bool providerAvailable;
+
+  /// Stable machine-readable failure code.
+  final String? errorCode;
+
+  /// Human-readable failure details.
+  final String? error;
+
+  /// Native threads returned by a list operation.
+  final List<CodexAgentEngineThread> threads;
+
+  /// Native messages returned by a read operation.
+  final List<ChatMessage> messages;
+
+  /// Native thread affected by a read or bind operation.
+  final String nativeThreadId;
+
+  /// Decodes a native history result from bridge JSON.
+  factory CodexAgentEngineHistoryResult.fromMap(Map<String, dynamic> map) {
+    return CodexAgentEngineHistoryResult(
+      success: map['success'] == true,
+      providerAvailable: map['providerAvailable'] == true,
+      errorCode: map['errorCode'] as String?,
+      error: map['error'] as String?,
+      threads: (map['threads'] as List? ?? const [])
+          .whereType<Map>()
+          .map(
+            (thread) => CodexAgentEngineThread.fromMap(
+              Map<String, dynamic>.from(thread),
+            ),
+          )
+          .toList(growable: false),
+      messages: (map['messages'] as List? ?? const [])
+          .whereType<Map>()
+          .map(
+            (message) =>
+                ChatMessage.fromMap(Map<String, dynamic>.from(message)),
+          )
+          .toList(growable: false),
+      nativeThreadId: map['nativeThreadId'] as String? ?? '',
+    );
+  }
 }

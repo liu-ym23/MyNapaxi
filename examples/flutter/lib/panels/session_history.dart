@@ -11,6 +11,10 @@ const _contactConfigUrl = String.fromEnvironment(
 const _dingtalkGroupQrAsset = 'assets/contact/dingtalk_group.png';
 const _wechatGroupQrAsset = 'assets/contact/wechat_group.jpg';
 const _nearbyPeerRemarksKey = 'agent_demo.a2a_local.peer_remarks.v1';
+const _sessionMenuText = Color(0xFF171717);
+const _sessionMenuMuted = Color(0xFF707070);
+
+enum _SessionAction { open, pinToggle, rename, delete }
 
 class _ContactConfig {
   const _ContactConfig({
@@ -95,39 +99,134 @@ class _SessionMenuAction extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onTap,
+    this.selected = false,
+    this.selectedKey,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback onTap;
+  final bool selected;
+  final Key? selectedKey;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(10),
+      key: selected ? selectedKey : null,
+      color: selected ? const Color(0xFFE7E7E7) : Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
       child: InkWell(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
+        hoverColor: const Color(0xFFF4F4F4),
+        highlightColor: const Color(0xFFECECEC),
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 50),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                SizedBox.square(
+                  dimension: 26,
+                  child: Center(
+                    child: Icon(icon, color: _sessionMenuText, size: 24),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: _sessionMenuText,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionSheetAction extends StatelessWidget {
+  const _SessionSheetAction({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.isDestructive = false,
+    this.showIconSlash = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool isDestructive;
+  final bool showIconSlash;
+
+  @override
+  Widget build(BuildContext context) {
+    final foregroundColor = isDestructive
+        ? const Color(0xFFDC2626)
+        : _sessionMenuText;
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        highlightColor: const Color(0xFFE7E8EA),
+        splashColor: const Color(0xFFD4D4D4).withValues(alpha: 0.2),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
           child: Row(
             children: [
-              Icon(icon, color: const Color(0xFF333333), size: 21),
-              const SizedBox(width: 10),
+              SizedBox.square(
+                dimension: 22,
+                child: Stack(
+                  alignment: Alignment.center,
+                  clipBehavior: Clip.none,
+                  children: [
+                    Icon(icon, color: foregroundColor, size: 22),
+                    if (showIconSlash)
+                      Transform.rotate(
+                        angle: -0.785398,
+                        child: Container(
+                          key: const Key('session_action_icon_slash'),
+                          width: 25,
+                          height: 5,
+                          color: _appSurfaceColor,
+                          alignment: Alignment.center,
+                          child: Container(
+                            width: 25,
+                            height: 2,
+                            decoration: BoxDecoration(
+                              color: foregroundColor,
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 14),
               Expanded(
                 child: Text(
                   label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFF333333),
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
+                  style: TextStyle(
+                    color: foregroundColor,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ),
-              const Icon(Icons.chevron_right_rounded, color: Color(0xFF9CA3AF)),
             ],
           ),
         ),
@@ -158,6 +257,43 @@ String _sessionHistoryPreview(ChatSession session) {
   return sanitized;
 }
 
+List<String> _sessionHistoryExpandedPreview(
+  BuildContext context,
+  ChatSession session,
+) {
+  final isChinese =
+      _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+  final entries = <String>[];
+
+  for (final message in session.messages.reversed) {
+    if (message.id == 'welcome') continue;
+
+    var content = _sanitizeA2AProtocolText(message.content).trim();
+    if (content.isEmpty && message.attachments.isNotEmpty) {
+      final attachmentNames = message.attachments
+          .map((attachment) => attachment.name)
+          .where((name) => name.trim().isNotEmpty)
+          .take(2)
+          .join(isChinese ? '、' : ', ');
+      content = attachmentNames.isEmpty
+          ? (isChinese ? '附件' : 'Attachment')
+          : (isChinese
+                ? '附件：$attachmentNames'
+                : 'Attachment: $attachmentNames');
+    }
+    if (content.isEmpty) continue;
+
+    final speaker = message.isUser ? (isChinese ? '你' : 'You') : 'napaxi';
+    entries.add('$speaker${isChinese ? '：' : ': '}$content');
+    if (entries.length == 3) break;
+  }
+
+  if (entries.isEmpty) {
+    return <String>[_sessionHistoryPreview(session)];
+  }
+  return entries;
+}
+
 String _fileNameFromPath(String path) {
   final normalized = path.replaceAll('\\', '/').replaceAll(RegExp(r'/+$'), '');
   if (normalized.isEmpty) return path;
@@ -185,7 +321,8 @@ class _SessionHistorySheet extends StatefulWidget {
     required this.sessionRuns,
     required this.a2aUnreadSessionIds,
     required this.activeSessionId,
-    required this.favoriteAttachments,
+    required this.projects,
+    required this.projectSessionIds,
     required this.initialView,
     required this.initialSettingsSection,
     required this.initialSkillsTab,
@@ -203,8 +340,7 @@ class _SessionHistorySheet extends StatefulWidget {
     required this.config,
     required this.onConfigChanged,
     required this.onLanguageChanged,
-    required this.onFavoriteTap,
-    required this.onFavoriteRemove,
+    required this.onEngineConfigChanged,
     required this.onCheckForUpdates,
     required this.onNearbyStart,
     required this.onNearbyStop,
@@ -213,9 +349,22 @@ class _SessionHistorySheet extends StatefulWidget {
     required this.onNearbyDeletePeer,
     required this.getNearbyPairingDiagnostic,
     required this.onNewSession,
-    required this.onRefreshSessions,
+    required this.onProjectCreated,
+    required this.onProjectChatStarted,
+    required this.onProjectPinToggle,
+    required this.onProjectSettings,
+    required this.onProjectDelete,
+    required this.onProjectSessionRemove,
+    required this.onFilesSelected,
+    required this.onSkillsSelected,
+    required this.onProjectsSelected,
+    required this.onSettingsSelected,
+    required this.primaryView,
     required this.onSessionSelected,
     required this.onSessionPinToggle,
+    required this.onSessionRename,
+    required this.onSessionRenameEditingChanged,
+    required this.onSearchModeChanged,
     required this.onSessionDelete,
     this.onPendingEvolutionChanged,
   });
@@ -225,7 +374,8 @@ class _SessionHistorySheet extends StatefulWidget {
   final Map<String, ChatSessionRunState> sessionRuns;
   final Set<String> a2aUnreadSessionIds;
   final String activeSessionId;
-  final List<FavoriteAttachment> favoriteAttachments;
+  final List<_ChatProject> projects;
+  final Map<String, String> projectSessionIds;
   final _SessionHistoryView initialView;
   final _SettingsSection initialSettingsSection;
   final _SkillsInitialTab initialSkillsTab;
@@ -243,8 +393,7 @@ class _SessionHistorySheet extends StatefulWidget {
   final LlmConfigState config;
   final ValueChanged<LlmConfigState> onConfigChanged;
   final ValueChanged<AppLanguage> onLanguageChanged;
-  final ValueChanged<ChatAttachment> onFavoriteTap;
-  final ValueChanged<ChatAttachment> onFavoriteRemove;
+  final VoidCallback onEngineConfigChanged;
   final VoidCallback onCheckForUpdates;
   final Future<void> Function() onNearbyStart;
   final Future<void> Function() onNearbyStop;
@@ -253,9 +402,23 @@ class _SessionHistorySheet extends StatefulWidget {
   final Future<void> Function(sdk.A2APeer peer) onNearbyDeletePeer;
   final Future<String?> Function() getNearbyPairingDiagnostic;
   final VoidCallback onNewSession;
-  final Future<void> Function() onRefreshSessions;
+  final ValueChanged<_NewProjectDraft> onProjectCreated;
+  final Future<void> Function(String projectId, String message)
+  onProjectChatStarted;
+  final ValueChanged<_ChatProject> onProjectPinToggle;
+  final ValueChanged<_ChatProject> onProjectSettings;
+  final ValueChanged<_ChatProject> onProjectDelete;
+  final ValueChanged<String> onProjectSessionRemove;
+  final VoidCallback onFilesSelected;
+  final VoidCallback onSkillsSelected;
+  final VoidCallback onProjectsSelected;
+  final VoidCallback onSettingsSelected;
+  final _ChatPrimaryView primaryView;
   final ValueChanged<String> onSessionSelected;
   final ValueChanged<String> onSessionPinToggle;
+  final void Function(String sessionId, String title) onSessionRename;
+  final ValueChanged<bool> onSessionRenameEditingChanged;
+  final ValueChanged<bool> onSearchModeChanged;
   final ValueChanged<String> onSessionDelete;
   final Future<void> Function()? onPendingEvolutionChanged;
 
@@ -268,6 +431,7 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
   final FocusNode _searchFocusNode = FocusNode();
 
   bool _isSearching = false;
+  bool _showSearchClose = false;
   String _searchQuery = '';
   late _SessionHistoryView _view;
   final List<_SessionHistoryView> _viewStack = [];
@@ -281,6 +445,7 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
   sdk.NapaxiScenarioUiContribution? _repoWorkbenchContribution;
   Future<sdk.NapaxiScenarioUiContribution?>? _environmentContributionFuture;
   sdk.NapaxiScenarioUiContribution? _environmentContribution;
+  String? _selectedProjectId;
 
   @override
   void initState() {
@@ -301,6 +466,11 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
       _viewStack.clear();
       _settingsInitialSection = widget.initialSettingsSection;
       _skillsInitialTab = widget.initialSkillsTab;
+    }
+    if (oldWidget.config != widget.config ||
+        oldWidget.activeAgent.id != widget.activeAgent.id) {
+      _filesClientFuture = null;
+      _skillsClientFuture = null;
     }
     if (oldWidget.activeScenarioId != widget.activeScenarioId) {
       _repoWorkbenchContributionFuture = null;
@@ -330,16 +500,23 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
   }
 
   void _toggleSearch() {
+    final opening = !_isSearching;
     setState(() {
-      _isSearching = !_isSearching;
-      if (!_isSearching) {
+      _isSearching = opening;
+      _showSearchClose = false;
+      if (!opening) {
         _searchController.clear();
         _searchQuery = '';
       }
     });
-    if (_isSearching) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _searchFocusNode.requestFocus();
+    widget.onSearchModeChanged(opening);
+    if (opening) {
+      Future<void>.delayed(const Duration(milliseconds: 100), () {
+        if (!mounted || !_isSearching) return;
+        setState(() => _showSearchClose = true);
+      });
+      Future<void>.delayed(const Duration(milliseconds: 180), () {
+        if (mounted && _isSearching) _searchFocusNode.requestFocus();
       });
     } else {
       _searchFocusNode.unfocus();
@@ -451,6 +628,80 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
     return false;
   }
 
+  void _openProject(_ChatProject project) {
+    _selectedProjectId = project.id;
+    _navigateTo(_SessionHistoryView.projectDetail);
+  }
+
+  Future<void> _showCreateProjectDialog() async {
+    final appView = View.of(context);
+    widget.onSessionRenameEditingChanged(true);
+    _NewProjectDraft? draft;
+    try {
+      draft = await showModalBottomSheet<_NewProjectDraft>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        enableDrag: true,
+        backgroundColor: Colors.transparent,
+        barrierColor: Colors.black.withValues(alpha: 0.22),
+        builder: (_) => const _CreateProjectSheet(),
+      );
+      await _waitForKeyboardToHide(appView);
+    } finally {
+      if (mounted) widget.onSessionRenameEditingChanged(false);
+    }
+    if (!mounted || draft == null) return;
+    widget.onProjectCreated(draft);
+  }
+
+  Widget _buildProjectsPage(BuildContext context) {
+    final sessionCounts = <String, int>{};
+    for (final projectId in widget.projectSessionIds.values) {
+      sessionCounts[projectId] = (sessionCounts[projectId] ?? 0) + 1;
+    }
+    return _ProjectsPage(
+      projects: widget.projects,
+      sessionCounts: sessionCounts,
+      onMenu: () => unawaited(_handleBack()),
+      onAdd: () => unawaited(_showCreateProjectDialog()),
+      onProjectTap: _openProject,
+      onProjectPinToggle: widget.onProjectPinToggle,
+      onProjectSettings: widget.onProjectSettings,
+      onProjectDelete: widget.onProjectDelete,
+    );
+  }
+
+  Widget _buildProjectDetailPage(BuildContext context) {
+    _ChatProject? selectedProject;
+    for (final project in widget.projects) {
+      if (project.id == _selectedProjectId) {
+        selectedProject = project;
+        break;
+      }
+    }
+    if (selectedProject == null) return _buildProjectsPage(context);
+
+    final project = selectedProject;
+    final projectSessions = widget.sessions
+        .where((session) => widget.projectSessionIds[session.id] == project.id)
+        .toList(growable: false);
+    return _ProjectDetailPage(
+      project: project,
+      sessions: projectSessions,
+      onBack: () => unawaited(_handleBack()),
+      onSessionTap: widget.onSessionSelected,
+      onSessionPinToggle: widget.onSessionPinToggle,
+      onSessionRename: (session) =>
+          unawaited(_showRenameSessionDialog(session)),
+      onSessionRemove: widget.onProjectSessionRemove,
+      onSessionDelete: widget.onSessionDelete,
+      onStartChat: (message, attachments, pinnedSkillNames) =>
+          widget.onProjectChatStarted(project.id, message),
+      agentId: widget.activeAgent.id,
+    );
+  }
+
   bool _matchesSearch(ChatSession session, String normalizedQuery) {
     if (normalizedQuery.isEmpty) return true;
     final searchableText = [
@@ -462,47 +713,6 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
         for (final attachment in message.attachments) attachment.name,
     ].join(' ').toLowerCase();
     return searchableText.contains(normalizedQuery);
-  }
-
-  bool _matchesFavorite(FavoriteAttachment favorite, String normalizedQuery) {
-    if (normalizedQuery.isEmpty) return true;
-    final attachment = favorite.attachment;
-    final searchableText = [
-      attachment.name,
-      attachment.path,
-      attachment.sandboxPath ?? '',
-      attachment.typeLabel,
-    ].join(' ').toLowerCase();
-    return searchableText.contains(normalizedQuery);
-  }
-
-  String _formatRelativeTime(BuildContext context, DateTime time) {
-    final language = _AppLanguageScope.languageOf(context);
-    final diff = DateTime.now().difference(time);
-    final elapsed = diff.isNegative ? Duration.zero : diff;
-
-    if (elapsed.inMinutes < 1) {
-      return switch (language) {
-        AppLanguage.chinese => '刚刚',
-        AppLanguage.english => 'just now',
-      };
-    }
-    if (elapsed.inHours < 1) {
-      return switch (language) {
-        AppLanguage.chinese => '${elapsed.inMinutes}分钟前',
-        AppLanguage.english => '${elapsed.inMinutes}m ago',
-      };
-    }
-    if (elapsed.inDays < 1) {
-      return switch (language) {
-        AppLanguage.chinese => '${elapsed.inHours}小时前',
-        AppLanguage.english => '${elapsed.inHours}h ago',
-      };
-    }
-    return switch (language) {
-      AppLanguage.chinese => '${elapsed.inDays}天前',
-      AppLanguage.english => '${elapsed.inDays}d ago',
-    };
   }
 
   @override
@@ -517,13 +727,8 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
     final visibleSessions = sortedSessions
         .where((session) => _matchesSearch(session, normalizedQuery))
         .toList();
-    final visibleFavorites = widget.favoriteAttachments
-        .where((favorite) => _matchesFavorite(favorite, normalizedQuery))
-        .toList();
-    final hasSearchResults =
-        visibleFavorites.isNotEmpty || visibleSessions.isNotEmpty;
-    final hasAnyContent =
-        widget.favoriteAttachments.isNotEmpty || widget.sessions.isNotEmpty;
+    final hasSearchResults = visibleSessions.isNotEmpty;
+    final hasAnyContent = widget.sessions.isNotEmpty;
 
     return PopScope(
       canPop: _view == _SessionHistoryView.menu,
@@ -537,13 +742,13 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
         }
       },
       child: Material(
-        color: const Color(0xFFF5F5F5),
+        key: const Key('session_history_sheet'),
+        color: _appSurfaceColor,
         child: SafeArea(
           child: _buildCurrentView(
             context: context,
             strings: strings,
             visibleSessions: visibleSessions,
-            visibleFavorites: visibleFavorites,
             hasSearchResults: hasSearchResults,
             hasAnyContent: hasAnyContent,
           ),
@@ -552,15 +757,317 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
     );
   }
 
+  Widget _buildSessionMenuHeader(BuildContext context, AppStrings strings) {
+    final headerActions = Container(
+      key: const Key('session_header_action_group'),
+      width: 94,
+      height: 46,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.94),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.055),
+            blurRadius: 18,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: Material(
+          color: Colors.transparent,
+          child: Row(
+            children: [
+              Expanded(
+                child: Tooltip(
+                  message: strings.searchHistoryTooltip,
+                  child: InkWell(
+                    key: const Key('session_history_search_button'),
+                    onTap: _toggleSearch,
+                    customBorder: const RoundedRectangleBorder(
+                      borderRadius: BorderRadius.horizontal(
+                        left: Radius.circular(24),
+                      ),
+                    ),
+                    child: const Center(
+                      child: Icon(
+                        Icons.search_rounded,
+                        color: _sessionMenuText,
+                        size: 23,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Tooltip(
+                  message: strings.settingsTooltip,
+                  child: InkWell(
+                    key: const Key('settings_menu_button'),
+                    onTap: widget.onSettingsSelected,
+                    customBorder: const RoundedRectangleBorder(
+                      borderRadius: BorderRadius.horizontal(
+                        right: Radius.circular(24),
+                      ),
+                    ),
+                    child: const Center(
+                      child: Icon(
+                        Icons.settings_outlined,
+                        color: _sessionMenuText,
+                        size: 22,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final header = SizedBox(
+      height: 88,
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 260),
+        reverseDuration: const Duration(milliseconds: 210),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        layoutBuilder: (currentChild, previousChildren) => Stack(
+          alignment: Alignment.topRight,
+          children: [...previousChildren, ?currentChild],
+        ),
+        transitionBuilder: (child, animation) {
+          final curvedAnimation = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          if (child.key == const ValueKey('session_search_header')) {
+            return FadeTransition(
+              opacity: curvedAnimation,
+              child: SizeTransition(
+                axis: Axis.horizontal,
+                axisAlignment: 1,
+                sizeFactor: curvedAnimation,
+                child: child,
+              ),
+            );
+          }
+          return FadeTransition(opacity: curvedAnimation, child: child);
+        },
+        child: _isSearching
+            ? Padding(
+                key: const ValueKey('session_search_header'),
+                padding: const EdgeInsets.fromLTRB(20, 24, 20, 18),
+                child: _buildSessionSearchBar(context, strings),
+              )
+            : Padding(
+                key: const ValueKey('session_title_header'),
+                padding: const EdgeInsets.fromLTRB(24, 24, 20, 18),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        widget.activeAgent.label(
+                          _AppLanguageScope.languageOf(context),
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: _sessionMenuText,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                    ),
+                    headerActions,
+                  ],
+                ),
+              ),
+      ),
+    );
+
+    return SizedBox(
+      key: const Key('session_history_frosted_header'),
+      child: SizedBox(
+        key: const Key('session_history_frosted_header_surface'),
+        child: header,
+      ),
+    );
+  }
+
+  Widget _buildSessionSearchBar(BuildContext context, AppStrings strings) {
+    final surfaceDecoration = BoxDecoration(
+      color: Colors.white.withValues(alpha: 0.82),
+      borderRadius: BorderRadius.circular(24),
+      border: Border.all(color: Colors.white.withValues(alpha: 0.94), width: 1),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.06),
+          blurRadius: 18,
+          offset: const Offset(0, 5),
+        ),
+      ],
+    );
+
+    return Row(
+      key: const Key('session_history_search_bar'),
+      children: [
+        Expanded(
+          child: Container(
+            key: const Key('session_history_search_input_surface'),
+            height: 46,
+            decoration: surfaceDecoration,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: Material(
+                color: Colors.transparent,
+                child: TextField(
+                  key: const Key('session_history_search_field'),
+                  controller: _searchController,
+                  focusNode: _searchFocusNode,
+                  textInputAction: TextInputAction.search,
+                  cursorColor: _sessionMenuText,
+                  style: const TextStyle(
+                    color: _sessionMenuText,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w400,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: strings.searchHistoryHint,
+                    hintStyle: TextStyle(
+                      color: _sessionMenuMuted.withValues(alpha: 0.62),
+                      fontSize: 16,
+                      fontWeight: FontWeight.w400,
+                    ),
+                    prefixIcon: const Padding(
+                      padding: EdgeInsets.only(left: 2),
+                      child: Icon(
+                        Icons.search_rounded,
+                        color: _sessionMenuText,
+                        size: 22,
+                      ),
+                    ),
+                    prefixIconConstraints: const BoxConstraints(
+                      minWidth: 44,
+                      minHeight: 46,
+                    ),
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    contentPadding: const EdgeInsets.fromLTRB(0, 13, 16, 12),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        IgnorePointer(
+          ignoring: !_showSearchClose,
+          child: AnimatedOpacity(
+            opacity: _showSearchClose ? 1 : 0,
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOutCubic,
+            child: AnimatedScale(
+              scale: _showSearchClose ? 1 : 0.82,
+              duration: const Duration(milliseconds: 190),
+              curve: Curves.easeOutBack,
+              child: Container(
+                key: const Key('session_history_search_close_surface'),
+                width: 46,
+                height: 46,
+                decoration: surfaceDecoration,
+                child: ClipOval(
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      key: const Key('session_history_search_close'),
+                      onTap: _toggleSearch,
+                      child: const Center(
+                        child: Icon(
+                          Icons.close_rounded,
+                          color: _sessionMenuText,
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSessionMenuNavigation(BuildContext context, AppStrings strings) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 18),
+      child: Column(
+        children: [
+          _SessionMenuAction(
+            key: const Key('files_menu_item'),
+            icon: Icons.folder_open_rounded,
+            label: strings.filesTitle,
+            selected: widget.primaryView == _ChatPrimaryView.files,
+            selectedKey: const Key('files_menu_selected'),
+            onTap: widget.onFilesSelected,
+          ),
+          _buildRepoWorkbenchMenuAction(),
+          _buildEnvironmentMenuAction(),
+          _SessionMenuAction(
+            key: const Key('skills_menu_item'),
+            icon: Icons.extension_outlined,
+            label: strings.skillsTitle,
+            selected: widget.primaryView == _ChatPrimaryView.skills,
+            selectedKey: const Key('skills_menu_selected'),
+            onTap: () {
+              _skillsInitialTab = _SkillsInitialTab.installed;
+              widget.onSkillsSelected();
+            },
+          ),
+          _SessionMenuAction(
+            key: const Key('projects_menu_item'),
+            icon: Icons.folder_copy_outlined,
+            label: _projectCopy(context, english: 'Projects', chinese: '项目'),
+            selected:
+                widget.primaryView == _ChatPrimaryView.projects ||
+                widget.primaryView == _ChatPrimaryView.projectDetail,
+            selectedKey: const Key('projects_menu_selected'),
+            onTap: widget.onProjectsSelected,
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _handleEngineConfigChanged() {
+    _filesClientFuture = null;
+    _skillsClientFuture = null;
+    widget.onEngineConfigChanged();
+  }
+
   Widget _buildCurrentView({
     required BuildContext context,
     required AppStrings strings,
     required List<ChatSession> visibleSessions,
-    required List<FavoriteAttachment> visibleFavorites,
     required bool hasSearchResults,
     required bool hasAnyContent,
   }) {
     switch (_view) {
+      case _SessionHistoryView.projects:
+        return _buildProjectsPage(context);
+      case _SessionHistoryView.projectDetail:
+        return _buildProjectDetailPage(context);
       case _SessionHistoryView.files:
         _filesClientFuture ??= widget.createFilesClientFuture();
         return _FilesPage(
@@ -613,6 +1120,7 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
           language: _AppLanguageScope.languageOf(context),
           onConfigChanged: widget.onConfigChanged,
           onLanguageChanged: widget.onLanguageChanged,
+          onEngineConfigChanged: _handleEngineConfigChanged,
           createScenariosClientFuture: widget.createScenariosClientFuture,
           createNearbyClientFuture: widget.createNearbyClientFuture,
           activeScenarioId: widget.activeScenarioId,
@@ -621,6 +1129,7 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
           onGitSettingsChanged: widget.onGitSettingsChanged,
           onGitSettingsCleared: widget.onGitSettingsCleared,
           updateService: widget.updateService,
+          feedbackService: widget.feedbackService,
           onCheckForUpdates: widget.onCheckForUpdates,
           onNearbyStart: widget.onNearbyStart,
           onNearbyStop: widget.onNearbyStop,
@@ -628,12 +1137,6 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
           onNearbyScan: widget.onNearbyScan,
           onNearbyDeletePeer: widget.onNearbyDeletePeer,
           getNearbyPairingDiagnostic: widget.getNearbyPairingDiagnostic,
-          onOpenFeedback: () {
-            _navigateTo(_SessionHistoryView.feedback);
-          },
-          onOpenContact: () {
-            _navigateTo(_SessionHistoryView.contact);
-          },
           onBack: () async {
             _settingsInitialSection = _SettingsSection.menu;
             return _handleBack();
@@ -652,202 +1155,76 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
       case _SessionHistoryView.menu:
         return Stack(
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 180),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  child: _isSearching
-                      ? Padding(
-                          key: const ValueKey('session_search_header'),
-                          padding: const EdgeInsets.fromLTRB(20, 14, 12, 10),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: TextField(
-                                  key: const Key(
-                                    'session_history_search_field',
-                                  ),
-                                  controller: _searchController,
-                                  focusNode: _searchFocusNode,
-                                  textInputAction: TextInputAction.search,
-                                  decoration: InputDecoration(
-                                    hintText: strings.searchHistoryHint,
-                                    prefixIcon: const Icon(
-                                      Icons.search_rounded,
-                                    ),
-                                    filled: true,
-                                    fillColor: Colors.white,
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 12,
-                                    ),
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                      borderSide: const BorderSide(
-                                        color: Color(0xFFE5E7EB),
-                                      ),
-                                    ),
-                                    enabledBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                      borderSide: const BorderSide(
-                                        color: Color(0xFFE5E7EB),
-                                      ),
-                                    ),
-                                    focusedBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                      borderSide: const BorderSide(
-                                        color: Color(0xFF333333),
-                                        width: 1.2,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              IconButton(
-                                key: const Key('session_history_search_close'),
-                                tooltip: MaterialLocalizations.of(
-                                  context,
-                                ).closeButtonTooltip,
-                                onPressed: _toggleSearch,
-                                icon: const Icon(Icons.close_rounded),
-                              ),
-                            ],
-                          ),
-                        )
-                      : Padding(
-                          key: const ValueKey('session_title_header'),
-                          padding: const EdgeInsets.fromLTRB(20, 18, 14, 10),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  widget.activeAgent.label(
-                                    _AppLanguageScope.languageOf(context),
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Color(0xFF222222),
-                                    fontSize: 22,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                              ),
-                              IconButton(
-                                key: const Key('session_history_search_button'),
-                                tooltip: strings.searchHistoryTooltip,
-                                onPressed: _toggleSearch,
-                                icon: const Icon(Icons.search_rounded),
-                              ),
-                              IconButton(
-                                key: const Key('settings_menu_button'),
-                                tooltip: strings.settingsTooltip,
-                                onPressed: () {
-                                  setState(() {
-                                    _settingsInitialSection =
-                                        _SettingsSection.menu;
-                                    _viewStack.add(_view);
-                                    _view = _SessionHistoryView.settings;
-                                  });
-                                },
-                                icon: const Icon(Icons.settings_outlined),
-                              ),
-                            ],
-                          ),
-                        ),
-                ),
-                if (!_isSearching)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
-                    child: Column(
-                      children: [
-                        _SessionMenuAction(
-                          key: const Key('files_menu_item'),
-                          icon: Icons.folder_open_rounded,
-                          label: strings.filesTitle,
-                          onTap: () => _navigateTo(_SessionHistoryView.files),
-                        ),
-                        _buildRepoWorkbenchMenuAction(),
-                        _buildEnvironmentMenuAction(),
-                        const SizedBox(height: 6),
-                        _SessionMenuAction(
-                          key: const Key('skills_menu_item'),
-                          icon: Icons.extension_rounded,
-                          label: strings.skillsTitle,
-                          onTap: () {
-                            _skillsInitialTab = _SkillsInitialTab.installed;
-                            _navigateTo(_SessionHistoryView.skills);
-                          },
-                        ),
-                      ],
-                    ),
+            Positioned.fill(
+              child: ShaderMask(
+                key: const Key('session_history_scroll_fade'),
+                blendMode: BlendMode.dstIn,
+                shaderCallback: (bounds) {
+                  final height = math.max(bounds.height, 1.0);
+                  final earlyStop = (60 / height).clamp(0.0, 1.0).toDouble();
+                  final middleStop = (96 / height).clamp(0.0, 1.0).toDouble();
+                  final endStop = (160 / height)
+                      .clamp(middleStop, 1.0)
+                      .toDouble();
+                  return LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    stops: [0, earlyStop, middleStop, endStop],
+                    colors: const [
+                      Color(0x08FFFFFF),
+                      Color(0x24FFFFFF),
+                      Color(0x98FFFFFF),
+                      Colors.white,
+                    ],
+                  ).createShader(bounds);
+                },
+                child: ListView(
+                  key: const Key('session_history_list'),
+                  padding: EdgeInsets.fromLTRB(
+                    0,
+                    92,
+                    0,
+                    _isSearching ? 20 : 104,
                   ),
-                Expanded(
-                  child: !hasAnyContent
-                      ? const _EmptySessionHistory()
-                      : _isSearching && !hasSearchResults
-                      ? const _EmptySessionSearchResults()
-                      : ListView(
-                          key: const Key('session_history_list'),
-                          padding: EdgeInsets.fromLTRB(
-                            10,
-                            _isSearching ? 4 : 0,
-                            10,
-                            _isSearching ? 20 : 96,
-                          ),
+                  children: [
+                    if (!_isSearching)
+                      _buildSessionMenuNavigation(context, strings),
+                    if (!hasAnyContent && !_isSearching)
+                      const SizedBox(height: 260, child: _EmptySessionHistory())
+                    else if (_isSearching && !hasSearchResults)
+                      const SizedBox(
+                        height: 260,
+                        child: _EmptySessionSearchResults(),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        child: Column(
                           children: [
-                            if (visibleFavorites.isNotEmpty) ...[
-                              if (!_isSearching)
-                                _SessionSectionHeader(
-                                  label: strings.favorites,
-                                  padding: const EdgeInsets.fromLTRB(
-                                    10,
-                                    4,
-                                    10,
-                                    10,
-                                  ),
-                                ),
-                              for (final favorite in visibleFavorites) ...[
-                                _FavoriteAttachmentTile(
-                                  favorite: favorite,
-                                  onTap: () =>
-                                      widget.onFavoriteTap(favorite.attachment),
-                                  onRemove: () => widget.onFavoriteRemove(
-                                    favorite.attachment,
-                                  ),
-                                  onLongPress: () =>
-                                      _showFavoriteActions(context, favorite),
-                                ),
-                                const SizedBox(height: 4),
-                              ],
-                            ],
                             if (!_isSearching)
                               if (visibleSessions.any(
                                 (session) => session.isPinned,
                               ))
                                 _SessionSectionHeader(
                                   label: strings.pinned,
-                                  padding: EdgeInsets.fromLTRB(
+                                  fontWeight: FontWeight.w600,
+                                  padding: const EdgeInsets.fromLTRB(
                                     10,
-                                    visibleFavorites.isEmpty ? 4 : 10,
+                                    4,
                                     10,
                                     10,
                                   ),
-                                  onRefresh: widget.onRefreshSessions,
                                 )
                               else
                                 _SessionSectionHeader(
                                   label: strings.recent,
-                                  padding: EdgeInsets.fromLTRB(
+                                  fontWeight: FontWeight.w600,
+                                  padding: const EdgeInsets.fromLTRB(
                                     10,
-                                    visibleFavorites.isEmpty ? 4 : 10,
+                                    4,
                                     10,
                                     10,
                                   ),
-                                  onRefresh: widget.onRefreshSessions,
                                 ),
                             for (final session in visibleSessions) ...[
                               if (!_isSearching &&
@@ -861,35 +1238,77 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
                                       ))
                                 _SessionSectionHeader(
                                   label: strings.recent,
+                                  fontWeight: FontWeight.w600,
                                   padding: const EdgeInsets.fromLTRB(
                                     10,
                                     10,
                                     10,
                                     10,
                                   ),
-                                  onRefresh: widget.onRefreshSessions,
                                 ),
                               _SessionHistoryTile(
                                 session: session,
                                 runState: widget.sessionRuns[session.id],
                                 hasA2AUnread: widget.a2aUnreadSessionIds
                                     .contains(session.id),
-                                timeLabel: _formatRelativeTime(
-                                  context,
-                                  session.updatedAt,
-                                ),
                                 isActive: session.id == widget.activeSessionId,
                                 onTap: () =>
                                     widget.onSessionSelected(session.id),
-                                onLongPress: () =>
+                                onLongPress: () {
+                                  unawaited(
                                     _showSessionActions(context, session),
+                                  );
+                                },
                               ),
                               const SizedBox(height: 4),
                             ],
                           ],
                         ),
+                      ),
+                  ],
                 ),
-              ],
+              ),
+            ),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 160,
+              child: IgnorePointer(
+                key: const Key('session_history_progressive_blur'),
+                child: Column(
+                  children: [
+                    for (final band in const [
+                      (height: 34.0, sigma: 34.0),
+                      (height: 28.0, sigma: 24.0),
+                      (height: 28.0, sigma: 18.0),
+                      (height: 26.0, sigma: 12.0),
+                      (height: 24.0, sigma: 7.0),
+                      (height: 20.0, sigma: 3.0),
+                    ])
+                      SizedBox(
+                        height: band.height,
+                        child: ClipRect(
+                          child: BackdropFilter(
+                            filter: ui.ImageFilter.blur(
+                              sigmaX: band.sigma,
+                              sigmaY: band.sigma,
+                            ),
+                            child: ColoredBox(
+                              color: _appSurfaceColor.withValues(alpha: 0.01),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: _buildSessionMenuHeader(context, strings),
             ),
             if (!_isSearching)
               Positioned(
@@ -911,99 +1330,384 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
     }
   }
 
-  void _showSessionActions(BuildContext context, ChatSession session) {
+  Future<void> _showSessionActions(
+    BuildContext context,
+    ChatSession session,
+  ) async {
     final strings = AppStrings.of(context);
-    showModalBottomSheet<void>(
+    final isTerminalSession = session.id.startsWith('terminal-');
+    final previewEntries = isTerminalSession
+        ? <String>[strings.terminalSessionPreview]
+        : _sessionHistoryExpandedPreview(context, session);
+    ModalRoute<dynamic>? bottomSheetRoute;
+    final action = await showModalBottomSheet<_SessionAction>(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (context) {
+      builder: (sheetContext) {
+        bottomSheetRoute ??= ModalRoute.of(sheetContext);
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: Material(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              clipBehavior: Clip.antiAlias,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ListTile(
-                    key: Key('session_pin_action_${session.id}'),
-                    leading: Icon(
-                      session.isPinned
-                          ? Icons.push_pin_outlined
-                          : Icons.push_pin_rounded,
-                    ),
-                    title: Text(
-                      session.isPinned ? strings.unpinChat : strings.pinChat,
-                    ),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      widget.onSessionPinToggle(session.id);
-                    },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Material(
+                  color: _appSurfaceColor,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    side: const BorderSide(color: _appSurfaceBorderColor),
                   ),
-                  ListTile(
-                    key: Key('session_delete_action_${session.id}'),
-                    leading: const Icon(
-                      Icons.delete_outline_rounded,
-                      color: Color(0xFFDC2626),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    key: Key('session_preview_action_${session.id}'),
+                    onTap: () =>
+                        Navigator.of(sheetContext).pop(_SessionAction.open),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 18, 14, 20),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  strings.latestMessage,
+                                  style: const TextStyle(
+                                    color: _sessionMenuMuted,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 7),
+                                Text(
+                                  _sessionHistoryDisplayTitle(session),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: _sessionMenuText,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    minHeight: 72,
+                                  ),
+                                  child: Align(
+                                    alignment: Alignment.topLeft,
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        for (
+                                          var index = 0;
+                                          index < previewEntries.length;
+                                          index++
+                                        ) ...[
+                                          if (index > 0)
+                                            const SizedBox(height: 5),
+                                          Text(
+                                            previewEntries[index],
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              color: Color(0xFF5F5F5F),
+                                              fontSize: 14,
+                                              height: 1.45,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          const Icon(
+                            Icons.arrow_forward_ios_rounded,
+                            color: Color(0xFF989898),
+                            size: 17,
+                          ),
+                        ],
+                      ),
                     ),
-                    title: Text(
-                      strings.deleteChat,
-                      style: const TextStyle(color: Color(0xFFDC2626)),
-                    ),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      widget.onSessionDelete(session.id);
-                    },
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 10),
+                Material(
+                  color: _appSurfaceColor,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    side: const BorderSide(color: _appSurfaceBorderColor),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _SessionSheetAction(
+                          key: Key('session_pin_action_${session.id}'),
+                          icon: Icons.push_pin_outlined,
+                          showIconSlash: session.isPinned,
+                          label: session.isPinned
+                              ? strings.unpinChat
+                              : strings.pinChat,
+                          onTap: () => Navigator.of(
+                            sheetContext,
+                          ).pop(_SessionAction.pinToggle),
+                        ),
+                        const SizedBox(height: 2),
+                        _SessionSheetAction(
+                          key: Key('session_rename_action_${session.id}'),
+                          icon: Icons.edit_outlined,
+                          label: strings.renameChat,
+                          onTap: () => Navigator.of(
+                            sheetContext,
+                          ).pop(_SessionAction.rename),
+                        ),
+                        const SizedBox(height: 2),
+                        _SessionSheetAction(
+                          key: Key('session_delete_action_${session.id}'),
+                          icon: Icons.delete_outline_rounded,
+                          label: strings.deleteChat,
+                          isDestructive: true,
+                          onTap: () => Navigator.of(
+                            sheetContext,
+                          ).pop(_SessionAction.delete),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         );
       },
     );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case _SessionAction.open:
+        // Opening a chat removes the history panel that owns this route, so
+        // wait until the action sheet is fully detached first.
+        await bottomSheetRoute?.completed;
+        if (!mounted) return;
+        widget.onSessionSelected(session.id);
+        return;
+      case _SessionAction.pinToggle:
+        widget.onSessionPinToggle(session.id);
+        return;
+      case _SessionAction.rename:
+        // Keep the history panel mounted and let the two route transitions
+        // overlap, avoiding a visible pause before the rename field appears.
+        await _showRenameSessionDialog(session);
+        return;
+      case _SessionAction.delete:
+        widget.onSessionDelete(session.id);
+        return;
+    }
   }
 
-  void _showFavoriteActions(BuildContext context, FavoriteAttachment favorite) {
+  Future<void> _showRenameSessionDialog(ChatSession session) async {
     final strings = AppStrings.of(context);
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: Material(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              clipBehavior: Clip.antiAlias,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ListTile(
-                    key: Key('favorite_remove_action_${favorite.id.hashCode}'),
-                    leading: const Icon(
-                      Icons.delete_outline_rounded,
-                      color: Color(0xFFDC2626),
-                    ),
-                    title: Text(
-                      strings.removeFavorite,
-                      style: const TextStyle(color: Color(0xFFDC2626)),
-                    ),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      widget.onFavoriteRemove(favorite.attachment);
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
+    final appView = View.of(context);
+    final controller = TextEditingController(
+      text: _sessionHistoryDisplayTitle(session),
     );
+    controller.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: controller.text.length,
+    );
+    widget.onSessionRenameEditingChanged(true);
+    ModalRoute<dynamic>? renameSheetRoute;
+    String? renamedTitle;
+    try {
+      renamedTitle = await showModalBottomSheet<String>(
+        context: context,
+        backgroundColor: Colors.transparent,
+        barrierColor: Colors.black.withValues(alpha: 0.22),
+        isScrollControlled: true,
+        sheetAnimationStyle: AnimationStyle.noAnimation,
+        builder: (sheetContext) {
+          renameSheetRoute ??= ModalRoute.of(sheetContext);
+          var canSave = controller.text.trim().isNotEmpty;
+          return StatefulBuilder(
+            builder: (context, setDialogState) {
+              void closeSheet([String? result]) {
+                FocusScope.of(sheetContext).unfocus();
+                if (sheetContext.mounted) {
+                  Navigator.of(sheetContext).pop(result);
+                }
+              }
+
+              void submit() {
+                final title = controller.text.trim();
+                if (title.isNotEmpty) closeSheet(title);
+              }
+
+              final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
+              return SafeArea(
+                top: false,
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(12, 12, 12, 12 + keyboardInset),
+                  child: Material(
+                    color: _appSurfaceColor,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                      side: const BorderSide(color: _appSurfaceBorderColor),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  strings.renameChatTitle,
+                                  style: const TextStyle(
+                                    color: _sessionMenuText,
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: strings.cancel,
+                                onPressed: closeSheet,
+                                style: IconButton.styleFrom(
+                                  backgroundColor: const Color(0xFFEDEEF0),
+                                  foregroundColor: const Color(0xFF525252),
+                                ),
+                                icon: const Icon(Icons.close_rounded, size: 20),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          TextField(
+                            key: Key('session_rename_field_${session.id}'),
+                            controller: controller,
+                            autofocus: true,
+                            maxLength: 80,
+                            textInputAction: TextInputAction.done,
+                            style: const TextStyle(
+                              color: _sessionMenuText,
+                              fontSize: 16,
+                            ),
+                            decoration: InputDecoration(
+                              hintText: strings.renameChatHint,
+                              hintStyle: const TextStyle(
+                                color: Color(0xFF9CA3AF),
+                              ),
+                              counterText: '',
+                              filled: true,
+                              fillColor: _appSurfaceColor,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 15,
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(18),
+                                borderSide: const BorderSide(
+                                  color: _appSurfaceBorderColor,
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(18),
+                                borderSide: const BorderSide(
+                                  color: Color(0xFF9CA3AF),
+                                  width: 1.2,
+                                ),
+                              ),
+                            ),
+                            onChanged: (value) {
+                              final nextCanSave = value.trim().isNotEmpty;
+                              if (nextCanSave != canSave) {
+                                setDialogState(() => canSave = nextCanSave);
+                              }
+                            },
+                            onSubmitted: (_) => submit(),
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: SizedBox(
+                                  height: 48,
+                                  child: OutlinedButton(
+                                    onPressed: closeSheet,
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: _sessionMenuText,
+                                      side: const BorderSide(
+                                        color: _appSurfaceBorderColor,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
+                                    ),
+                                    child: Text(strings.cancel),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: SizedBox(
+                                  height: 48,
+                                  child: FilledButton(
+                                    key: Key(
+                                      'confirm_rename_session_${session.id}',
+                                    ),
+                                    onPressed: canSave ? submit : null,
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor: const Color(0xFF111827),
+                                      disabledBackgroundColor: const Color(
+                                        0xFFD1D5DB,
+                                      ),
+                                      foregroundColor: Colors.white,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
+                                    ),
+                                    child: Text(strings.save),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      );
+      await renameSheetRoute?.completed;
+      await _waitForKeyboardToHide(appView);
+    } finally {
+      controller.dispose();
+      if (mounted) widget.onSessionRenameEditingChanged(false);
+    }
+    if (!mounted || renamedTitle == null) return;
+    widget.onSessionRename(session.id, renamedTitle);
+  }
+
+  Future<void> _waitForKeyboardToHide(ui.FlutterView view) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 1));
+    while (view.viewInsets.bottom > 0 && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
   }
 }
 
@@ -1014,6 +1718,8 @@ enum _SessionHistoryView {
   environment,
   scenarios,
   skills,
+  projects,
+  projectDetail,
   settings,
   feedback,
   contact,
@@ -1021,6 +1727,12 @@ enum _SessionHistoryView {
 
 enum _SettingsSection {
   menu,
+  agent,
+  modelManagement,
+  modelEditor,
+  feedback,
+  contact,
+  licenses,
   configuration,
   channels,
   nearby,
@@ -1033,15 +1745,15 @@ class _AboutPage extends StatelessWidget {
   const _AboutPage({
     required this.updateService,
     required this.onCheckForUpdates,
-    required this.onOpenFeedback,
     required this.onOpenContact,
+    required this.onOpenLicenses,
     this.embedded = false,
   });
 
   final DemoUpdateService updateService;
   final VoidCallback onCheckForUpdates;
-  final VoidCallback onOpenFeedback;
   final VoidCallback onOpenContact;
+  final VoidCallback onOpenLicenses;
   final bool embedded;
 
   @override
@@ -1068,93 +1780,273 @@ class _AboutPage extends StatelessWidget {
       builder: (context, snapshot) {
         final version = snapshot.data?.display ?? strings.versionLoading;
         return ListView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 96),
+          key: const Key('about_page_list'),
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 96),
           children: [
-            if (embedded) ...[
-              _EmbeddedSettingsHeader(title: strings.aboutTitle),
-              const SizedBox(height: 12),
-            ],
-            Text(
-              strings.appTitle,
-              style: const TextStyle(
-                color: _configTextPrimary,
-                fontSize: 24,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 20),
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: _configSurface,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _configBorderFaint),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.info_outline_rounded,
-                      color: _configTextSecondary,
-                      size: 22,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            strings.currentVersion,
-                            style: const TextStyle(
-                              color: _configTextSecondary,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            version,
-                            key: const Key('about_current_version'),
-                            style: const TextStyle(
-                              color: _configTextPrimary,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+            Center(
+              child: Text(
+                version,
+                key: const Key('about_current_version'),
+                style: const TextStyle(
+                  color: _configTextSecondary,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
             ),
-            if (updateService.supportsUpdateCheck) ...[
-              const SizedBox(height: 12),
-              _AboutActionButton(
-                key: const Key('about_check_update_button'),
-                onPressed: onCheckForUpdates,
-                icon: Icons.system_update_alt_rounded,
-                label: strings.checkForUpdates,
-                filled: true,
-              ),
-            ],
-            const SizedBox(height: 12),
-            _AboutActionButton(
-              key: const Key('about_feedback_button'),
-              onPressed: onOpenFeedback,
-              icon: Icons.feedback_outlined,
-              label: strings.feedbackTitle,
-            ),
-            const SizedBox(height: 12),
-            _AboutActionButton(
-              key: const Key('about_contact_button'),
-              onPressed: onOpenContact,
-              icon: Icons.contact_support_outlined,
-              label: strings.contactUs,
+            const SizedBox(height: 24),
+            _SettingsGroupCard(
+              children: [
+                _SettingsActionRow(
+                  key: const Key('about_check_update_button'),
+                  icon: Icons.system_update_alt_rounded,
+                  title: strings.checkForUpdates,
+                  onTap: onCheckForUpdates,
+                ),
+                _SettingsActionRow(
+                  key: const Key('about_contact_button'),
+                  icon: Icons.contact_support_outlined,
+                  title: strings.contactUs,
+                  onTap: onOpenContact,
+                ),
+                _SettingsActionRow(
+                  key: const Key('open_source_licenses_button'),
+                  icon: Icons.article_outlined,
+                  title: strings.openSourceLicensesTitle,
+                  onTap: onOpenLicenses,
+                ),
+              ],
             ),
           ],
         );
       },
+    );
+  }
+}
+
+class _SettingsLicensesPage extends StatefulWidget {
+  const _SettingsLicensesPage();
+
+  @override
+  State<_SettingsLicensesPage> createState() => _SettingsLicensesPageState();
+}
+
+class _SettingsLicensesPageState extends State<_SettingsLicensesPage> {
+  late final Future<List<_SettingsLicenseRecord>> _licenses = _loadLicenses();
+
+  Future<List<_SettingsLicenseRecord>> _loadLicenses() async {
+    final displayTitles = <String, String>{};
+    final textsByTitle = <String, Set<String>>{};
+    await for (final entry in LicenseRegistry.licenses) {
+      final text = entry.paragraphs
+          .map((paragraph) => paragraph.text.trim())
+          .where((paragraph) => paragraph.isNotEmpty)
+          .join('\n\n');
+      final packages = entry.packages
+          .map((package) => package.trim())
+          .where((package) => package.isNotEmpty)
+          .toSet();
+      if (packages.isEmpty) packages.add('Other');
+      for (final package in packages) {
+        final key = package.toLowerCase();
+        displayTitles.putIfAbsent(key, () => package);
+        if (text.isNotEmpty) {
+          textsByTitle.putIfAbsent(key, () => <String>{}).add(text);
+        }
+      }
+    }
+    final records = [
+      for (final entry in displayTitles.entries)
+        _SettingsLicenseRecord(
+          title: entry.value,
+          text: (textsByTitle[entry.key] ?? const <String>{}).join(
+            '\n\n────────\n\n',
+          ),
+        ),
+    ];
+    records.sort(
+      (left, right) =>
+          left.title.toLowerCase().compareTo(right.title.toLowerCase()),
+    );
+    return records;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese =
+        _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    return FutureBuilder<List<_SettingsLicenseRecord>>(
+      future: _licenses,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(
+            child: CircularProgressIndicator(color: _configTextPrimary),
+          );
+        }
+        final records = snapshot.data!;
+        if (records.isEmpty) {
+          return Center(
+            child: Text(
+              chinese ? '暂无许可信息' : 'No license information',
+              style: const TextStyle(color: _configTextSecondary),
+            ),
+          );
+        }
+        return ListView.separated(
+          key: const Key('settings_licenses_page'),
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 96),
+          itemCount: records.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 10),
+          itemBuilder: (context, index) {
+            final record = records[index];
+            return Material(
+              color: _configSurface,
+              borderRadius: BorderRadius.circular(18),
+              clipBehavior: Clip.antiAlias,
+              child: ExpansionTile(
+                tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+                childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+                iconColor: _configTextSecondary,
+                collapsedIconColor: _configTextTertiary,
+                shape: const Border(),
+                collapsedShape: const Border(),
+                title: Text(
+                  record.title,
+                  style: const TextStyle(
+                    color: _configTextPrimary,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                children: [
+                  Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: SelectableText(
+                      record.text,
+                      style: const TextStyle(
+                        color: _configTextSecondary,
+                        fontSize: 13,
+                        height: 1.45,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _SettingsLicenseRecord {
+  const _SettingsLicenseRecord({required this.title, required this.text});
+
+  final String title;
+  final String text;
+}
+
+class _SettingsGroupCard extends StatelessWidget {
+  const _SettingsGroupCard({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: _configSurface,
+      borderRadius: BorderRadius.circular(18),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var index = 0; index < children.length; index++) ...[
+            children[index],
+            if (index != children.length - 1)
+              const Padding(
+                padding: EdgeInsets.only(left: 54),
+                child: Divider(height: 1, color: _configBorderFaint),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsGroupTitle extends StatelessWidget {
+  const _SettingsGroupTitle({super.key, required this.title, this.trailing});
+
+  final String title;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 9),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(
+                color: _configTextSecondary,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          ?trailing,
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsActionRow extends StatelessWidget {
+  const _SettingsActionRow({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 58),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Icon(icon, color: _configTextPrimary, size: 22),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    color: _configTextPrimary,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: _configTextTertiary,
+                size: 24,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1253,6 +2145,7 @@ class _SettingsPage extends StatefulWidget {
     required this.language,
     required this.onConfigChanged,
     required this.onLanguageChanged,
+    required this.onEngineConfigChanged,
     required this.createScenariosClientFuture,
     required this.createNearbyClientFuture,
     required this.activeScenarioId,
@@ -1261,6 +2154,7 @@ class _SettingsPage extends StatefulWidget {
     required this.onGitSettingsChanged,
     required this.onGitSettingsCleared,
     required this.updateService,
+    required this.feedbackService,
     required this.onCheckForUpdates,
     required this.onNearbyStart,
     required this.onNearbyStop,
@@ -1268,16 +2162,17 @@ class _SettingsPage extends StatefulWidget {
     required this.onNearbyScan,
     required this.onNearbyDeletePeer,
     required this.getNearbyPairingDiagnostic,
-    required this.onOpenFeedback,
-    required this.onOpenContact,
     required this.onBack,
+    this.onClose,
     this.initialSection = _SettingsSection.menu,
+    this.initiallyFocusAgentContext = false,
   });
 
   final LlmConfigState initialConfig;
   final AppLanguage language;
   final ValueChanged<LlmConfigState> onConfigChanged;
   final ValueChanged<AppLanguage> onLanguageChanged;
+  final VoidCallback onEngineConfigChanged;
   final Future<NapaxiChatClient> Function() createScenariosClientFuture;
   final Future<NapaxiChatClient> Function() createNearbyClientFuture;
   final String activeScenarioId;
@@ -1286,6 +2181,7 @@ class _SettingsPage extends StatefulWidget {
   final Future<void> Function(DemoGitSettings settings) onGitSettingsChanged;
   final Future<void> Function() onGitSettingsCleared;
   final DemoUpdateService updateService;
+  final DemoFeedbackService feedbackService;
   final VoidCallback onCheckForUpdates;
   final Future<void> Function() onNearbyStart;
   final Future<void> Function() onNearbyStop;
@@ -1293,89 +2189,573 @@ class _SettingsPage extends StatefulWidget {
   final Future<void> Function() onNearbyScan;
   final Future<void> Function(sdk.A2APeer peer) onNearbyDeletePeer;
   final Future<String?> Function() getNearbyPairingDiagnostic;
-  final VoidCallback onOpenFeedback;
-  final VoidCallback onOpenContact;
   final Future<bool> Function() onBack;
+  final VoidCallback? onClose;
   final _SettingsSection initialSection;
+  final bool initiallyFocusAgentContext;
 
   @override
   State<_SettingsPage> createState() => _SettingsPageState();
 }
 
-class _SettingsPageState extends State<_SettingsPage> {
+class _SettingsPageState extends State<_SettingsPage>
+    with SingleTickerProviderStateMixin {
+  static const double _backFlingVelocity = 700;
   late _SettingsSection _section;
+  late LlmConfigState _config;
+  late AppLanguage _language;
+  late bool _focusAgentContext;
+  late final AnimationController _sectionController;
+  final List<_SettingsSection> _sectionStack = [];
+  final GlobalKey<_LlmModelProfilePageState> _modelEditorKey = GlobalKey();
+  final GlobalKey<_FeedbackPageState> _feedbackPageKey = GlobalKey();
+  LlmModelProfile? _editingProfile;
+  ModelCapability? _editingCapability;
+  bool _editingNewModel = false;
   Future<NapaxiChatClient>? _scenariosClientFuture;
+  int? _backSwipePointer;
+  Offset? _backSwipeOrigin;
+  VelocityTracker? _backSwipeVelocityTracker;
+  bool _backSwipeActive = false;
+  bool _backTransitionInFlight = false;
+  final Map<_SettingsSection, bool> _sectionScrollAtTop = {};
 
   @override
   void initState() {
     super.initState();
     _section = widget.initialSection;
+    _config = widget.initialConfig;
+    _language = widget.language;
+    _focusAgentContext = widget.initiallyFocusAgentContext;
     if (_section == _SettingsSection.engines && !_showsEngineSettings) {
       _section = _SettingsSection.menu;
     }
+    if (_section != _SettingsSection.menu) {
+      _sectionStack.add(_SettingsSection.menu);
+    }
+    _sectionScrollAtTop[_section] = true;
+    _sectionController = AnimationController(
+      vsync: this,
+      value: _section == _SettingsSection.menu ? 0 : 1,
+      duration: const Duration(milliseconds: 260),
+      reverseDuration: const Duration(milliseconds: 240),
+    );
   }
 
   @override
   void didUpdateWidget(_SettingsPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialConfig != widget.initialConfig) {
+      _config = widget.initialConfig;
+    }
+    if (oldWidget.language != widget.language) {
+      _language = widget.language;
+    }
+    if (!oldWidget.initiallyFocusAgentContext &&
+        widget.initiallyFocusAgentContext) {
+      _focusAgentContext = true;
+    }
     if (_section == _SettingsSection.engines && !_showsEngineSettings) {
       _section = _SettingsSection.menu;
+      _sectionStack.clear();
+      _sectionScrollAtTop[_SettingsSection.menu] = true;
+      _sectionController.value = 0;
     }
+  }
+
+  @override
+  void dispose() {
+    _sectionController.dispose();
+    super.dispose();
   }
 
   bool get _showsEngineSettings =>
       _normalizeDemoScenarioId(widget.activeScenarioId) ==
       _mobileDevelopmentScenarioId;
 
+  bool get isMenu => _section == _SettingsSection.menu;
+
+  bool get canPullSheetDownFromCurrentContent =>
+      _sectionScrollAtTop[_section] ?? true;
+
   @override
   Widget build(BuildContext context) {
-    final strings = AppStrings.of(context);
-    return Scaffold(
-      backgroundColor: _configPageBackground,
-      appBar: AppBar(
-        title: Text(strings.settingsTitle),
-        backgroundColor: _configPageBackground,
-        foregroundColor: _configTextPrimary,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        leading: BackButton(
-          onPressed: () async {
-            if (_section != _SettingsSection.menu) {
-              setState(() => _section = _SettingsSection.menu);
-              return;
-            }
-            final handled = await widget.onBack();
-            if (handled != false && context.mounted) {
-              Navigator.of(context).pop();
-            }
+    final strings = AppStrings.forLanguage(_language);
+    final backSection = _sectionStack.isEmpty
+        ? _SettingsSection.menu
+        : _sectionStack.last;
+    final backPage = _buildSectionPage(backSection, strings);
+    final detailPage = isMenu ? null : _buildSectionPage(_section, strings);
+    return _AppLanguageScope(
+      language: _language,
+      strings: strings,
+      child: Listener(
+        key: const Key('settings_subpage_gesture_surface'),
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: _handleBackSwipeDown,
+        onPointerMove: _handleBackSwipeMove,
+        onPointerUp: _handleBackSwipeEnd,
+        onPointerCancel: _handleBackSwipeCancel,
+        child: AnimatedBuilder(
+          animation: _sectionController,
+          builder: (context, _) {
+            final progress = _sectionController.value;
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                Transform.translate(
+                  key: const Key('settings_menu_back_transition'),
+                  offset: Offset(
+                    -MediaQuery.sizeOf(context).width * 0.18 * progress,
+                    0,
+                  ),
+                  child: Opacity(
+                    opacity: 1 - (0.16 * progress),
+                    child: IgnorePointer(
+                      ignoring: progress > 0,
+                      child: backPage,
+                    ),
+                  ),
+                ),
+                if (detailPage != null)
+                  Transform.translate(
+                    key: const Key('settings_detail_back_transition'),
+                    offset: Offset(
+                      MediaQuery.sizeOf(context).width * (1 - progress),
+                      0,
+                    ),
+                    child: PhysicalModel(
+                      color: _configPageBackground,
+                      elevation: 16 * (1 - progress),
+                      shadowColor: Colors.black.withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.horizontal(
+                        left: Radius.circular(24 * (1 - progress)),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: detailPage,
+                    ),
+                  ),
+              ],
+            );
           },
         ),
       ),
-      body: _buildBody(strings),
     );
   }
 
-  Widget _buildBody(AppStrings strings) {
-    return switch (_section) {
-      _SettingsSection.menu => _SettingsListPage(
-        activeScenarioId: widget.activeScenarioId,
-        showEngineSettings: _showsEngineSettings,
-        onOpenConfiguration: () =>
-            setState(() => _section = _SettingsSection.configuration),
-        onOpenChannels: () =>
-            setState(() => _section = _SettingsSection.channels),
-        onOpenNearby: () => setState(() => _section = _SettingsSection.nearby),
-        onOpenScenarios: () =>
-            setState(() => _section = _SettingsSection.scenarios),
-        onOpenEngines: () =>
-            setState(() => _section = _SettingsSection.engines),
-        onOpenAbout: () => setState(() => _section = _SettingsSection.about),
+  Widget _buildSectionPage(_SettingsSection section, AppStrings strings) {
+    final body = _buildBody(strings, section);
+    return KeyedSubtree(
+      key: ValueKey<_SettingsSection>(section),
+      child: Scaffold(
+        backgroundColor: _configPageBackground,
+        appBar: AppBar(
+          title: Text(_sectionTitle(strings, section)),
+          backgroundColor: _configPageBackground,
+          foregroundColor: _configTextPrimary,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          automaticallyImplyLeading: false,
+          leading: section == _SettingsSection.menu
+              ? widget.onClose == null
+                    ? BackButton(onPressed: _handleBack)
+                    : null
+              : BackButton(onPressed: _handleBack),
+          actions: [
+            if (section == _SettingsSection.menu && widget.onClose != null)
+              IconButton(
+                key: const Key('settings_bottom_sheet_close_button'),
+                tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
+                onPressed: widget.onClose,
+                icon: const Icon(Icons.close_rounded),
+              ),
+            if (section == _SettingsSection.modelManagement)
+              IconButton(
+                key: const Key('settings_model_management_add_button'),
+                tooltip: strings.addModel,
+                onPressed: _addModel,
+                icon: const Icon(Icons.add_rounded),
+              ),
+            if (section == _SettingsSection.modelEditor)
+              TextButton(
+                key: const Key('save_model_button'),
+                onPressed: () => _modelEditorKey.currentState?.save(),
+                style: TextButton.styleFrom(
+                  foregroundColor: _configTextPrimary,
+                ),
+                child: Text(strings.save),
+              ),
+            const SizedBox(width: 8),
+          ],
+        ),
+        body: NotificationListener<ScrollNotification>(
+          onNotification: (notification) =>
+              _handleSectionScrollNotification(section, notification),
+          child: body,
+        ),
       ),
+    );
+  }
+
+  bool _handleSectionScrollNotification(
+    _SettingsSection section,
+    ScrollNotification notification,
+  ) {
+    if (notification.metrics.axis != Axis.vertical) return false;
+    _sectionScrollAtTop[section] =
+        notification.metrics.pixels <=
+        notification.metrics.minScrollExtent + 0.5;
+    return false;
+  }
+
+  String _sectionTitle(AppStrings strings, _SettingsSection section) {
+    return switch (section) {
+      _SettingsSection.menu => strings.settingsTitle,
+      _SettingsSection.agent =>
+        _language == AppLanguage.chinese ? '智能体' : 'Agent',
+      _SettingsSection.modelManagement =>
+        _language == AppLanguage.chinese ? '模型管理' : 'Model management',
+      _SettingsSection.modelEditor =>
+        _editingNewModel ? strings.addModel : strings.editModel,
+      _SettingsSection.feedback => strings.feedbackTitle,
+      _SettingsSection.contact => strings.contactUs,
+      _SettingsSection.licenses => strings.openSourceLicensesTitle,
+      _SettingsSection.configuration => strings.llmConfigurationTitle,
+      _SettingsSection.channels => _settingsChannelsTitle(context),
+      _SettingsSection.nearby =>
+        _language == AppLanguage.chinese ? '附近' : 'Nearby',
+      _SettingsSection.scenarios => strings.scenariosTitle,
+      _SettingsSection.engines => strings.engineSettingsTitle,
+      _SettingsSection.about => strings.aboutTitle,
+    };
+  }
+
+  void _handleConfigChanged(LlmConfigState config) {
+    setState(() => _config = config);
+    widget.onConfigChanged(config);
+  }
+
+  void _handleLanguageChanged(AppLanguage language) {
+    if (_language == language) return;
+    setState(() => _language = language);
+    widget.onLanguageChanged(language);
+  }
+
+  void _selectModelProfile(ModelCapability capability, String profileId) {
+    final profile = _config.profileById(profileId);
+    if (profile == null || !profile.supports(capability)) return;
+    final selectedByCapability = Map<ModelCapability, String>.of(
+      _config.selectedProfileIdByCapability,
+    );
+    String? selectedProfileId = _config.selectedProfileId;
+    if (capability == ModelCapability.chat) {
+      selectedProfileId = profileId;
+    } else {
+      selectedByCapability[capability] = profileId;
+    }
+    _handleConfigChanged(
+      LlmConfigState(
+        profiles: _config.profiles,
+        selectedProfileId: selectedProfileId,
+        selectedProfileIdByCapability: Map.unmodifiable(selectedByCapability),
+        systemPrompt: _config.systemPrompt,
+        maxToolIterations: _config.maxToolIterations,
+        contextEngine: _config.contextEngine,
+      ),
+    );
+  }
+
+  Future<void> _addModel({ModelCapability? capability}) async {
+    _editingProfile = LlmModelProfile(
+      id: 'model-${DateTime.now().microsecondsSinceEpoch}',
+      name: '',
+    );
+    _editingCapability = capability;
+    _editingNewModel = true;
+    _setSection(_SettingsSection.modelEditor);
+  }
+
+  void _editModel(LlmModelProfile profile) {
+    if (!profile.isUserEditable) return;
+    _editingProfile = profile;
+    _editingCapability = null;
+    _editingNewModel = false;
+    _setSection(_SettingsSection.modelEditor);
+  }
+
+  Future<void> _deleteModel(LlmModelProfile profile) async {
+    if (!profile.isUserEditable) return;
+    final selectedCapabilities = <ModelCapability>[
+      for (final capability in _visibleModelCapabilities)
+        if (_config.selectedProfileFor(capability)?.id == profile.id)
+          capability,
+    ];
+    final chinese = _language == AppLanguage.chinese;
+    final isInUse = selectedCapabilities.isNotEmpty;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _configPageBackground,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Text(chinese ? '删除模型？' : 'Delete model?'),
+        content: Text(
+          isInUse
+              ? chinese
+                    ? '“${profile.displayName}”当前正在使用。删除后，相关能力会自动切换到其他可用模型；如果没有可用模型，将变为未配置。'
+                    : '“${profile.displayName}” is currently in use. Its capabilities will switch to another available model, or become unconfigured if none is available.'
+              : chinese
+              ? '确定删除“${profile.displayName}”吗？此操作不会删除聊天记录。'
+              : 'Delete “${profile.displayName}”? This will not delete any chats.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(chinese ? '取消' : 'Cancel'),
+          ),
+          TextButton(
+            key: const Key('confirm_delete_model_button'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFB42318),
+            ),
+            child: Text(chinese ? '删除' : 'Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final profiles = [
+      for (final existing in _config.profiles)
+        if (existing.id != profile.id) existing,
+    ];
+    final selectedByCapability = Map<ModelCapability, String>.of(
+      _config.selectedProfileIdByCapability,
+    )..removeWhere((_, profileId) => profileId == profile.id);
+    var selectedProfileId = _config.selectedProfileId;
+    if (selectedProfileId == profile.id) {
+      selectedProfileId = profiles
+          .where((item) => item.supports(ModelCapability.chat))
+          .firstOrNull
+          ?.id;
+    }
+    _handleConfigChanged(
+      LlmConfigState(
+        profiles: List.unmodifiable(profiles),
+        selectedProfileId: selectedProfileId,
+        selectedProfileIdByCapability: Map.unmodifiable(selectedByCapability),
+        systemPrompt: _config.systemPrompt,
+        maxToolIterations: _config.maxToolIterations,
+        contextEngine: _config.contextEngine,
+      ),
+    );
+  }
+
+  void _saveModelEditor(LlmModelProfile profile) {
+    if (!_editingNewModel && _editingProfile?.isUserEditable == false) {
+      unawaited(_animateBackToMenu());
+      return;
+    }
+    final profiles = _editingNewModel
+        ? [..._config.profiles, profile]
+        : [
+            for (final existing in _config.profiles)
+              existing.id == profile.id ? profile : existing,
+          ];
+    final selectedByCapability = Map<ModelCapability, String>.of(
+      _config.selectedProfileIdByCapability,
+    );
+    var selectedProfileId = _config.selectedProfileId;
+    if (_editingNewModel) {
+      final targetCapability = _editingCapability ?? ModelCapability.chat;
+      if (profile.supports(targetCapability)) {
+        if (targetCapability == ModelCapability.chat) {
+          selectedProfileId = profile.id;
+        } else {
+          selectedByCapability[targetCapability] = profile.id;
+        }
+      }
+    } else {
+      selectedByCapability.removeWhere((capability, profileId) {
+        return profileId == profile.id && !profile.supports(capability);
+      });
+      if (selectedProfileId == profile.id &&
+          !profile.supports(ModelCapability.chat)) {
+        selectedProfileId = profiles
+            .where((item) => item.supports(ModelCapability.chat))
+            .firstOrNull
+            ?.id;
+      }
+    }
+    _handleConfigChanged(
+      LlmConfigState(
+        profiles: List.unmodifiable(profiles),
+        selectedProfileId: selectedProfileId,
+        selectedProfileIdByCapability: Map.unmodifiable(selectedByCapability),
+        systemPrompt: _config.systemPrompt,
+        maxToolIterations: _config.maxToolIterations,
+        contextEngine: _config.contextEngine,
+      ),
+    );
+    unawaited(_animateBackToMenu());
+  }
+
+  void _setSection(_SettingsSection section) {
+    if (_section == section) return;
+    if (section == _SettingsSection.menu) {
+      unawaited(_animateBackToMenu());
+      return;
+    }
+    setState(() {
+      _sectionStack.add(_section);
+      _section = section;
+      _sectionScrollAtTop.putIfAbsent(section, () => true);
+    });
+    _sectionController.forward(from: 0);
+  }
+
+  void _handleBackSwipeDown(PointerDownEvent event) {
+    if (isMenu ||
+        _backSwipePointer != null ||
+        _backTransitionInFlight ||
+        _sectionController.isAnimating) {
+      return;
+    }
+    _backSwipePointer = event.pointer;
+    _backSwipeOrigin = event.position;
+    _backSwipeActive = false;
+    _backSwipeVelocityTracker = VelocityTracker.withKind(event.kind)
+      ..addPosition(event.timeStamp, event.position);
+  }
+
+  void _handleBackSwipeMove(PointerMoveEvent event) {
+    if (event.pointer != _backSwipePointer || isMenu) {
+      return;
+    }
+    _backSwipeVelocityTracker?.addPosition(event.timeStamp, event.position);
+    final origin = _backSwipeOrigin;
+    if (origin == null) return;
+    final delta = event.position - origin;
+    if (!_backSwipeActive) {
+      if (delta.dx <= 8 || delta.dx <= delta.dy.abs() * 1.15) return;
+      _backSwipeActive = true;
+    }
+    final width = MediaQuery.sizeOf(context).width;
+    _sectionController.value = (1 - delta.dx / width).clamp(0.0, 1.0);
+  }
+
+  void _handleBackSwipeEnd(PointerEvent event) {
+    if (event.pointer != _backSwipePointer) return;
+    _backSwipeVelocityTracker?.addPosition(event.timeStamp, event.position);
+    final velocity =
+        _backSwipeVelocityTracker?.getVelocity().pixelsPerSecond.dx ?? 0.0;
+    final wasDragging = _backSwipeActive;
+    _resetBackSwipe();
+    if (!wasDragging) return;
+    if (velocity > _backFlingVelocity || _sectionController.value <= 0.5) {
+      unawaited(_animateBackToMenu());
+    } else {
+      unawaited(_sectionController.animateTo(1, curve: Curves.easeOutCubic));
+    }
+  }
+
+  void _handleBackSwipeCancel(PointerEvent event) {
+    if (event.pointer != _backSwipePointer) return;
+    final wasDragging = _backSwipeActive;
+    _resetBackSwipe();
+    if (wasDragging) {
+      unawaited(_sectionController.animateTo(1, curve: Curves.easeOutCubic));
+    }
+  }
+
+  void _resetBackSwipe() {
+    _backSwipePointer = null;
+    _backSwipeOrigin = null;
+    _backSwipeVelocityTracker = null;
+    _backSwipeActive = false;
+  }
+
+  Future<void> _animateBackToMenu() async {
+    if (isMenu || _backTransitionInFlight) return;
+    if (_section == _SettingsSection.agent) {
+      _focusAgentContext = false;
+    }
+    _backTransitionInFlight = true;
+    await _sectionController.animateBack(0, curve: Curves.easeOutCubic);
+    if (mounted && _sectionController.isDismissed) {
+      final target = _sectionStack.isEmpty
+          ? _SettingsSection.menu
+          : _sectionStack.removeLast();
+      setState(() {
+        _section = target;
+      });
+      _sectionController.value = target == _SettingsSection.menu ? 0 : 1;
+    }
+    _backTransitionInFlight = false;
+  }
+
+  Future<void> _handleBack() async {
+    if (_section != _SettingsSection.menu) {
+      await _animateBackToMenu();
+      return;
+    }
+    final handled = await widget.onBack();
+    if (handled != false && mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  Widget _buildBody(AppStrings strings, _SettingsSection section) {
+    return switch (section) {
+      _SettingsSection.menu => _SettingsListPage(
+        config: _config,
+        language: _language,
+        onSelectModel: _selectModelProfile,
+        onAddModel: (capability) =>
+            unawaited(_addModel(capability: capability)),
+        onOpenModelManagement: () =>
+            _setSection(_SettingsSection.modelManagement),
+        onOpenAgent: () => _setSection(_SettingsSection.agent),
+        onLanguageChanged: _handleLanguageChanged,
+        onOpenFeedback: () => _setSection(_SettingsSection.feedback),
+        onOpenAbout: () => _setSection(_SettingsSection.about),
+      ),
+      _SettingsSection.agent => _AgentSettingsPage(
+        config: _config,
+        onConfigChanged: _handleConfigChanged,
+        initiallyFocusContext: _focusAgentContext,
+      ),
+      _SettingsSection.modelManagement => _ModelManagementPage(
+        config: _config,
+        language: _language,
+        onEditModel: _editModel,
+        onDeleteModel: _deleteModel,
+      ),
+      _SettingsSection.modelEditor =>
+        _editingProfile == null
+            ? const SizedBox.shrink()
+            : _LlmModelProfilePage(
+                key: _modelEditorKey,
+                initialProfile: _editingProfile!,
+                initialCapability: _editingCapability,
+                embedded: true,
+                onSaved: _saveModelEditor,
+              ),
+      _SettingsSection.feedback => _FeedbackPage(
+        key: _feedbackPageKey,
+        updateService: widget.updateService,
+        feedbackService: widget.feedbackService,
+        onOpenContact: () => _setSection(_SettingsSection.contact),
+        embedded: true,
+      ),
+      _SettingsSection.contact => const _ContactPage(embedded: true),
+      _SettingsSection.licenses => const _SettingsLicensesPage(),
       _SettingsSection.configuration => _LlmConfigPage(
-        initialConfig: widget.initialConfig,
-        language: widget.language,
-        onConfigChanged: widget.onConfigChanged,
-        onLanguageChanged: widget.onLanguageChanged,
+        initialConfig: _config,
+        language: _language,
+        onConfigChanged: _handleConfigChanged,
+        onLanguageChanged: _handleLanguageChanged,
         embedded: true,
       ),
       _SettingsSection.channels => _ChannelSettingsPage(
@@ -1400,22 +2780,24 @@ class _SettingsPageState extends State<_SettingsPage> {
         onGitSettingsCleared: widget.onGitSettingsCleared,
         embedded: true,
         onBack: () async {
-          setState(() => _section = _SettingsSection.menu);
+          _setSection(_SettingsSection.menu);
           return false;
         },
       ),
       _SettingsSection.engines => _EngineSettingsPage(
+        clientFuture: widget.createScenariosClientFuture(),
+        onEngineConfigChanged: widget.onEngineConfigChanged,
         embedded: true,
         onBack: () async {
-          setState(() => _section = _SettingsSection.menu);
+          _setSection(_SettingsSection.menu);
           return false;
         },
       ),
       _SettingsSection.about => _AboutPage(
         updateService: widget.updateService,
         onCheckForUpdates: widget.onCheckForUpdates,
-        onOpenFeedback: widget.onOpenFeedback,
-        onOpenContact: widget.onOpenContact,
+        onOpenContact: () => _setSection(_SettingsSection.contact),
+        onOpenLicenses: () => _setSection(_SettingsSection.licenses),
         embedded: true,
       ),
     };
@@ -2063,7 +3445,11 @@ class _ChannelProviderCard extends StatelessWidget {
                                       zh: '检测连接',
                                       en: 'Check connection',
                                     )
-                                  : _channelText(context, zh: '刷新', en: 'Refresh')
+                                  : _channelText(
+                                      context,
+                                      zh: '刷新',
+                                      en: 'Refresh',
+                                    )
                             : _channelText(context, zh: '连接', en: 'Connect'),
                       ),
                     ),
@@ -3086,92 +4472,991 @@ bool _isNearbyTrustedPeer(sdk.A2APeer peer) {
 
 class _SettingsListPage extends StatelessWidget {
   const _SettingsListPage({
-    required this.activeScenarioId,
-    required this.showEngineSettings,
-    required this.onOpenConfiguration,
-    required this.onOpenChannels,
-    required this.onOpenNearby,
-    required this.onOpenScenarios,
-    required this.onOpenEngines,
+    required this.config,
+    required this.language,
+    required this.onSelectModel,
+    required this.onAddModel,
+    required this.onOpenModelManagement,
+    required this.onOpenAgent,
+    required this.onLanguageChanged,
+    required this.onOpenFeedback,
     required this.onOpenAbout,
   });
 
-  final String activeScenarioId;
-  final bool showEngineSettings;
-  final VoidCallback onOpenConfiguration;
-  final VoidCallback onOpenChannels;
-  final VoidCallback onOpenNearby;
-  final VoidCallback onOpenScenarios;
-  final VoidCallback onOpenEngines;
+  final LlmConfigState config;
+  final AppLanguage language;
+  final void Function(ModelCapability capability, String profileId)
+  onSelectModel;
+  final ValueChanged<ModelCapability> onAddModel;
+  final VoidCallback onOpenModelManagement;
+  final VoidCallback onOpenAgent;
+  final ValueChanged<AppLanguage> onLanguageChanged;
+  final VoidCallback onOpenFeedback;
   final VoidCallback onOpenAbout;
 
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
+    final chinese = language == AppLanguage.chinese;
     return ListView(
       key: const Key('settings_list_page'),
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 40),
       children: [
-        _SettingsListTile(
-          key: const Key('settings_basic_item'),
-          icon: Icons.tune_rounded,
-          title: strings.llmConfigurationTitle,
-          subtitle: _settingsBasicSubtitle(context),
-          onTap: onOpenConfiguration,
+        _SettingsGroupTitle(title: chinese ? '模型' : 'Models'),
+        _SettingsGroupCard(
+          children: [
+            _ModelSlotRow(
+              capability: ModelCapability.chat,
+              icon: Icons.chat_bubble_outline_rounded,
+              title: chinese ? '主力推理' : 'Primary reasoning',
+              config: config,
+              onSelected: onSelectModel,
+              onAddModel: onAddModel,
+            ),
+            _ModelSlotRow(
+              capability: ModelCapability.imageAnalysis,
+              icon: Icons.image_search_outlined,
+              title: chinese ? '图片理解' : 'Image understanding',
+              config: config,
+              onSelected: onSelectModel,
+              onAddModel: onAddModel,
+            ),
+            _ModelSlotRow(
+              capability: ModelCapability.imageGeneration,
+              icon: Icons.brush_outlined,
+              title: chinese ? '图片生成' : 'Image generation',
+              config: config,
+              onSelected: onSelectModel,
+              onAddModel: onAddModel,
+            ),
+            _ModelSlotRow(
+              capability: ModelCapability.videoGeneration,
+              icon: Icons.video_camera_back_outlined,
+              title: chinese ? '视频生成' : 'Video generation',
+              config: config,
+              onSelected: onSelectModel,
+              onAddModel: onAddModel,
+            ),
+            _SettingsActionRow(
+              key: const Key('settings_model_management_item'),
+              icon: Icons.tune_rounded,
+              title: chinese ? '模型管理' : 'Model management',
+              onTap: onOpenModelManagement,
+            ),
+          ],
         ),
-        const SizedBox(height: 10),
-        _SettingsListTile(
-          key: const Key('settings_scenarios_item'),
-          icon: Icons.dashboard_customize_rounded,
-          title: strings.scenariosTitle,
-          subtitle: _settingsScenarioSubtitle(
-            context,
-            _scenarioLabelForId(strings, activeScenarioId),
-          ),
-          onTap: onOpenScenarios,
+        const SizedBox(height: 26),
+        _SettingsGroupTitle(title: chinese ? '应用设置' : 'App settings'),
+        _SettingsGroupCard(
+          children: [
+            _SettingsActionRow(
+              key: const Key('settings_agent_item'),
+              icon: Icons.smart_toy_outlined,
+              title: chinese ? '智能体' : 'Agent',
+              onTap: onOpenAgent,
+            ),
+            _SettingsLanguageRow(
+              language: language,
+              onChanged: onLanguageChanged,
+            ),
+          ],
         ),
-        const SizedBox(height: 10),
-        if (showEngineSettings) ...[
-          _SettingsListTile(
-            key: const Key('settings_engines_item'),
-            icon: Icons.code_rounded,
-            title: strings.engineSettingsTitle,
-            subtitle: strings.engineSettingsDescription,
-            onTap: onOpenEngines,
-          ),
-          const SizedBox(height: 10),
-        ],
-        _SettingsListTile(
-          key: const Key('settings_channels_item'),
-          icon: Icons.hub_outlined,
-          title: _settingsChannelsTitle(context),
-          subtitle: _settingsChannelsSubtitle(context),
-          onTap: onOpenChannels,
-        ),
-        const SizedBox(height: 10),
-        _SettingsListTile(
-          key: const Key('settings_nearby_item'),
-          icon: Icons.sensors_rounded,
-          title: '附近',
-          subtitle: '发现并配对附近设备',
-          onTap: onOpenNearby,
-        ),
-        const SizedBox(height: 10),
-        _SettingsListTile(
-          key: const Key('settings_about_item'),
-          icon: Icons.info_outline_rounded,
-          title: strings.aboutTitle,
-          subtitle: _settingsAboutSubtitle(context),
-          onTap: onOpenAbout,
+        const SizedBox(height: 26),
+        _SettingsGroupTitle(title: chinese ? '获取帮助' : 'Get help'),
+        _SettingsGroupCard(
+          children: [
+            _SettingsActionRow(
+              key: const Key('settings_feedback_item'),
+              icon: Icons.feedback_outlined,
+              title: strings.feedbackTitle,
+              onTap: onOpenFeedback,
+            ),
+            _SettingsActionRow(
+              key: const Key('settings_about_item'),
+              icon: Icons.info_outline_rounded,
+              title: strings.aboutTitle,
+              onTap: onOpenAbout,
+            ),
+          ],
         ),
       ],
     );
   }
 }
 
-class _EngineSettingsPage extends StatefulWidget {
-  const _EngineSettingsPage({this.embedded = false, this.onBack});
+enum _ModelManagementAction { edit, delete }
 
+class _ModelManagementPage extends StatelessWidget {
+  const _ModelManagementPage({
+    required this.config,
+    required this.language,
+    required this.onEditModel,
+    required this.onDeleteModel,
+  });
+
+  final LlmConfigState config;
+  final AppLanguage language;
+  final ValueChanged<LlmModelProfile> onEditModel;
+  final Future<void> Function(LlmModelProfile profile) onDeleteModel;
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese = language == AppLanguage.chinese;
+    final profiles = config.profiles;
+    return ListView(
+      key: const Key('settings_model_management_page'),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 40),
+      children: [
+        if (profiles.isEmpty)
+          Padding(
+            key: const Key('settings_model_management_empty'),
+            padding: const EdgeInsets.fromLTRB(24, 72, 24, 0),
+            child: Column(
+              children: [
+                const Icon(
+                  Icons.tune_rounded,
+                  size: 34,
+                  color: _configTextTertiary,
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  chinese ? '还没有配置模型' : 'No models configured',
+                  style: const TextStyle(
+                    color: _configTextPrimary,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  chinese
+                      ? '点击右上角的加号新增模型'
+                      : 'Tap the plus button to add a model.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: _configTextSecondary,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          )
+        else ...[
+          _SettingsGroupTitle(title: chinese ? '已配置模型' : 'Configured models'),
+          _SettingsGroupCard(
+            children: [
+              for (final profile in profiles)
+                _ModelManagementRow(
+                  profile: profile,
+                  language: language,
+                  inUse: _visibleModelCapabilities.any(
+                    (capability) =>
+                        config.selectedProfileFor(capability)?.id == profile.id,
+                  ),
+                  onEdit: () => onEditModel(profile),
+                  onDelete: () => unawaited(onDeleteModel(profile)),
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _ModelManagementRow extends StatelessWidget {
+  const _ModelManagementRow({
+    required this.profile,
+    required this.language,
+    required this.inUse,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final LlmModelProfile profile;
+  final AppLanguage language;
+  final bool inUse;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese = language == AppLanguage.chinese;
+    final subtitle = profile.subtitle;
+    return InkWell(
+      key: Key('settings_model_profile_${profile.id}'),
+      onTap: profile.isUserEditable ? onEdit : null,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 66),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 9, 8, 9),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.memory_outlined,
+                color: _configTextPrimary,
+                size: 22,
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            profile.displayName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: _configTextPrimary,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        if (inUse) ...[
+                          const SizedBox(width: 8),
+                          Text(
+                            chinese ? '使用中' : 'In use',
+                            style: const TextStyle(
+                              color: _configTextSecondary,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    if (subtitle.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: _configTextSecondary,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (!profile.isUserEditable)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16),
+                  child: Icon(
+                    Icons.lock_outline_rounded,
+                    color: _configTextSecondary,
+                  ),
+                )
+              else
+                PopupMenuButton<_ModelManagementAction>(
+                  key: Key('settings_model_profile_menu_${profile.id}'),
+                  tooltip: MaterialLocalizations.of(context).showMenuTooltip,
+                  color: _configSurface,
+                  surfaceTintColor: Colors.transparent,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  icon: const Icon(
+                    Icons.more_horiz_rounded,
+                    color: _configTextSecondary,
+                  ),
+                  onSelected: (action) {
+                    switch (action) {
+                      case _ModelManagementAction.edit:
+                        onEdit();
+                      case _ModelManagementAction.delete:
+                        onDelete();
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: _ModelManagementAction.edit,
+                      child: Row(
+                        children: [
+                          const Icon(Icons.edit_outlined, size: 20),
+                          const SizedBox(width: 12),
+                          Text(chinese ? '编辑' : 'Edit'),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: _ModelManagementAction.delete,
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.delete_outline_rounded,
+                            size: 20,
+                            color: Color(0xFFB42318),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            chinese ? '删除' : 'Delete',
+                            style: const TextStyle(color: Color(0xFFB42318)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ModelSlotRow extends StatelessWidget {
+  const _ModelSlotRow({
+    required this.capability,
+    required this.icon,
+    required this.title,
+    required this.config,
+    required this.onSelected,
+    required this.onAddModel,
+  });
+
+  final ModelCapability capability;
+  final IconData icon;
+  final String title;
+  final LlmConfigState config;
+  final void Function(ModelCapability capability, String profileId) onSelected;
+  final ValueChanged<ModelCapability> onAddModel;
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese =
+        _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    final addModelLabel = AppStrings.of(context).addModel;
+    final profiles = config.profiles
+        .where((profile) => profile.supports(capability))
+        .toList(growable: false);
+    final selectedProfile = config.selectedProfileFor(capability);
+    final selectedId =
+        profiles.any((profile) => profile.id == selectedProfile?.id)
+        ? selectedProfile?.id
+        : null;
+    final dropdownWidth = math.min(
+      MediaQuery.sizeOf(context).width * 0.42,
+      184.0,
+    );
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 58),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 10, 8),
+        child: Row(
+          children: [
+            Icon(icon, color: _configTextPrimary, size: 22),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  color: _configTextPrimary,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: dropdownWidth,
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  key: Key('settings_model_slot_${capability.name}'),
+                  value: selectedId,
+                  isExpanded: true,
+                  isDense: true,
+                  alignment: AlignmentDirectional.centerEnd,
+                  borderRadius: BorderRadius.circular(16),
+                  icon: const Icon(
+                    Icons.expand_more_rounded,
+                    color: _configTextTertiary,
+                  ),
+                  hint: Align(
+                    alignment: AlignmentDirectional.centerEnd,
+                    child: Text(
+                      chinese ? '未配置' : 'Not configured',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: _configTextTertiary,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                  selectedItemBuilder: (context) => [
+                    for (final profile in profiles)
+                      Align(
+                        alignment: AlignmentDirectional.centerEnd,
+                        child: Text(
+                          profile.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: _configTextSecondary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    Align(
+                      alignment: AlignmentDirectional.centerEnd,
+                      child: Text(
+                        addModelLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: _configTextSecondary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                  items: [
+                    for (final profile in profiles)
+                      DropdownMenuItem<String>(
+                        value: profile.id,
+                        child: Text(
+                          profile.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    DropdownMenuItem<String>(
+                      key: Key(
+                        'settings_model_slot_${capability.name}_add_model',
+                      ),
+                      value: '',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.add_rounded, size: 18),
+                          const SizedBox(width: 8),
+                          Text(addModelLabel),
+                        ],
+                      ),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) return;
+                    if (value.isEmpty) {
+                      onAddModel(capability);
+                      return;
+                    }
+                    onSelected(capability, value);
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsLanguageRow extends StatelessWidget {
+  const _SettingsLanguageRow({required this.language, required this.onChanged});
+
+  final AppLanguage language;
+  final ValueChanged<AppLanguage> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese =
+        _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 58),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 10, 8),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.language_rounded,
+              color: _configTextPrimary,
+              size: 22,
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(
+                chinese ? '语言' : 'Language',
+                style: const TextStyle(
+                  color: _configTextPrimary,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            DropdownButtonHideUnderline(
+              child: DropdownButton<AppLanguage>(
+                key: const Key('settings_language_dropdown'),
+                value: language,
+                isDense: true,
+                borderRadius: BorderRadius.circular(16),
+                icon: const Icon(
+                  Icons.expand_more_rounded,
+                  color: _configTextTertiary,
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: AppLanguage.chinese,
+                    child: Text('简体中文'),
+                  ),
+                  DropdownMenuItem(
+                    value: AppLanguage.english,
+                    child: Text('English'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value != null) onChanged(value);
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentSettingsPage extends StatefulWidget {
+  const _AgentSettingsPage({
+    required this.config,
+    required this.onConfigChanged,
+    this.initiallyFocusContext = false,
+  });
+
+  final LlmConfigState config;
+  final ValueChanged<LlmConfigState> onConfigChanged;
+  final bool initiallyFocusContext;
+
+  @override
+  State<_AgentSettingsPage> createState() => _AgentSettingsPageState();
+}
+
+class _AgentSettingsPageState extends State<_AgentSettingsPage> {
+  late final TextEditingController _maxRoundsController;
+  late final TextEditingController _userPromptController;
+  late final TextEditingController _contextWindowController;
+  late final TextEditingController _responseReserveController;
+  final GlobalKey _contextSectionKey = GlobalKey();
+  late String _contextWindowPreset;
+  late String _responseReservePreset;
+
+  @override
+  void initState() {
+    super.initState();
+    _maxRoundsController = TextEditingController(
+      text: widget.config.maxToolIterations.toString(),
+    );
+    _userPromptController = TextEditingController(
+      text: widget.config.systemPrompt,
+    );
+    final contextEngine = widget.config.contextEngine;
+    _contextWindowPreset = _presetForTokens(
+      contextEngine.contextWindowTokens,
+      _contextWindowPresetTokens,
+    );
+    _responseReservePreset = _presetForTokens(
+      contextEngine.responseReserveTokens,
+      _responseReservePresetTokens,
+    );
+    _contextWindowController = TextEditingController(
+      text: _contextWindowPreset == _tokenPresetCustom
+          ? contextEngine.contextWindowTokens?.toString() ?? ''
+          : '',
+    );
+    _responseReserveController = TextEditingController(
+      text: _responseReservePreset == _tokenPresetCustom
+          ? contextEngine.responseReserveTokens?.toString() ?? ''
+          : '',
+    );
+    if (widget.initiallyFocusContext) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final sectionContext = _contextSectionKey.currentContext;
+        if (!mounted || sectionContext == null) return;
+        Scrollable.ensureVisible(
+          sectionContext,
+          alignment: 0.06,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
+        );
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _maxRoundsController.dispose();
+    _userPromptController.dispose();
+    _contextWindowController.dispose();
+    _responseReserveController.dispose();
+    super.dispose();
+  }
+
+  int get _maxRounds {
+    final parsed = int.tryParse(_maxRoundsController.text.trim());
+    if (parsed == null) return 50;
+    if (parsed < 0) return -1;
+    if (parsed == 0) return 0;
+    return parsed < 2 ? 2 : parsed;
+  }
+
+  int? get _contextWindowTokens => _tokensForPreset(
+    _contextWindowPreset,
+    _contextWindowController.text,
+    _contextWindowPresetTokens,
+  );
+
+  int? get _responseReserveTokens => _tokensForPreset(
+    _responseReservePreset,
+    _responseReserveController.text,
+    _responseReservePresetTokens,
+  );
+
+  sdk.ContextEngineConfig get _contextEngine {
+    final current = widget.config.contextEngine;
+    return sdk.ContextEngineConfig(
+      enabled: current.enabled,
+      engine: current.engine,
+      triggerRatio: current.triggerRatio,
+      targetRatio: current.targetRatio,
+      protectHeadMessages: current.protectHeadMessages,
+      protectTailMessages: current.protectTailMessages,
+      contextWindowTokens: _contextWindowTokens,
+      responseReserveTokens: _responseReserveTokens,
+      compactionStrategy: current.compactionStrategy,
+      compactionModel: current.compactionModel,
+      compactionTimeoutMs: current.compactionTimeoutMs,
+      preCompactionMemoryFlush: current.preCompactionMemoryFlush,
+    );
+  }
+
+  void _emitChanged() {
+    widget.onConfigChanged(
+      LlmConfigState(
+        profiles: widget.config.profiles,
+        selectedProfileId: widget.config.selectedProfileId,
+        selectedProfileIdByCapability:
+            widget.config.selectedProfileIdByCapability,
+        systemPrompt: _userPromptController.text.trim(),
+        maxToolIterations: _maxRounds,
+        contextEngine: _contextEngine,
+      ),
+    );
+  }
+
+  Future<void> _showContextHelp(bool chinese) {
+    return showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      backgroundColor: _configPageBackground,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => Padding(
+        key: const Key('context_settings_help_sheet'),
+        padding: const EdgeInsets.fromLTRB(22, 0, 22, 30),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              chinese ? '上下文设置' : 'Context settings',
+              style: const TextStyle(
+                color: _configTextPrimary,
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 20),
+            _ContextSettingsHelpItem(
+              title: chinese ? '自动' : 'Auto',
+              description: chinese
+                  ? '跟随当前主力推理模型；无法识别模型上限时使用 128K。'
+                  : 'Follows the active reasoning model and uses 128K when its limit cannot be identified.',
+            ),
+            const SizedBox(height: 18),
+            _ContextSettingsHelpItem(
+              title: chinese ? '上下文长度' : 'Context length',
+              description: chinese
+                  ? '控制系统提示词、聊天记录和工具内容可共同使用的上下文预算。'
+                  : 'Controls the shared context budget for system prompts, chat history, and tool content.',
+            ),
+            const SizedBox(height: 18),
+            _ContextSettingsHelpItem(
+              title: chinese ? '回复预留' : 'Response reserve',
+              description: chinese
+                  ? '提前为模型回复保留的 Token；预留越多，可用于输入内容的空间越少。'
+                  : 'Tokens reserved for the model response. A larger reserve leaves less room for input.',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
+    final chinese =
+        _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    return ListView(
+      key: const Key('agent_settings_page'),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+      children: [
+        _SettingsGroupCard(
+          children: [
+            _AgentSettingsField(
+              key: const Key('max_execution_rounds_field'),
+              label: chinese ? '最大执行轮次' : 'Maximum execution rounds',
+              controller: _maxRoundsController,
+              keyboardType: const TextInputType.numberWithOptions(signed: true),
+              onChanged: (_) => _emitChanged(),
+            ),
+            _AgentSettingsField(
+              key: const Key('user_prompt_field'),
+              label: chinese ? '用户提示词' : 'User prompt',
+              hintText: chinese
+                  ? '输入希望智能体始终遵循的提示词'
+                  : 'Instructions the agent should always follow',
+              controller: _userPromptController,
+              minLines: 4,
+              maxLines: 8,
+              onChanged: (_) => _emitChanged(),
+            ),
+          ],
+        ),
+        const SizedBox(height: 26),
+        _SettingsGroupTitle(
+          key: _contextSectionKey,
+          title: strings.contextAdvancedTitle,
+          trailing: IconButton(
+            key: const Key('context_settings_help_button'),
+            tooltip: chinese ? '查看上下文说明' : 'About context settings',
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+            onPressed: () => _showContextHelp(chinese),
+            icon: const Icon(
+              Icons.help_outline_rounded,
+              size: 19,
+              color: _configTextSecondary,
+            ),
+          ),
+        ),
+        _SettingsGroupCard(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  DropdownButtonFormField<String>(
+                    key: const Key('context_window_preset_field'),
+                    initialValue: _contextWindowPreset,
+                    decoration: _configInputDecoration(
+                      labelText: strings.contextWindowLabel,
+                    ),
+                    items: [
+                      for (final value in const [
+                        _tokenPresetAuto,
+                        _tokenPreset128k,
+                        _tokenPreset200k,
+                        _tokenPreset1m,
+                        _tokenPresetCustom,
+                      ])
+                        DropdownMenuItem<String>(
+                          value: value,
+                          child: Text(_tokenPresetLabel(context, value)),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() => _contextWindowPreset = value);
+                      _emitChanged();
+                    },
+                  ),
+                  if (_contextWindowPreset == _tokenPresetCustom) ...[
+                    const SizedBox(height: 12),
+                    _ConfigField(
+                      key: const Key('context_window_custom_field'),
+                      controller: _contextWindowController,
+                      label: strings.contextWindowCustomLabel,
+                      hintText: strings.contextWindowCustomHint,
+                      keyboardType: TextInputType.number,
+                      textInputAction: TextInputAction.next,
+                      onChanged: (_) => _emitChanged(),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    key: const Key('response_reserve_preset_field'),
+                    initialValue: _responseReservePreset,
+                    decoration: _configInputDecoration(
+                      labelText: strings.responseReserveLabel,
+                    ),
+                    items: [
+                      for (final value in const [
+                        _tokenPresetAuto,
+                        _tokenPreset4k,
+                        _tokenPreset8k,
+                        _tokenPresetCustom,
+                      ])
+                        DropdownMenuItem<String>(
+                          value: value,
+                          child: Text(_tokenPresetLabel(context, value)),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() => _responseReservePreset = value);
+                      _emitChanged();
+                    },
+                  ),
+                  if (_responseReservePreset == _tokenPresetCustom) ...[
+                    const SizedBox(height: 12),
+                    _ConfigField(
+                      key: const Key('response_reserve_custom_field'),
+                      controller: _responseReserveController,
+                      label: strings.responseReserveCustomLabel,
+                      hintText: strings.responseReserveCustomHint,
+                      keyboardType: TextInputType.number,
+                      textInputAction: TextInputAction.next,
+                      onChanged: (_) => _emitChanged(),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _ContextSettingsHelpItem extends StatelessWidget {
+  const _ContextSettingsHelpItem({
+    required this.title,
+    required this.description,
+  });
+
+  final String title;
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(
+            color: _configTextPrimary,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 5),
+        Text(
+          description,
+          style: const TextStyle(
+            color: _configTextSecondary,
+            fontSize: 14,
+            height: 1.45,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _AgentSettingsField extends StatelessWidget {
+  const _AgentSettingsField({
+    super.key,
+    required this.label,
+    required this.controller,
+    required this.onChanged,
+    this.hintText,
+    this.keyboardType,
+    this.minLines,
+    this.maxLines = 1,
+  });
+
+  final String label;
+  final TextEditingController controller;
+  final ValueChanged<String> onChanged;
+  final String? hintText;
+  final TextInputType? keyboardType;
+  final int? minLines;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: _configTextPrimary,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: controller,
+            keyboardType: keyboardType,
+            minLines: minLines,
+            maxLines: maxLines,
+            onChanged: onChanged,
+            decoration: InputDecoration(
+              hintText: hintText,
+              filled: true,
+              fillColor: _configPageBackground,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 13,
+                vertical: 12,
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: _configBorder),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EngineSettingsPage extends StatefulWidget {
+  const _EngineSettingsPage({
+    required this.clientFuture,
+    required this.onEngineConfigChanged,
+    this.embedded = false,
+    this.onBack,
+  });
+
+  final Future<NapaxiChatClient> clientFuture;
+  final VoidCallback onEngineConfigChanged;
   final bool embedded;
   final Future<bool> Function()? onBack;
 
@@ -3184,18 +5469,11 @@ class _EngineSettingsPageState extends State<_EngineSettingsPage> {
   final _ccKeyCtrl = TextEditingController();
   final _ccBaseUrlCtrl = TextEditingController();
   final _ccModelCtrl = TextEditingController();
-  final _codexKeyCtrl = TextEditingController();
-  final _codexBaseUrlCtrl = TextEditingController();
-  final _codexModelCtrl = TextEditingController();
   bool _ccKeyObscured = true;
-  bool _codexKeyObscured = true;
 
   List<String> _ccModels = const [];
-  List<String> _codexModels = const [];
   bool _ccTesting = false;
   bool _ccFetching = false;
-  bool _codexTesting = false;
-  bool _codexFetching = false;
 
   @override
   void initState() {
@@ -3205,23 +5483,16 @@ class _EngineSettingsPageState extends State<_EngineSettingsPage> {
 
   Future<void> _loadAll() async {
     const ccSpec = _CliEngineSpec.cc;
-    const codexSpec = _CliEngineSpec.codex;
     final results = await Future.wait([
       _store.read(key: ccSpec.apiKeyStorageKey),
       _store.read(key: ccSpec.baseUrlStorageKey),
       _store.read(key: ccSpec.modelStorageKey),
-      _store.read(key: codexSpec.apiKeyStorageKey),
-      _store.read(key: codexSpec.baseUrlStorageKey),
-      _store.read(key: codexSpec.modelStorageKey),
     ]);
     if (!mounted) return;
     setState(() {
       if (results[0] != null) _ccKeyCtrl.text = results[0]!;
       if (results[1] != null) _ccBaseUrlCtrl.text = results[1]!;
       if (results[2] != null) _ccModelCtrl.text = results[2]!;
-      if (results[3] != null) _codexKeyCtrl.text = results[3]!;
-      if (results[4] != null) _codexBaseUrlCtrl.text = results[4]!;
-      if (results[5] != null) _codexModelCtrl.text = results[5]!;
     });
   }
 
@@ -3245,16 +5516,6 @@ class _EngineSettingsPageState extends State<_EngineSettingsPage> {
       _save(spec.baseUrlStorageKey, baseUrl),
       _save(spec.modelStorageKey, model),
     ]);
-    // Write Codex config into sandbox so `codex app-server` picks it up.
-    if (spec.id == 'codex' && apiKey.trim().isNotEmpty) {
-      try {
-        await _CliEngineBridge.writeCodexConfig(
-          apiKey: apiKey.trim(),
-          baseUrl: baseUrl,
-          model: model,
-        );
-      } catch (_) {}
-    }
     // Write CC config into sandbox so Claude Code picks it up.
     if (spec.id == 'cc' && apiKey.trim().isNotEmpty) {
       try {
@@ -3265,6 +5526,7 @@ class _EngineSettingsPageState extends State<_EngineSettingsPage> {
         );
       } catch (_) {}
     }
+    widget.onEngineConfigChanged();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -3275,9 +5537,7 @@ class _EngineSettingsPageState extends State<_EngineSettingsPage> {
     }
   }
 
-  bool _isBusy(String engineId) => engineId == 'cc'
-      ? (_ccTesting || _ccFetching)
-      : (_codexTesting || _codexFetching);
+  bool _isBusy(String _) => _ccTesting || _ccFetching;
 
   void _setBusy(
     String engineId, {
@@ -3285,24 +5545,13 @@ class _EngineSettingsPageState extends State<_EngineSettingsPage> {
     bool fetching = false,
   }) {
     setState(() {
-      if (engineId == 'cc') {
-        _ccTesting = testing;
-        _ccFetching = fetching;
-      } else {
-        _codexTesting = testing;
-        _codexFetching = fetching;
-      }
+      _ccTesting = testing;
+      _ccFetching = fetching;
     });
   }
 
   void _setModels(String engineId, List<String> models) {
-    setState(() {
-      if (engineId == 'cc') {
-        _ccModels = models;
-      } else {
-        _codexModels = models;
-      }
-    });
+    setState(() => _ccModels = models);
   }
 
   String _normalizedKey(TextEditingController ctrl) =>
@@ -3435,9 +5684,6 @@ class _EngineSettingsPageState extends State<_EngineSettingsPage> {
     _ccKeyCtrl.dispose();
     _ccBaseUrlCtrl.dispose();
     _ccModelCtrl.dispose();
-    _codexKeyCtrl.dispose();
-    _codexBaseUrlCtrl.dispose();
-    _codexModelCtrl.dispose();
     super.dispose();
   }
 
@@ -3472,22 +5718,6 @@ class _EngineSettingsPageState extends State<_EngineSettingsPage> {
               setState(() => _ccKeyObscured = !_ccKeyObscured),
           models: _ccModels,
           busy: _isBusy('cc'),
-          strings: strings,
-        ),
-        const SizedBox(height: 32),
-        _buildEngineSection(
-          title: 'Codex',
-          spec: _CliEngineSpec.codex,
-          keyCtrl: _codexKeyCtrl,
-          baseUrlCtrl: _codexBaseUrlCtrl,
-          modelCtrl: _codexModelCtrl,
-          keyLabel: strings.openaiApiKeyLabel,
-          keyHint: strings.openaiApiKeyHint,
-          obscured: _codexKeyObscured,
-          onToggleObscure: () =>
-              setState(() => _codexKeyObscured = !_codexKeyObscured),
-          models: _codexModels,
-          busy: _isBusy('codex'),
           strings: strings,
         ),
       ],
@@ -3735,79 +5965,6 @@ String _compactBody(String body) {
       : '${normalized.substring(0, 160)}...';
 }
 
-class _SettingsListTile extends StatelessWidget {
-  const _SettingsListTile({
-    super.key,
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: _configSurface,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: onTap,
-        child: Container(
-          constraints: const BoxConstraints(minHeight: 72),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: _configBorderFaint),
-          ),
-          child: Row(
-            children: [
-              Icon(icon, color: _configTextSecondary, size: 22),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        color: _configTextPrimary,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      subtitle,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: _configTextSecondary,
-                        fontSize: 12,
-                        height: 1.3,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              const Icon(
-                Icons.chevron_right_rounded,
-                color: _configTextTertiary,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _EmbeddedSettingsHeader extends StatelessWidget {
   const _EmbeddedSettingsHeader({required this.title});
 
@@ -3834,48 +5991,27 @@ class _EmbeddedSettingsHeader extends StatelessWidget {
   }
 }
 
-String _settingsBasicSubtitle(BuildContext context) {
-  return _AppLanguageScope.languageOf(context) == AppLanguage.chinese
-      ? '模型、语言和上下文设置'
-      : 'Models, language, and context';
-}
-
-String _settingsScenarioSubtitle(BuildContext context, String activeScenario) {
-  return _AppLanguageScope.languageOf(context) == AppLanguage.chinese
-      ? '当前：$activeScenario'
-      : 'Current: $activeScenario';
-}
-
 String _settingsChannelsTitle(BuildContext context) {
   return _AppLanguageScope.languageOf(context) == AppLanguage.chinese
       ? 'Channel'
       : 'Channels';
 }
 
-String _settingsChannelsSubtitle(BuildContext context) {
-  return _AppLanguageScope.languageOf(context) == AppLanguage.chinese
-      ? '管理 QQ 和外设连接'
-      : 'Manage QQ and device connections';
-}
-
-String _settingsAboutSubtitle(BuildContext context) {
-  return _AppLanguageScope.languageOf(context) == AppLanguage.chinese
-      ? '版本、更新与反馈'
-      : 'Version, updates, and feedback';
-}
-
 class _FeedbackPage extends StatefulWidget {
   const _FeedbackPage({
+    super.key,
     required this.updateService,
     required this.feedbackService,
     required this.onOpenContact,
     this.onBack,
+    this.embedded = false,
   });
 
   final DemoUpdateService updateService;
   final DemoFeedbackService feedbackService;
   final VoidCallback onOpenContact;
   final Future<bool> Function()? onBack;
+  final bool embedded;
 
   @override
   State<_FeedbackPage> createState() => _FeedbackPageState();
@@ -3898,6 +6034,92 @@ class _FeedbackPageState extends State<_FeedbackPage> {
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
+    final body = FutureBuilder<DemoAppVersion>(
+      future: widget.updateService.currentVersion(),
+      builder: (context, snapshot) {
+        final version =
+            snapshot.data ??
+            const DemoAppVersion(version: 'unknown', buildNumber: '');
+        return ListView(
+          key: const Key('feedback_page_list'),
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 96),
+          children: [
+            TextField(
+              key: const Key('feedback_content_field'),
+              controller: _contentController,
+              enabled: !_submitting,
+              minLines: 6,
+              maxLines: 10,
+              textInputAction: TextInputAction.newline,
+              decoration: _configInputDecoration(
+                labelText: strings.feedbackContentLabel,
+                hintText: strings.feedbackContentHint,
+              ).copyWith(alignLabelWithHint: true),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('feedback_contact_field'),
+              controller: _contactController,
+              enabled: !_submitting,
+              textInputAction: TextInputAction.done,
+              decoration: _configInputDecoration(
+                labelText: strings.feedbackContactLabel,
+                hintText: strings.feedbackContactHint,
+              ),
+            ),
+            const SizedBox(height: 12),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: _configSurface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: _configBorderFaint),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      strings.feedbackContactUsPrompt,
+                      style: const TextStyle(
+                        color: _configTextSecondary,
+                        fontWeight: FontWeight.w700,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    _AboutActionButton(
+                      key: const Key('feedback_contact_button'),
+                      onPressed: _submitting ? null : widget.onOpenContact,
+                      icon: Icons.contact_support_outlined,
+                      label: strings.contactUs,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            if (_submitMessage != null) ...[
+              _FeedbackStatusMessage(
+                key: const Key('feedback_submit_message'),
+                message: _submitMessage!,
+                succeeded: _submitSucceeded,
+              ),
+              const SizedBox(height: 12),
+            ],
+            _AboutActionButton(
+              key: const Key('submit_feedback_button'),
+              onPressed: _submitting ? null : () => _submit(version),
+              icon: Icons.send_rounded,
+              label: _submitting ? strings.feedbackSubmitting : strings.submit,
+              filled: true,
+              loading: _submitting,
+            ),
+          ],
+        );
+      },
+    );
+    if (widget.embedded) return body;
     return Scaffold(
       backgroundColor: _configPageBackground,
       appBar: AppBar(
@@ -3915,92 +6137,7 @@ class _FeedbackPageState extends State<_FeedbackPage> {
           },
         ),
       ),
-      body: FutureBuilder<DemoAppVersion>(
-        future: widget.updateService.currentVersion(),
-        builder: (context, snapshot) {
-          final version =
-              snapshot.data ??
-              const DemoAppVersion(version: 'unknown', buildNumber: '');
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 96),
-            children: [
-              TextField(
-                key: const Key('feedback_content_field'),
-                controller: _contentController,
-                enabled: !_submitting,
-                minLines: 6,
-                maxLines: 10,
-                textInputAction: TextInputAction.newline,
-                decoration: _configInputDecoration(
-                  labelText: strings.feedbackContentLabel,
-                  hintText: strings.feedbackContentHint,
-                ).copyWith(alignLabelWithHint: true),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                key: const Key('feedback_contact_field'),
-                controller: _contactController,
-                enabled: !_submitting,
-                textInputAction: TextInputAction.done,
-                decoration: _configInputDecoration(
-                  labelText: strings.feedbackContactLabel,
-                  hintText: strings.feedbackContactHint,
-                ),
-              ),
-              const SizedBox(height: 12),
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: _configSurface,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: _configBorderFaint),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        strings.feedbackContactUsPrompt,
-                        style: const TextStyle(
-                          color: _configTextSecondary,
-                          fontWeight: FontWeight.w700,
-                          height: 1.35,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      _AboutActionButton(
-                        key: const Key('feedback_contact_button'),
-                        onPressed: _submitting ? null : widget.onOpenContact,
-                        icon: Icons.contact_support_outlined,
-                        label: strings.contactUs,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              if (_submitMessage != null) ...[
-                _FeedbackStatusMessage(
-                  key: const Key('feedback_submit_message'),
-                  message: _submitMessage!,
-                  succeeded: _submitSucceeded,
-                ),
-                const SizedBox(height: 12),
-              ],
-              _AboutActionButton(
-                key: const Key('submit_feedback_button'),
-                onPressed: _submitting ? null : () => _submit(version),
-                icon: Icons.send_rounded,
-                label: _submitting
-                    ? strings.feedbackSubmitting
-                    : strings.submit,
-                filled: true,
-                loading: _submitting,
-              ),
-            ],
-          );
-        },
-      ),
+      body: body,
     );
   }
 
@@ -4118,9 +6255,10 @@ class _FeedbackStatusMessage extends StatelessWidget {
 }
 
 class _ContactPage extends StatefulWidget {
-  const _ContactPage({this.onBack});
+  const _ContactPage({this.onBack, this.embedded = false});
 
   final Future<bool> Function()? onBack;
+  final bool embedded;
 
   @override
   State<_ContactPage> createState() => _ContactPageState();
@@ -4145,6 +6283,70 @@ class _ContactPageState extends State<_ContactPage> {
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
+    final body = FutureBuilder<_ContactConfig>(
+      future: _configFuture,
+      initialData: _ContactConfig.fallback,
+      builder: (context, snapshot) {
+        final config = snapshot.data ?? _ContactConfig.fallback;
+        return ListView(
+          key: const Key('contact_page_list'),
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 96),
+          children: [
+            if (snapshot.connectionState == ConnectionState.waiting) ...[
+              const LinearProgressIndicator(
+                minHeight: 2,
+                color: _configTextPrimary,
+                backgroundColor: _configBorderFaint,
+              ),
+              const SizedBox(height: 12),
+            ],
+            _ContactInfoCard(
+              icon: Icons.alternate_email_rounded,
+              title: strings.contactEmail,
+              value: config.email,
+              buttonLabel: strings.copyEmail,
+              onCopy: () => _copyContactValue(context, config.email),
+            ),
+            const SizedBox(height: 12),
+            _ContactQrCard(
+              title: strings.contactDingTalkGroup,
+              imageBytes: config.dingtalkQrBytes,
+              fallbackAssetName: _dingtalkGroupQrAsset,
+              icon: Icons.groups_2_outlined,
+              onSave: () => _shareContactQr(
+                context,
+                title: strings.contactDingTalkGroup,
+                imageBytes: config.dingtalkQrBytes,
+                fallbackAssetName: _dingtalkGroupQrAsset,
+              ),
+            ),
+            const SizedBox(height: 12),
+            _ContactQrCard(
+              title: strings.contactWeChatGroup,
+              imageBytes: config.wechatQrBytes,
+              fallbackAssetName: _wechatGroupQrAsset,
+              icon: Icons.chat_bubble_outline_rounded,
+              hint: strings.contactWeChatExpiredHint,
+              onSave: () => _shareContactQr(
+                context,
+                title: strings.contactWeChatGroup,
+                imageBytes: config.wechatQrBytes,
+                fallbackAssetName: _wechatGroupQrAsset,
+              ),
+            ),
+            const SizedBox(height: 12),
+            _ContactInfoCard(
+              icon: Icons.person_add_alt_1_rounded,
+              title: strings.contactAdminWeChat,
+              value: config.wechatAdminId,
+              buttonLabel: strings.copyWeChatId,
+              onCopy: () => _copyContactValue(context, config.wechatAdminId),
+            ),
+          ],
+        );
+      },
+    );
+    if (widget.embedded) return body;
     return Scaffold(
       backgroundColor: _configPageBackground,
       appBar: AppBar(
@@ -4171,68 +6373,7 @@ class _ContactPageState extends State<_ContactPage> {
           },
         ),
       ),
-      body: FutureBuilder<_ContactConfig>(
-        future: _configFuture,
-        initialData: _ContactConfig.fallback,
-        builder: (context, snapshot) {
-          final config = snapshot.data ?? _ContactConfig.fallback;
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 96),
-            children: [
-              if (snapshot.connectionState == ConnectionState.waiting) ...[
-                const LinearProgressIndicator(
-                  minHeight: 2,
-                  color: _configTextPrimary,
-                  backgroundColor: _configBorderFaint,
-                ),
-                const SizedBox(height: 12),
-              ],
-              _ContactInfoCard(
-                icon: Icons.alternate_email_rounded,
-                title: strings.contactEmail,
-                value: config.email,
-                buttonLabel: strings.copyEmail,
-                onCopy: () => _copyContactValue(context, config.email),
-              ),
-              const SizedBox(height: 12),
-              _ContactQrCard(
-                title: strings.contactDingTalkGroup,
-                imageBytes: config.dingtalkQrBytes,
-                fallbackAssetName: _dingtalkGroupQrAsset,
-                icon: Icons.groups_2_outlined,
-                onSave: () => _shareContactQr(
-                  context,
-                  title: strings.contactDingTalkGroup,
-                  imageBytes: config.dingtalkQrBytes,
-                  fallbackAssetName: _dingtalkGroupQrAsset,
-                ),
-              ),
-              const SizedBox(height: 12),
-              _ContactQrCard(
-                title: strings.contactWeChatGroup,
-                imageBytes: config.wechatQrBytes,
-                fallbackAssetName: _wechatGroupQrAsset,
-                icon: Icons.chat_bubble_outline_rounded,
-                hint: strings.contactWeChatExpiredHint,
-                onSave: () => _shareContactQr(
-                  context,
-                  title: strings.contactWeChatGroup,
-                  imageBytes: config.wechatQrBytes,
-                  fallbackAssetName: _wechatGroupQrAsset,
-                ),
-              ),
-              const SizedBox(height: 12),
-              _ContactInfoCard(
-                icon: Icons.person_add_alt_1_rounded,
-                title: strings.contactAdminWeChat,
-                value: config.wechatAdminId,
-                buttonLabel: strings.copyWeChatId,
-                onCopy: () => _copyContactValue(context, config.wechatAdminId),
-              ),
-            ],
-          );
-        },
-      ),
+      body: body,
     );
   }
 }
@@ -4462,12 +6603,12 @@ class _SessionSectionHeader extends StatelessWidget {
   const _SessionSectionHeader({
     required this.label,
     required this.padding,
-    this.onRefresh,
+    this.fontWeight = FontWeight.w800,
   });
 
   final String label;
   final EdgeInsetsGeometry padding;
-  final Future<void> Function()? onRefresh;
+  final FontWeight fontWeight;
 
   @override
   Widget build(BuildContext context) {
@@ -4477,153 +6618,13 @@ class _SessionSectionHeader extends StatelessWidget {
         children: [
           Text(
             label,
-            style: const TextStyle(
-              color: Color(0xFF666666),
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
+            style: TextStyle(
+              color: _sessionMenuText,
+              fontSize: 15,
+              fontWeight: fontWeight,
             ),
           ),
-          const SizedBox(width: 8),
-          Expanded(child: Container(height: 1, color: const Color(0xFFE5E5E5))),
-          if (onRefresh != null) ...[
-            const SizedBox(width: 6),
-            SizedBox(
-              width: 28,
-              height: 28,
-              child: IconButton(
-                tooltip: 'Refresh sessions',
-                padding: EdgeInsets.zero,
-                splashRadius: 16,
-                onPressed: () => unawaited(onRefresh!.call()),
-                icon: const Icon(
-                  Icons.refresh_rounded,
-                  size: 18,
-                  color: Color(0xFF9CA3AF),
-                ),
-              ),
-            ),
-          ],
         ],
-      ),
-    );
-  }
-}
-
-class _FavoriteAttachmentTile extends StatelessWidget {
-  const _FavoriteAttachmentTile({
-    required this.favorite,
-    required this.onTap,
-    required this.onRemove,
-    required this.onLongPress,
-  });
-
-  final FavoriteAttachment favorite;
-  final VoidCallback onTap;
-  final VoidCallback onRemove;
-  final VoidCallback onLongPress;
-
-  IconData get _icon {
-    final attachment = favorite.attachment;
-    if (attachment.isImage) return Icons.image_rounded;
-    if (attachment.isHtml) return Icons.web_asset_rounded;
-    if (attachment.isWebLink) return Icons.public_rounded;
-    if (attachment.isVideo) return Icons.play_circle_rounded;
-    if (attachment.isAudio) return Icons.audiotrack_rounded;
-    return Icons.insert_drive_file_rounded;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final attachment = favorite.attachment;
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        key: Key('favorite_attachment_tile_${favorite.id.hashCode}'),
-        borderRadius: BorderRadius.circular(10),
-        hoverColor: const Color(0xFFEDEDED),
-        highlightColor: const Color(0xFFE5E5E5),
-        splashColor: const Color(0xFFD4D4D4).withValues(alpha: 0.24),
-        onTap: onTap,
-        onLongPress: () {
-          HapticFeedback.mediumImpact();
-          onLongPress();
-        },
-        child: DecoratedBox(
-          decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(10, 10, 8, 10),
-            child: Row(
-              children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
-                  width: 3,
-                  height: 34,
-                  decoration: BoxDecoration(
-                    color: Colors.transparent,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        attachment.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Color(0xFF333333),
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          Icon(_icon, color: const Color(0xFF858585), size: 14),
-                          const SizedBox(width: 5),
-                          Expanded(
-                            child: Text(
-                              attachment.typeLabel,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Color(0xFF666666),
-                                fontSize: 13,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                Tooltip(
-                  message: AppStrings.of(context).removeFavorite,
-                  child: InkResponse(
-                    key: Key(
-                      'remove_favorite_attachment_${favorite.id.hashCode}',
-                    ),
-                    onTap: onRemove,
-                    radius: 18,
-                    child: const SizedBox(
-                      width: 34,
-                      height: 34,
-                      child: Icon(
-                        Icons.star_rounded,
-                        color: Color(0xFFF59E0B),
-                        size: 19,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
       ),
     );
   }
@@ -4722,7 +6723,6 @@ class _SessionHistoryTile extends StatelessWidget {
     required this.session,
     required this.runState,
     required this.hasA2AUnread,
-    required this.timeLabel,
     required this.isActive,
     required this.onTap,
     required this.onLongPress,
@@ -4731,7 +6731,6 @@ class _SessionHistoryTile extends StatelessWidget {
   final ChatSession session;
   final ChatSessionRunState? runState;
   final bool hasA2AUnread;
-  final String timeLabel;
   final bool isActive;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
@@ -4740,14 +6739,10 @@ class _SessionHistoryTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final runState = this.runState;
     final isTerminalSession = session.id.startsWith('terminal-');
-    final strings = AppStrings.of(context);
-    final preview = isTerminalSession
-        ? strings.terminalSessionPreview
-        : _sessionHistoryPreview(session);
     final tileBackground = isActive
         ? isTerminalSession
-              ? const Color(0xFFF1F1F1)
-              : const Color(0xFFEAEAEA)
+              ? const Color(0xFFF4F4F4)
+              : const Color(0xFFF0F0F0)
         : Colors.transparent;
     return Material(
       color: Colors.transparent,
@@ -4760,31 +6755,15 @@ class _SessionHistoryTile extends StatelessWidget {
         onTap: onTap,
         onLongPress: onLongPress,
         child: DecoratedBox(
+          key: Key('session_tile_background_${session.id}'),
           decoration: BoxDecoration(
             color: tileBackground,
             borderRadius: BorderRadius.circular(10),
           ),
           child: Padding(
-            padding: EdgeInsets.fromLTRB(
-              10,
-              isTerminalSession ? 8 : 10,
-              14,
-              10,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
-                  width: 3,
-                  height: isTerminalSession ? 28 : 34,
-                  decoration: BoxDecoration(
-                    color: isActive
-                        ? const Color(0xFF333333)
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                const SizedBox(width: 10),
                 if (isTerminalSession) ...[
                   Container(
                     width: 28,
@@ -4803,56 +6782,25 @@ class _SessionHistoryTile extends StatelessWidget {
                   const SizedBox(width: 10),
                 ],
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _sessionHistoryDisplayTitle(session),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Color(0xFF333333),
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        preview,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Color(0xFF666666),
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
+                  child: Text(
+                    _sessionHistoryDisplayTitle(session),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: _sessionMenuText,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w400,
+                    ),
                   ),
                 ),
-                const SizedBox(width: 14),
-                if (session.isPinned) ...[
-                  const Icon(
-                    Icons.push_pin_rounded,
-                    color: Color(0xFF858585),
-                    size: 16,
-                  ),
-                  const SizedBox(width: 8),
-                ],
+                const SizedBox(width: 10),
                 if (runState != null &&
                     (!runState.isTerminal || runState.needsAttention)) ...[
                   _SessionRunBadge(runState: runState),
                   const SizedBox(width: 8),
                 ] else if (hasA2AUnread && !isActive) ...[
                   const _A2AUnreadBadge(),
-                  const SizedBox(width: 8),
                 ],
-                Text(
-                  timeLabel,
-                  style: const TextStyle(
-                    color: Color(0xFF858585),
-                    fontSize: 12,
-                  ),
-                ),
               ],
             ),
           ),

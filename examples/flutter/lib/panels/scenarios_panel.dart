@@ -1,11 +1,13 @@
 part of '../main.dart';
 
 const String _generalScenarioId = 'napaxi.scenario.general';
-const String _mobileDevelopmentScenarioId = 'napaxi.scenario.mobile_development';
+const String _mobileDevelopmentScenarioId =
+    'napaxi.scenario.mobile_development';
 const Set<String> _demoScenarioIds = {
   _generalScenarioId,
   _mobileDevelopmentScenarioId,
 };
+const Set<String> _visibleDemoScenarioIds = _demoScenarioIds;
 
 class ScenariosPanel extends StatefulWidget {
   const ScenariosPanel({
@@ -400,37 +402,54 @@ class _ScenarioApplyCard extends StatelessWidget {
             FilledButton(
               key: const Key('scenario_apply_button'),
               onPressed: isActive || isApplying ? null : onApply,
-              style: FilledButton.styleFrom(
-                backgroundColor: _configTextPrimary,
-                disabledBackgroundColor: _configSurfaceMuted,
-                disabledForegroundColor: _configTextTertiary,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                minimumSize: const Size(92, 40),
-                padding: const EdgeInsets.symmetric(horizontal: 14),
+              style: _scenarioApplyButtonStyle(),
+              child: _ScenarioApplyButtonChild(
+                isApplying: isApplying,
+                label: buttonLabel,
               ),
-              child: isApplying
-                  ? const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: _configTextTertiary,
-                      ),
-                    )
-                  : Text(
-                      buttonLabel,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
             ),
           ],
         ),
       ),
     );
+  }
+}
+
+ButtonStyle _scenarioApplyButtonStyle() {
+  return FilledButton.styleFrom(
+    backgroundColor: _configTextPrimary,
+    disabledBackgroundColor: _configSurfaceMuted,
+    disabledForegroundColor: _configTextTertiary,
+    foregroundColor: Colors.white,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    minimumSize: const Size(92, 40),
+    padding: const EdgeInsets.symmetric(horizontal: 14),
+  );
+}
+
+class _ScenarioApplyButtonChild extends StatelessWidget {
+  const _ScenarioApplyButtonChild({
+    required this.isApplying,
+    required this.label,
+  });
+
+  final bool isApplying;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return isApplying
+        ? const SizedBox.square(
+            dimension: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: _configTextTertiary,
+            ),
+          )
+        : Text(
+            label,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800),
+          );
   }
 }
 
@@ -1125,7 +1144,7 @@ List<sdk.NapaxiScenarioPack> _demoScenarioPacks(
 ) {
   final filtered = [
     for (final pack in packs)
-      if (_demoScenarioIds.contains(pack.id)) pack,
+      if (_visibleDemoScenarioIds.contains(pack.id)) pack,
   ];
   filtered.sort(
     (a, b) => _demoScenarioSortKey(a.id) - _demoScenarioSortKey(b.id),
@@ -1138,7 +1157,7 @@ List<sdk.NapaxiScenarioStatus> _demoScenarioStatuses(
 ) {
   return [
     for (final status in statuses)
-      if (_demoScenarioIds.contains(status.definition.id)) status,
+      if (_visibleDemoScenarioIds.contains(status.definition.id)) status,
   ];
 }
 
@@ -1171,8 +1190,7 @@ sdk.NapaxiCapabilitySelection _scenarioCapabilitySelection(
     'scenario_id': normalized,
     'account_id': runtimeProfile.accountId,
     'agent_id': runtimeProfile.agentId,
-    if (runtimeProfile.isDeveloper)
-      'developer_engine_id': runtimeProfile.activeEngineId,
+    'developer_engine_id': runtimeProfile.activeEngineId,
   };
   if (normalized == _mobileDevelopmentScenarioId && gitSettings != null) {
     config.addAll(gitSettings.toJson());
@@ -1188,6 +1206,8 @@ List<String> _scenarioEnabledCapabilities(String scenarioId) {
     _mobileDevelopmentScenarioId => <String>[
       'napaxi.service.scenario_registry',
       'napaxi.agent_engine.napaxi_core',
+      'napaxi.agent_engine.codex',
+      'napaxi.agent_engine.external_host',
       'napaxi.service.developer_workbench',
       'napaxi.tool.file',
       'napaxi.tool.ask_human',
@@ -1205,6 +1225,7 @@ List<String> _scenarioEnabledCapabilities(String scenarioId) {
     _ => <String>[
       'napaxi.service.scenario_registry',
       'napaxi.agent_engine.napaxi_core',
+      'napaxi.agent_engine.codex',
       'napaxi.tool.ask_human',
       'napaxi.tool.agent_app_action',
       'napaxi.tool.memory',

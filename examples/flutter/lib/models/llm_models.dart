@@ -5,14 +5,22 @@ enum ModelCapability {
   imageAnalysis,
   imageGeneration,
   videoGeneration,
+  // Kept for persisted-config compatibility. The UI does not expose this
+  // capability until Core has an end-to-end audio understanding runtime.
   audioAnalysis,
 }
 
-const List<ModelCapability> _modelCapabilities = [
+// Capability slots exposed by the settings and add/edit model flows. The enum
+// names remain stable because they are also persisted as wire keys.
+const List<ModelCapability> _configurableModelCapabilities = [
   ModelCapability.imageAnalysis,
   ModelCapability.imageGeneration,
   ModelCapability.videoGeneration,
-  ModelCapability.audioAnalysis,
+];
+
+const List<ModelCapability> _visibleModelCapabilities = [
+  ModelCapability.chat,
+  ..._configurableModelCapabilities,
 ];
 
 String _capabilityLabel(BuildContext context, ModelCapability capability) {
@@ -77,6 +85,7 @@ class LlmModelProfile {
     this.responseReserveTokens,
     this.compactionModel = '',
     this.preCompactionMemoryFlush = false,
+    this.isUserEditable = true,
   }) : _defaultChatModel = model;
 
   final String id;
@@ -95,6 +104,7 @@ class LlmModelProfile {
   final int? responseReserveTokens;
   final String compactionModel;
   final bool preCompactionMemoryFlush;
+  final bool isUserEditable;
 
   String get model => selectedModel(ModelCapability.chat) ?? _defaultChatModel;
 
@@ -147,7 +157,7 @@ extension LlmModelProfileSdkConfig on LlmModelProfile {
     final videoModel = selectedModel(ModelCapability.videoGeneration);
     final audioModel = selectedModel(ModelCapability.audioAnalysis);
     final capabilityConfigs = <String, sdk.LlmCapabilityConfig>{};
-    for (final capability in _modelCapabilities) {
+    for (final capability in _configurableModelCapabilities) {
       final capabilityProfile = selectedProfileByCapability[capability] ?? this;
       final modelId =
           capabilityProfile.selectedModel(capability) ??
@@ -219,10 +229,20 @@ extension LlmModelProfileSdkConfig on LlmModelProfile {
     final normalized = provider.trim().toLowerCase();
     return switch (normalized) {
       'openai-compatible' ||
+      'openai_compatible' ||
       'deepseek' ||
       'qwen' ||
       'moonshot' => 'openai_compatible',
-      _ => normalized,
+      'openai' ||
+      'anthropic' ||
+      'gemini' ||
+      'glm' ||
+      'zai' ||
+      'zhipu' ||
+      'bigmodel' ||
+      'nearai' => normalized,
+      '' => '',
+      _ => 'openai_compatible',
     };
   }
 }
@@ -252,6 +272,16 @@ class LlmProviderOption {
   final List<String> models;
 }
 
+enum _LlmWireProtocol { openAiCompatible, anthropic, gemini }
+
+_LlmWireProtocol _llmWireProtocolForProvider(String provider) {
+  return switch (provider.trim().toLowerCase()) {
+    'anthropic' => _LlmWireProtocol.anthropic,
+    'gemini' => _LlmWireProtocol.gemini,
+    _ => _LlmWireProtocol.openAiCompatible,
+  };
+}
+
 const List<LlmProviderOption> _providerOptions = [
   LlmProviderOption(
     id: 'openai-compatible',
@@ -266,6 +296,22 @@ const List<LlmProviderOption> _providerOptions = [
     name: 'OpenAI',
     provider: 'openai',
     baseUrl: 'https://api.openai.com/v1',
+    defaultModel: '',
+    models: [],
+  ),
+  LlmProviderOption(
+    id: 'anthropic',
+    name: 'Anthropic',
+    provider: 'anthropic',
+    baseUrl: 'https://api.anthropic.com',
+    defaultModel: '',
+    models: [],
+  ),
+  LlmProviderOption(
+    id: 'gemini',
+    name: 'Google Gemini',
+    provider: 'gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     defaultModel: '',
     models: [],
   ),
@@ -290,6 +336,14 @@ const List<LlmProviderOption> _providerOptions = [
     name: 'Moonshot',
     provider: 'moonshot',
     baseUrl: 'https://api.moonshot.cn/v1',
+    defaultModel: '',
+    models: [],
+  ),
+  LlmProviderOption(
+    id: 'glm',
+    name: 'GLM',
+    provider: 'glm',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     defaultModel: '',
     models: [],
   ),
@@ -322,6 +376,7 @@ class LlmConfigState {
     this.selectedProfileIdByCapability = const {},
     this.systemPrompt = '',
     this.maxToolIterations = 50,
+    this.contextEngine = const sdk.ContextEngineConfig(),
   });
 
   final List<LlmModelProfile> profiles;
@@ -329,6 +384,7 @@ class LlmConfigState {
   final Map<ModelCapability, String> selectedProfileIdByCapability;
   final String systemPrompt;
   final int maxToolIterations;
+  final sdk.ContextEngineConfig contextEngine;
 
   LlmModelProfile? profileById(String? profileId) {
     final id = profileId?.trim();
@@ -384,7 +440,7 @@ class LlmConfigState {
     if (chatProfile == null) return null;
     final selectedModels = <ModelCapability, String>{};
     final selectedProfiles = <ModelCapability, LlmModelProfile>{};
-    for (final capability in _modelCapabilities) {
+    for (final capability in _configurableModelCapabilities) {
       final profile = capability == ModelCapability.chat
           ? chatProfile
           : selectedProfileFor(capability);
@@ -408,11 +464,12 @@ class LlmConfigState {
       selectedProfileByCapability: Map.unmodifiable(selectedProfiles),
       systemPrompt: systemPrompt,
       maxTokens: chatProfile.maxTokens,
-      contextWindowTokens: chatProfile.contextWindowTokens,
-      nativeContextWindowTokens: chatProfile.nativeContextWindowTokens,
-      responseReserveTokens: chatProfile.responseReserveTokens,
-      compactionModel: chatProfile.compactionModel,
-      preCompactionMemoryFlush: chatProfile.preCompactionMemoryFlush,
+      contextWindowTokens: contextEngine.contextWindowTokens,
+      nativeContextWindowTokens: contextEngine.nativeContextWindowTokens,
+      responseReserveTokens: contextEngine.responseReserveTokens,
+      compactionModel: contextEngine.compactionModel ?? '',
+      preCompactionMemoryFlush: contextEngine.preCompactionMemoryFlush,
+      isUserEditable: chatProfile.isUserEditable,
     );
   }
 
@@ -423,6 +480,7 @@ class LlmConfigState {
 
 const _storedModelEntriesKey = 'model_entries';
 const _storedSelectedModelByCapabilityKey = 'selected_model_by_capability';
+const _storedUserEditableKey = 'user_editable';
 
 sdk.NapaxiConfigProfile _storedProfileFromProfile(LlmModelProfile profile) {
   final allowedModels = profile.models
@@ -469,6 +527,7 @@ sdk.NapaxiConfigProfile _storedProfileFromProfile(LlmModelProfile profile) {
         for (final entry in profile.selectedModelByCapability.entries)
           entry.key.name: entry.value,
       },
+      _storedUserEditableKey: profile.isUserEditable,
     },
   );
 }
@@ -495,7 +554,13 @@ LlmModelProfile _profileFromStoredProfile(
     responseReserveTokens: profile.contextEngine.responseReserveTokens,
     compactionModel: profile.contextEngine.compactionModel ?? '',
     preCompactionMemoryFlush: profile.contextEngine.preCompactionMemoryFlush,
+    isUserEditable: _userEditableFromMetadata(profile),
   );
+}
+
+bool _userEditableFromMetadata(sdk.NapaxiConfigProfile profile) {
+  final value = profile.metadata[_storedUserEditableKey];
+  return value is bool ? value : true;
 }
 
 List<ModelEntry> _modelEntriesFromMetadata(sdk.NapaxiConfigProfile profile) {
@@ -599,6 +664,34 @@ sdk.NapaxiConfigSelection _storedSelectionFromConfig(LlmConfigState config) {
     },
     systemPrompt: config.systemPrompt,
     maxToolIterations: config.maxToolIterations,
+    contextEngine: config.contextEngine,
+  );
+}
+
+sdk.ContextEngineConfig _restoredGlobalContextEngine(
+  sdk.NapaxiConfigSelection selection,
+  List<LlmModelProfile> profiles,
+) {
+  final stored = selection.contextEngine;
+  if (stored != null) return stored;
+  LlmModelProfile? legacyProfile;
+  final selectedId = selection.selectedProfileId?.trim();
+  if (selectedId != null && selectedId.isNotEmpty) {
+    legacyProfile = profiles
+        .where((profile) => profile.id == selectedId)
+        .firstOrNull;
+  }
+  legacyProfile ??= profiles.firstOrNull;
+  if (legacyProfile == null) return const sdk.ContextEngineConfig();
+  return sdk.ContextEngineConfig(
+    contextWindowTokens:
+        legacyProfile.contextWindowTokens ??
+        legacyProfile.nativeContextWindowTokens,
+    responseReserveTokens: legacyProfile.responseReserveTokens,
+    compactionModel: legacyProfile.compactionModel.trim().isEmpty
+        ? null
+        : legacyProfile.compactionModel.trim(),
+    preCompactionMemoryFlush: legacyProfile.preCompactionMemoryFlush,
   );
 }
 

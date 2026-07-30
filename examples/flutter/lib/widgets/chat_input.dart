@@ -97,9 +97,10 @@ class _PendingInterjectionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isFailed = interjection.status == PendingInterjectionStatus.failed;
-    final text = interjection.content.trim().isEmpty
+    final draftContent = interjection.draftContent ?? interjection.content;
+    final text = draftContent.trim().isEmpty
         ? (isChinese ? '附件消息' : 'Attachment message')
-        : interjection.content.trim();
+        : draftContent.trim();
     return Row(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -213,6 +214,7 @@ class _SlashCommandInvocation {
 
 class _ChatInputBar extends StatefulWidget {
   const _ChatInputBar({
+    super.key,
     required this.controller,
     required this.focusNode,
     required this.isSending,
@@ -225,12 +227,19 @@ class _ChatInputBar extends StatefulWidget {
     required this.onContextStatusTap,
     required this.onSend,
     required this.onStop,
+    this.pendingMessageCount = 0,
+    this.onRetractPending,
     this.channelInputSources = const [],
     this.channelInputBusyAccountId,
     this.channelInputActiveAccountId,
     this.onChannelInputSelected,
     this.chatClient,
     this.agentId = '',
+    this.showContextStatus = true,
+    this.messageHint,
+    this.inputFieldKey = const Key('chat_input_field'),
+    this.sendButtonKey = const Key('send_message_button'),
+    this.stopButtonKey = const Key('stop_message_button'),
   });
 
   final TextEditingController controller;
@@ -249,12 +258,19 @@ class _ChatInputBar extends StatefulWidget {
   })
   onSend;
   final Future<void> Function() onStop;
+  final int pendingMessageCount;
+  final Future<void> Function()? onRetractPending;
   final List<DemoChannelInputSource> channelInputSources;
   final String? channelInputBusyAccountId;
   final String? channelInputActiveAccountId;
   final ValueChanged<DemoChannelInputSource>? onChannelInputSelected;
   final NapaxiChatClient? chatClient;
   final String agentId;
+  final bool showContextStatus;
+  final String? messageHint;
+  final Key inputFieldKey;
+  final Key sendButtonKey;
+  final Key stopButtonKey;
 
   @override
   State<_ChatInputBar> createState() => _ChatInputBarState();
@@ -364,6 +380,12 @@ class _ChatInputBarState extends State<_ChatInputBar> {
   Future<void> _pickGalleryImage() async {
     final images = await _imagePicker.pickMultiImage();
     _addImageAttachments(images);
+  }
+
+  Future<void> pickGalleryImage() => _pickGalleryImage();
+
+  void restoreAttachments(Iterable<ChatAttachment> attachments) {
+    _addAttachments(attachments);
   }
 
   Future<void> _pickCameraImage() async {
@@ -526,7 +548,14 @@ class _ChatInputBarState extends State<_ChatInputBar> {
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
     final slashSuggestions = _slashSuggestions;
-    final isSendAction = !widget.isSending || _canSend;
+    final primaryAction = _canSend
+        ? _ChatInputPrimaryAction.send
+        : widget.pendingMessageCount > 0 && widget.onRetractPending != null
+        ? _ChatInputPrimaryAction.retract
+        : widget.isSending
+        ? _ChatInputPrimaryAction.stop
+        : _ChatInputPrimaryAction.send;
+    final isSendAction = primaryAction == _ChatInputPrimaryAction.send;
     final sendColor = isSendAction && !_canSend
         ? const Color(0xFFD1D5DB)
         : const Color(0xFF111827);
@@ -535,7 +564,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
         widget.onChannelInputSelected != null;
 
     return DecoratedBox(
-      decoration: const BoxDecoration(color: Color(0xFFF7F8FA)),
+      decoration: const BoxDecoration(color: _appSurfaceColor),
       child: Padding(
         padding: EdgeInsets.fromLTRB(
           12,
@@ -546,14 +575,14 @@ class _ChatInputBarState extends State<_ChatInputBar> {
         child: Container(
           key: const Key('chat_input_container'),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: _appSurfaceColor,
             borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: const Color(0xFFE5E7EB)),
+            border: Border.all(color: _appSurfaceBorderColor),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.04),
-                blurRadius: 16,
-                offset: const Offset(0, 4),
+                color: Colors.black.withValues(alpha: 0.025),
+                blurRadius: 12,
+                offset: const Offset(0, 3),
               ),
             ],
           ),
@@ -600,7 +629,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                   child: Scrollbar(
                     controller: _inputScrollController,
                     child: TextField(
-                      key: const Key('chat_input_field'),
+                      key: widget.inputFieldKey,
                       controller: widget.controller,
                       focusNode: widget.focusNode,
                       scrollController: _inputScrollController,
@@ -609,7 +638,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                       textInputAction: TextInputAction.newline,
                       onTapOutside: (_) => widget.focusNode.unfocus(),
                       decoration: InputDecoration(
-                        hintText: strings.messageHint,
+                        hintText: widget.messageHint ?? strings.messageHint,
                         hintStyle: const TextStyle(color: Color(0xFF9CA3AF)),
                         border: InputBorder.none,
                         contentPadding: EdgeInsets.zero,
@@ -643,36 +672,49 @@ class _ChatInputBarState extends State<_ChatInputBar> {
                       ),
                     ],
                     const Spacer(),
-                    _ContextStatusButton(
-                      status: widget.contextStatus,
-                      isLoading: widget.isContextStatusLoading,
-                      hasSession: widget.hasContextSession,
-                      onTap: widget.onContextStatusTap,
-                    ),
-                    const SizedBox(width: 6),
+                    if (widget.showContextStatus) ...[
+                      _ContextStatusButton(
+                        status: widget.contextStatus,
+                        isLoading: widget.isContextStatusLoading,
+                        hasSession: widget.hasContextSession,
+                        onTap: widget.onContextStatusTap,
+                      ),
+                      const SizedBox(width: 6),
+                    ],
                     SizedBox(
                       width: 40,
                       height: 40,
                       child: IconButton.filled(
-                        key: isSendAction
-                            ? const Key('send_message_button')
-                            : const Key('stop_message_button'),
-                        tooltip: isSendAction
-                            ? strings.sendTooltip
-                            : strings.stopTooltip,
-                        onPressed: isSendAction
-                            ? (_canSend ? _send : null)
-                            : widget.onStop,
+                        key: switch (primaryAction) {
+                          _ChatInputPrimaryAction.send => widget.sendButtonKey,
+                          _ChatInputPrimaryAction.stop => widget.stopButtonKey,
+                          _ChatInputPrimaryAction.retract => const Key(
+                            'retract_queued_messages_button',
+                          ),
+                        },
+                        tooltip: switch (primaryAction) {
+                          _ChatInputPrimaryAction.send => strings.sendTooltip,
+                          _ChatInputPrimaryAction.stop => strings.stopTooltip,
+                          _ChatInputPrimaryAction.retract =>
+                            strings.retractQueuedTooltip,
+                        },
+                        onPressed: switch (primaryAction) {
+                          _ChatInputPrimaryAction.send =>
+                            _canSend ? _send : null,
+                          _ChatInputPrimaryAction.stop => widget.onStop,
+                          _ChatInputPrimaryAction.retract =>
+                            widget.onRetractPending,
+                        },
                         style: IconButton.styleFrom(
                           backgroundColor: sendColor,
                           foregroundColor: Colors.white,
                         ),
-                        icon: Icon(
-                          isSendAction
-                              ? Icons.arrow_upward_rounded
-                              : Icons.stop_rounded,
-                          size: 18,
-                        ),
+                        icon: Icon(switch (primaryAction) {
+                          _ChatInputPrimaryAction.send =>
+                            Icons.arrow_upward_rounded,
+                          _ChatInputPrimaryAction.stop => Icons.stop_rounded,
+                          _ChatInputPrimaryAction.retract => Icons.undo_rounded,
+                        }, size: 18),
                       ),
                     ),
                   ],
@@ -685,6 +727,8 @@ class _ChatInputBarState extends State<_ChatInputBar> {
     );
   }
 }
+
+enum _ChatInputPrimaryAction { send, stop, retract }
 
 class _AttachmentPreviewRow extends StatelessWidget {
   const _AttachmentPreviewRow({
@@ -984,8 +1028,6 @@ class _AttachmentChip extends StatelessWidget {
   const _AttachmentChip({
     required this.attachment,
     this.onRemove,
-    this.isFavorite = false,
-    this.onToggleFavorite,
     this.compact = false,
     this.accountId,
     this.agentId,
@@ -993,8 +1035,6 @@ class _AttachmentChip extends StatelessWidget {
 
   final ChatAttachment attachment;
   final VoidCallback? onRemove;
-  final bool isFavorite;
-  final VoidCallback? onToggleFavorite;
   final bool compact;
   final String? accountId;
   final String? agentId;
@@ -1051,12 +1091,7 @@ class _AttachmentChip extends StatelessWidget {
         Container(
           width: compact ? 176 : 188,
           height: compact ? 52 : 58,
-          padding: EdgeInsets.fromLTRB(
-            8,
-            8,
-            onRemove != null || onToggleFavorite != null ? 30 : 10,
-            8,
-          ),
+          padding: EdgeInsets.fromLTRB(8, 8, onRemove != null ? 30 : 10, 8),
           decoration: BoxDecoration(
             color: const Color(0xFFF3F4F6),
             borderRadius: BorderRadius.circular(10),
@@ -1114,15 +1149,6 @@ class _AttachmentChip extends StatelessWidget {
             top: -5,
             right: -5,
             child: _RemoveAttachmentButton(onTap: onRemove!),
-          ),
-        if (onRemove == null && onToggleFavorite != null)
-          Positioned(
-            top: 5,
-            right: 5,
-            child: _FavoriteAttachmentButton(
-              isFavorite: isFavorite,
-              onTap: onToggleFavorite!,
-            ),
           ),
       ],
     );
@@ -1223,15 +1249,11 @@ class _MessageAttachmentsView extends StatelessWidget {
     required this.attachments,
     required this.accountId,
     required this.agentId,
-    required this.isFavoriteAttachment,
-    required this.onToggleFavoriteAttachment,
   });
 
   final List<ChatAttachment> attachments;
   final String accountId;
   final String agentId;
-  final bool Function(ChatAttachment attachment) isFavoriteAttachment;
-  final ValueChanged<ChatAttachment> onToggleFavoriteAttachment;
 
   @override
   Widget build(BuildContext context) {
@@ -1262,8 +1284,6 @@ class _MessageAttachmentsView extends StatelessWidget {
             attachments: previewable,
             accountId: accountId,
             agentId: agentId,
-            isFavoriteAttachment: isFavoriteAttachment,
-            onToggleFavoriteAttachment: onToggleFavoriteAttachment,
           ),
         if (previewable.isNotEmpty && webLinks.isNotEmpty)
           const SizedBox(height: 8),
@@ -1272,8 +1292,6 @@ class _MessageAttachmentsView extends StatelessWidget {
             attachments: webLinks,
             accountId: accountId,
             agentId: agentId,
-            isFavoriteAttachment: isFavoriteAttachment,
-            onToggleFavoriteAttachment: onToggleFavoriteAttachment,
           ),
         if ((previewable.isNotEmpty || webLinks.isNotEmpty) && files.isNotEmpty)
           const SizedBox(height: 8),
@@ -1282,8 +1300,6 @@ class _MessageAttachmentsView extends StatelessWidget {
             files: files,
             accountId: accountId,
             agentId: agentId,
-            isFavoriteAttachment: isFavoriteAttachment,
-            onToggleFavoriteAttachment: onToggleFavoriteAttachment,
           ),
       ],
     );
@@ -1295,15 +1311,11 @@ class _WebLinkReferenceSection extends StatefulWidget {
     required this.attachments,
     required this.accountId,
     required this.agentId,
-    required this.isFavoriteAttachment,
-    required this.onToggleFavoriteAttachment,
   });
 
   final List<ChatAttachment> attachments;
   final String accountId;
   final String agentId;
-  final bool Function(ChatAttachment attachment) isFavoriteAttachment;
-  final ValueChanged<ChatAttachment> onToggleFavoriteAttachment;
 
   @override
   State<_WebLinkReferenceSection> createState() =>
@@ -1405,13 +1417,6 @@ class _WebLinkReferenceSectionState extends State<_WebLinkReferenceSection> {
                             attachment: widget.attachments[i],
                             accountId: widget.accountId,
                             agentId: widget.agentId,
-                            isFavorite: widget.isFavoriteAttachment(
-                              widget.attachments[i],
-                            ),
-                            onToggleFavorite: () =>
-                                widget.onToggleFavoriteAttachment(
-                                  widget.attachments[i],
-                                ),
                           ),
                           if (i != widget.attachments.length - 1)
                             const SizedBox(height: 8),
@@ -1449,16 +1454,12 @@ class _WebLinkReferenceItem extends StatelessWidget {
     required this.attachment,
     required this.accountId,
     required this.agentId,
-    required this.isFavorite,
-    required this.onToggleFavorite,
   });
 
   final int index;
   final ChatAttachment attachment;
   final String accountId;
   final String agentId;
-  final bool isFavorite;
-  final VoidCallback onToggleFavorite;
 
   @override
   Widget build(BuildContext context) {
@@ -1520,44 +1521,7 @@ class _WebLinkReferenceItem extends StatelessWidget {
                 ],
               ),
             ),
-            const SizedBox(width: 8),
-            _ReferenceFavoriteButton(
-              isFavorite: isFavorite,
-              onTap: onToggleFavorite,
-            ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ReferenceFavoriteButton extends StatelessWidget {
-  const _ReferenceFavoriteButton({
-    required this.isFavorite,
-    required this.onTap,
-  });
-
-  final bool isFavorite;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final strings = AppStrings.of(context);
-    return Tooltip(
-      message: isFavorite ? strings.removeFavorite : strings.addFavorite,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(999),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(4),
-          child: Icon(
-            isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
-            size: 18,
-            color: isFavorite
-                ? const Color(0xFFF59E0B)
-                : const Color(0xFF94A3B8),
-          ),
         ),
       ),
     );
@@ -1569,15 +1533,11 @@ class _AttachmentPreviewGrid extends StatelessWidget {
     required this.attachments,
     required this.accountId,
     required this.agentId,
-    required this.isFavoriteAttachment,
-    required this.onToggleFavoriteAttachment,
   });
 
   final List<ChatAttachment> attachments;
   final String accountId;
   final String agentId;
-  final bool Function(ChatAttachment attachment) isFavoriteAttachment;
-  final ValueChanged<ChatAttachment> onToggleFavoriteAttachment;
 
   double _bounded(double value, double min, double max) {
     if (value < min) return min;
@@ -1602,8 +1562,6 @@ class _AttachmentPreviewGrid extends StatelessWidget {
               compact: true,
               accountId: accountId,
               agentId: agentId,
-              isFavorite: isFavoriteAttachment(attachment),
-              onToggleFavorite: () => onToggleFavoriteAttachment(attachment),
             );
           }
           final width = _bounded(availableWidth, 160, 280);
@@ -1614,8 +1572,6 @@ class _AttachmentPreviewGrid extends StatelessWidget {
             radius: 12,
             accountId: accountId,
             agentId: agentId,
-            isFavorite: isFavoriteAttachment(attachment),
-            onToggleFavorite: () => onToggleFavoriteAttachment(attachment),
           );
         }
 
@@ -1636,9 +1592,6 @@ class _AttachmentPreviewGrid extends StatelessWidget {
                   radius: 10,
                   accountId: accountId,
                   agentId: agentId,
-                  isFavorite: isFavoriteAttachment(attachments[i]),
-                  onToggleFavorite: () =>
-                      onToggleFavoriteAttachment(attachments[i]),
                 ),
                 if (i != attachments.length - 1) const SizedBox(width: spacing),
               ],
@@ -1659,8 +1612,6 @@ class _MessageAttachmentPreviewTile extends StatelessWidget {
     required this.radius,
     required this.accountId,
     required this.agentId,
-    required this.isFavorite,
-    required this.onToggleFavorite,
   });
 
   final ChatAttachment attachment;
@@ -1669,8 +1620,6 @@ class _MessageAttachmentPreviewTile extends StatelessWidget {
   final double radius;
   final String accountId;
   final String agentId;
-  final bool isFavorite;
-  final VoidCallback onToggleFavorite;
 
   @override
   Widget build(BuildContext context) {
@@ -1730,51 +1679,7 @@ class _MessageAttachmentPreviewTile extends StatelessWidget {
                 ),
               ),
             ),
-            Positioned(
-              top: 6,
-              right: 6,
-              child: _FavoriteAttachmentButton(
-                isFavorite: isFavorite,
-                onTap: onToggleFavorite,
-              ),
-            ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _FavoriteAttachmentButton extends StatelessWidget {
-  const _FavoriteAttachmentButton({
-    required this.isFavorite,
-    required this.onTap,
-  });
-
-  final bool isFavorite;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final strings = AppStrings.of(context);
-    return Tooltip(
-      message: isFavorite ? strings.removeFavorite : strings.addFavorite,
-      child: Material(
-        color: Colors.black.withValues(alpha: isFavorite ? 0.62 : 0.38),
-        shape: const CircleBorder(),
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: onTap,
-          child: SizedBox(
-            key: Key('favorite_attachment_${isFavorite ? 'on' : 'off'}'),
-            width: 28,
-            height: 28,
-            child: Icon(
-              isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
-              size: 18,
-              color: isFavorite ? const Color(0xFFFFC857) : Colors.white,
-            ),
-          ),
         ),
       ),
     );
@@ -1820,15 +1725,11 @@ class _AttachmentFilesCard extends StatefulWidget {
     required this.files,
     required this.accountId,
     required this.agentId,
-    required this.isFavoriteAttachment,
-    required this.onToggleFavoriteAttachment,
   });
 
   final List<ChatAttachment> files;
   final String accountId;
   final String agentId;
-  final bool Function(ChatAttachment attachment) isFavoriteAttachment;
-  final ValueChanged<ChatAttachment> onToggleFavoriteAttachment;
 
   static const int _collapsedVisibleCount = 3;
 
@@ -1866,9 +1767,6 @@ class _AttachmentFilesCardState extends State<_AttachmentFilesCard> {
               attachment: visible[i],
               accountId: widget.accountId,
               agentId: widget.agentId,
-              isFavorite: widget.isFavoriteAttachment(visible[i]),
-              onToggleFavorite: () =>
-                  widget.onToggleFavoriteAttachment(visible[i]),
             ),
             if (i != visible.length - 1)
               const Divider(
@@ -1937,15 +1835,11 @@ class _AttachmentFilesCardHeader extends StatelessWidget {
 class _AttachmentFileListRow extends StatelessWidget {
   const _AttachmentFileListRow({
     required this.attachment,
-    required this.isFavorite,
-    required this.onToggleFavorite,
     required this.accountId,
     required this.agentId,
   });
 
   final ChatAttachment attachment;
-  final bool isFavorite;
-  final VoidCallback onToggleFavorite;
   final String accountId;
   final String agentId;
 
@@ -1999,11 +1893,6 @@ class _AttachmentFileListRow extends StatelessWidget {
                   fontWeight: FontWeight.w500,
                 ),
               ),
-            ),
-            const SizedBox(width: 8),
-            _FavoriteAttachmentButton(
-              isFavorite: isFavorite,
-              onTap: onToggleFavorite,
             ),
           ],
         ),

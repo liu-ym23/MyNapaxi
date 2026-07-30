@@ -4,6 +4,7 @@ import 'dart:convert';
 // ignore_for_file: depend_on_referenced_packages, unnecessary_import, use_super_parameters
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:napaxi/main.dart';
 import 'package:napaxi_flutter/napaxi_flutter.dart' as sdk;
@@ -47,12 +48,41 @@ Future<void> _pumpUntilBackgroundStopped(
   }
 }
 
+Future<sdk.NapaxiConfigStore> _storeWithMainModel({
+  String model = 'gpt-main',
+}) async {
+  final store = sdk.NapaxiConfigStore.memory();
+  await store.saveProfile(
+    sdk.NapaxiConfigProfile(
+      id: 'main',
+      name: 'Main',
+      provider: 'openai',
+      model: model,
+      metadata: {
+        'model_entries': [
+          {
+            'id': model,
+            'display_name': '',
+            'capabilities': ['chat'],
+          },
+        ],
+      },
+    ),
+    apiKey: 'sk-main',
+  );
+  await store.saveSelection(
+    const sdk.NapaxiConfigSelection(selectedProfileId: 'main'),
+  );
+  return store;
+}
+
 Widget _testApp({
   NapaxiChatClientFactory? chatClientFactory,
   sdk.NapaxiConfigStore? configStore,
   DemoPreferencesStore? preferencesStore,
   DemoUpdateService? updateService,
   DemoFeedbackService? feedbackService,
+  CodexModelCatalogFetcher? codexModelCatalogFetcher,
   AppLanguage language = AppLanguage.english,
   TerminalBackend Function()? terminalBackendFactory,
 }) {
@@ -67,6 +97,7 @@ Widget _testApp({
     preferencesStore: preferencesStore ?? MemoryDemoPreferencesStore(),
     updateService: updateService,
     feedbackService: feedbackService,
+    codexModelCatalogFetcher: codexModelCatalogFetcher,
     terminalBackendFactory: terminalBackendFactory,
   );
 }
@@ -277,7 +308,7 @@ void main() {
   testWidgets('renders the chat shell', (tester) async {
     await tester.pumpWidget(_testApp());
 
-    expect(find.byKey(const Key('agent_selector_button')), findsOneWidget);
+    expect(find.byKey(const Key('engine_selector_button')), findsOneWidget);
     expect(find.text('No model configured'), findsNothing);
     expect(find.byKey(const Key('session_history_button')), findsOneWidget);
     expect(find.byKey(const Key('context_status_button')), findsOneWidget);
@@ -294,9 +325,7 @@ void main() {
     expect(find.byKey(const Key('slash_command_context')), findsOneWidget);
   });
 
-  testWidgets('general scenario hides developer runtime agents', (
-    tester,
-  ) async {
+  testWidgets('general scenario uses engine switcher', (tester) async {
     SharedPreferences.setMockInitialValues({
       'napaxi_demo.active_scenario.v1': 'napaxi.scenario.general',
     });
@@ -306,11 +335,6 @@ void main() {
           id: sdk.NapaxiEngine.defaultAgentId,
           name: 'napaxi',
           icon: Icons.auto_awesome_rounded,
-        ),
-        DemoAgent(
-          id: 'engine.napaxi',
-          name: 'Napaxi',
-          icon: Icons.terminal_rounded,
         ),
         DemoAgent(
           id: 'agent-helper',
@@ -325,15 +349,202 @@ void main() {
     );
     await pumpUntilFound(
       tester,
-      find.byKey(const Key('agent_selector_button')),
+      find.byKey(const Key('engine_selector_button')),
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('agent_selector_button')));
+    expect(find.byKey(const Key('agent_selector_button')), findsNothing);
+    expect(find.text('Napaxi'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('engine_selector_button')),
+        matching: find.byIcon(Icons.auto_awesome_rounded),
+      ),
+      findsNothing,
+    );
+
+    await tester.tap(find.byKey(const Key('engine_selector_button')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Helper'), findsOneWidget);
-    expect(find.text('Napaxi'), findsNothing);
+    expect(find.text('Helper'), findsNothing);
+    expect(find.text('Codex(beta)'), findsOneWidget);
+    expect(find.byIcon(Icons.data_object_rounded), findsNothing);
+
+    await tester.tap(find.text('Codex(beta)'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Codex(beta)'), findsOneWidget);
+    expect(fakeClient.appliedCapabilitySelection?.config, {
+      'scenario_id': 'napaxi.scenario.general',
+      'account_id': 'default',
+      'agent_id': 'engine.codex',
+      'developer_engine_id': 'codex',
+    });
+    expect(
+      fakeClient.appliedCapabilitySelection?.enabledCapabilities,
+      contains('napaxi.agent_engine.codex'),
+    );
+  });
+
+  for (final testCase
+      in <
+        ({String name, int? statusCode, List<String> models, bool shouldSwitch})
+      >[
+        (
+          name: 'accepts a listed Codex main model',
+          statusCode: null,
+          models: ['gpt-main'],
+          shouldSwitch: true,
+        ),
+        (
+          name: 'blocks a Codex main model missing from the catalog',
+          statusCode: null,
+          models: ['gpt-other'],
+          shouldSwitch: false,
+        ),
+        (
+          name: 'blocks Codex when model catalog authentication fails',
+          statusCode: 401,
+          models: const [],
+          shouldSwitch: false,
+        ),
+        (
+          name: 'blocks Codex when the model catalog server fails',
+          statusCode: 503,
+          models: const [],
+          shouldSwitch: false,
+        ),
+        (
+          name: 'allows Codex when model listing is unsupported',
+          statusCode: 404,
+          models: const [],
+          shouldSwitch: true,
+        ),
+      ]) {
+    testWidgets(testCase.name, (tester) async {
+      SharedPreferences.setMockInitialValues({
+        'napaxi_demo.active_scenario.v1': 'napaxi.scenario.general',
+      });
+      final store = await _storeWithMainModel();
+      final fakeClient = FakeNapaxiChatClient();
+      var catalogCalls = 0;
+
+      await tester.pumpWidget(
+        _testApp(
+          configStore: store,
+          chatClientFactory: () async => fakeClient,
+          codexModelCatalogFetcher:
+              ({required provider, required baseUrl, required apiKey}) async {
+                catalogCalls += 1;
+                final statusCode = testCase.statusCode;
+                if (statusCode != null) {
+                  throw CodexModelCatalogHttpException(
+                    statusCode,
+                    'catalog failure',
+                  );
+                }
+                return testCase.models;
+              },
+        ),
+      );
+      await pumpUntilFound(
+        tester,
+        find.byKey(const Key('engine_selector_button')),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('engine_selector_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Codex(beta)'));
+      await tester.pumpAndSettle();
+
+      expect(catalogCalls, 1);
+      final selection = fakeClient.appliedCapabilitySelection;
+      if (testCase.shouldSwitch) {
+        expect(selection?.config['agent_id'], 'engine.codex');
+        expect(find.text('Codex(beta)'), findsOneWidget);
+      } else {
+        expect(selection?.config['agent_id'], isNot('engine.codex'));
+        expect(find.text('Napaxi'), findsWidgets);
+      }
+    });
+  }
+
+  testWidgets('blocks a Codex send before appending the user message', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      'scenario.developer.active_engine.v1': 'codex',
+    });
+    final store = await _storeWithMainModel();
+    final fakeClient = FakeNapaxiChatClient();
+
+    await tester.pumpWidget(
+      _testApp(
+        configStore: store,
+        chatClientFactory: () async => fakeClient,
+        codexModelCatalogFetcher:
+            ({required provider, required baseUrl, required apiKey}) async =>
+                throw const CodexModelCatalogHttpException(401, 'unauthorized'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const Key('chat_input_field')),
+      'must not append',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('send_message_button')));
+    await tester.pumpAndSettle();
+
+    expect(fakeClient.sentThreadIds, isEmpty);
+    final input = tester.widget<TextField>(
+      find.byKey(const Key('chat_input_field')),
+    );
+    expect(input.controller?.text, 'must not append');
+    expect(find.textContaining('unauthorized'), findsOneWidget);
+  });
+
+  testWidgets('uses one main model for Codex sync and SDK turns', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      'scenario.developer.active_engine.v1': 'codex',
+    });
+    final store = await _storeWithMainModel();
+    final fakeClient = FakeNapaxiChatClient(
+      events: const [sdk.ResponseEvent(content: 'done')],
+    );
+    var catalogCalls = 0;
+
+    await tester.pumpWidget(
+      _testApp(
+        configStore: store,
+        chatClientFactory: () async => fakeClient,
+        codexModelCatalogFetcher:
+            ({required provider, required baseUrl, required apiKey}) async {
+              catalogCalls += 1;
+              return ['gpt-main'];
+            },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (final message in ['first', 'second']) {
+      await tester.enterText(
+        find.byKey(const Key('chat_input_field')),
+        message,
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('send_message_button')));
+      await tester.pumpAndSettle();
+    }
+
+    expect(catalogCalls, 1, reason: 'successful checks are fingerprint-cached');
+    expect(fakeClient.codexSyncedProfiles.last.model, 'gpt-main');
+    expect(fakeClient.configuredProfile?.model, 'gpt-main');
+    expect(fakeClient.sentThreadIds, hasLength(2));
   });
 
   testWidgets('renders source-aware context status details', (tester) async {
@@ -474,11 +685,28 @@ void main() {
     await tester.tap(find.widgetWithText(OutlinedButton, '配置'));
     await tester.pumpAndSettle();
 
-    expect(find.text('编辑模型'), findsOneWidget);
+    expect(find.byKey(const Key('settings_bottom_sheet')), findsOneWidget);
+    expect(find.byKey(const Key('agent_settings_page')), findsOneWidget);
     expect(find.text('上下文'), findsOneWidget);
+    expect(
+      find.byKey(const Key('context_window_preset_field')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('response_reserve_preset_field')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('context_settings_help_button')),
+      findsOneWidget,
+    );
+    expect(
+      find.text('智能体的全局上下文设置。自动会跟随当前主力推理模型，无法识别模型上限时使用 128K。'),
+      findsNothing,
+    );
+    expect(find.text('编辑模型'), findsNothing);
 
-    await tester.pageBack();
-    await tester.pumpAndSettle();
+    await closeSettingsSheet(tester);
     await tester.tap(find.byKey(const Key('context_status_button')));
     await tester.pumpAndSettle();
 
@@ -539,6 +767,14 @@ void main() {
       find.text('Choose a chat model before chatting.', findRichText: true),
       findsOneWidget,
     );
+
+    await tester.tap(find.byKey(const Key('chat_action_openConfiguration')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('settings_bottom_sheet')), findsOneWidget);
+    expect(find.byKey(const Key('settings_list_page')), findsOneWidget);
+    expect(find.byKey(const Key('settings_model_slot_chat')), findsOneWidget);
+    expect(find.byKey(const Key('config_page_list')), findsNothing);
   });
 
   testWidgets('long pressing a sent user message can edit it in the composer', (
@@ -583,11 +819,12 @@ void main() {
     );
   });
 
-  testWidgets('updates the welcome message after model configuration', (
+  testWidgets('replaces the ready welcome message with starter prompts', (
     tester,
   ) async {
+    final fakeClient = FakeNapaxiChatClient();
     await tester.pumpWidget(
-      _testApp(chatClientFactory: () async => FakeNapaxiChatClient()),
+      _testApp(chatClientFactory: () async => fakeClient),
     );
 
     expect(
@@ -601,6 +838,25 @@ void main() {
 
     expect(
       find.text('napaxi is ready. Ask anything to start chatting.'),
+      findsNothing,
+    );
+    expect(find.byKey(const Key('starter_prompt_title')), findsOneWidget);
+    expect(find.text('Try asking'), findsOneWidget);
+    expect(
+      find.byKey(const Key('starter_prompt_title_entrance')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('starter_prompt_develop_apk_entrance')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('starter_prompt_compress_photo_entrance')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('starter_prompt_develop_apk')), findsOneWidget);
+    expect(
+      find.byKey(const Key('starter_prompt_compress_photo')),
       findsOneWidget,
     );
     expect(
@@ -610,6 +866,22 @@ void main() {
       findsNothing,
     );
 
+    await tester.tap(find.byKey(const Key('starter_prompt_develop_apk')));
+    await tester.pumpAndSettle();
+
+    expect(
+      fakeClient.sentMessages,
+      contains('Build me an expense-tracking APK and install it on my phone'),
+    );
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('chat_input_field')))
+          .controller
+          ?.text,
+      isEmpty,
+    );
+    expect(find.byKey(const Key('starter_prompt_develop_apk')), findsNothing);
+
     await tester.tap(find.byKey(const Key('session_history_button')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('new_session_button')));
@@ -617,8 +889,42 @@ void main() {
 
     expect(
       find.text('napaxi is ready. Ask anything to start chatting.'),
-      findsOneWidget,
+      findsNothing,
     );
+    expect(find.byKey(const Key('starter_prompt_develop_apk')), findsOneWidget);
+  });
+
+  testWidgets('photo starter prompt opens the gallery picker', (tester) async {
+    const imagePickerChannel = MethodChannel('plugins.flutter.io/image_picker');
+    var pickerOpened = false;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(imagePickerChannel, (call) async {
+          if (call.method != 'pickMultiImage') return null;
+          pickerOpened = true;
+          return <String>['/tmp/receipt.jpg'];
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(imagePickerChannel, null),
+    );
+
+    await tester.pumpWidget(
+      _testApp(chatClientFactory: () async => FakeNapaxiChatClient()),
+    );
+    await configureSingleModel(tester);
+
+    await tester.tap(find.byKey(const Key('starter_prompt_compress_photo')));
+    await tester.pumpAndSettle();
+
+    expect(pickerOpened, isTrue);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('chat_input_field')))
+          .controller
+          ?.text,
+      'Compress this photo to under 1 MB',
+    );
+    expect(find.text('1 attachment'), findsOneWidget);
   });
 
   testWidgets('uses the main model for chat without a chat capability slot', (
@@ -663,6 +969,53 @@ void main() {
     );
   });
 
+  testWidgets('syncs the selected main model into the Codex configuration', (
+    tester,
+  ) async {
+    final fakeClient = FakeNapaxiChatClient();
+    await tester.pumpWidget(
+      _testApp(chatClientFactory: () async => fakeClient),
+    );
+
+    await configureSingleModel(
+      tester,
+      name: 'Codex main',
+      provider: 'openai',
+      model: 'gpt-main',
+      apiKey: 'sk-main',
+    );
+    await tester.pumpAndSettle();
+
+    expect(fakeClient.codexSyncedProfiles, isNotEmpty);
+    expect(fakeClient.codexSyncedProfiles.last.model, 'gpt-main');
+    expect(fakeClient.codexSyncedProfiles.last.apiKey, 'sk-main');
+  });
+
+  testWidgets('keeps the main model when Codex configuration sync fails', (
+    tester,
+  ) async {
+    final store = sdk.NapaxiConfigStore.memory();
+    final fakeClient = FakeNapaxiChatClient(
+      codexSyncResult: const sdk.CodexAgentEngineConfigResult(
+        success: false,
+        providerAvailable: true,
+        modelUsable: false,
+        errorCode: 'config_write_failed',
+        error: 'disk full',
+      ),
+    );
+    await tester.pumpWidget(
+      _testApp(configStore: store, chatClientFactory: () async => fakeClient),
+    );
+
+    await configureSingleModel(tester, model: 'persisted-main');
+    await tester.pumpAndSettle();
+
+    final profiles = await store.loadProfiles();
+    expect(profiles.single.model, 'persisted-main');
+    expect(await store.readApiKey(profiles.single.id), 'sk-napaxi');
+  });
+
   testWidgets('scrolls latest messages into view when input gains focus', (
     tester,
   ) async {
@@ -702,15 +1055,10 @@ void main() {
   testWidgets('pauses auto-follow when user scrolls up during streaming', (
     tester,
   ) async {
-    Stream<sdk.ChatEvent> streamEvents() async* {
-      yield const sdk.ResponseDeltaEvent(
-        content: 'line 1\nline 2\nline 3\nline 4\nline 5\n',
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-      yield const sdk.ResponseDeltaEvent(
-        content: 'line 6\nline 7\nline 8\nline 9\nline 10\n',
-      );
-    }
+    final events = StreamController<sdk.ChatEvent>();
+    addTearDown(() {
+      unawaited(events.close());
+    });
 
     final history = <sdk.ChatMessage>[
       for (var i = 0; i < 18; i++) ...[
@@ -734,7 +1082,7 @@ void main() {
       threadId: 'session-42',
     );
     final fakeClient = FakeNapaxiChatClient(
-      eventStreamsByThreadId: {'session-42': streamEvents()},
+      eventStreamsByThreadId: {'session-42': events.stream},
       sessions: const [
         sdk.SessionInfo(
           key: sessionKey,
@@ -748,11 +1096,12 @@ void main() {
       historyByThreadId: {'session-42': history},
     );
     await tester.pumpWidget(
-      _testApp(chatClientFactory: () async => fakeClient),
+      _testApp(
+        chatClientFactory: () async => fakeClient,
+        configStore: await _storeWithMainModel(),
+      ),
     );
-    await configureSingleModel(tester);
-    await tester.pumpAndSettle();
-    await pumpUntilFound(tester, find.text('History 0'));
+    await pumpUntilFound(tester, find.text('Reply 17'));
 
     await tester.enterText(
       find.byKey(const Key('chat_input_field')),
@@ -760,22 +1109,33 @@ void main() {
     );
     await tester.tap(find.byKey(const Key('send_message_button')));
     await _pumpUntilSent(tester, fakeClient);
-    await tester.pump(const Duration(milliseconds: 50));
+    events.add(
+      const sdk.ResponseDeltaEvent(
+        content: 'line 1\nline 2\nline 3\nline 4\nline 5\n',
+      ),
+    );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
     final scrollable = find.byKey(const Key('chat_message_list'));
-    await tester.drag(scrollable, const Offset(0, 300));
+    final gesture = await tester.startGesture(tester.getCenter(scrollable));
+    await gesture.moveBy(const Offset(0, 48));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
 
     final scrollableWidget = tester.widget<Scrollable>(
       find.descendant(of: scrollable, matching: find.byType(Scrollable)),
     );
     final before = scrollableWidget.controller!.position.pixels;
 
-    await tester.pump(const Duration(milliseconds: 1000));
+    events.add(
+      const sdk.ResponseDeltaEvent(
+        content: 'line 6\nline 7\nline 8\nline 9\nline 10\n',
+      ),
+    );
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
+    await gesture.up();
+    await tester.pump();
 
     final after = scrollableWidget.controller!.position.pixels;
     expect((after - before).abs(), lessThan(4));
@@ -790,6 +1150,9 @@ void main() {
 
     final position = scrollableWidget.controller!.position;
     expect(position.maxScrollExtent - position.pixels, lessThan(4));
+
+    unawaited(events.close());
+    await tester.pump();
   });
 
   testWidgets('stops the active SDK chat from the input bar', (tester) async {
@@ -1332,11 +1695,18 @@ void main() {
       tester.getTopLeft(find.text('Continued below.')).dy,
       greaterThan(tester.getTopLeft(find.text('Use this extra context')).dy),
     );
+    expect(find.byKey(const Key('stop_message_button')), findsOneWidget);
 
     await events.close();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final idleSendButton = tester.widget<IconButton>(
+      find.byKey(const Key('send_message_button')),
+    );
+    expect(idleSendButton.onPressed, isNull);
   });
 
-  testWidgets('stop cancels a run and restores the latest queued message', (
+  testWidgets('retract restores queued messages without stopping the run', (
     tester,
   ) async {
     final events = StreamController<sdk.ChatEvent>();
@@ -1362,15 +1732,19 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
 
     expect(find.byKey(const Key('pending_interjection_queue')), findsOneWidget);
-    expect(find.byKey(const Key('stop_message_button')), findsOneWidget);
+    expect(
+      find.byKey(const Key('retract_queued_messages_button')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('stop_message_button')), findsNothing);
 
-    await tester.tap(find.byKey(const Key('stop_message_button')));
+    await tester.tap(find.byKey(const Key('retract_queued_messages_button')));
     await tester.pump();
-    await _pumpUntilBackgroundStopped(tester, fakeClient);
+    await tester.pump(const Duration(milliseconds: 50));
 
     expect(fakeClient.retractCount, 1);
     expect(fakeClient.retractedMessage, 'Use this extra context');
-    expect(fakeClient.cancelCount, 1);
+    expect(fakeClient.cancelCount, 0);
     expect(find.byKey(const Key('pending_interjection_queue')), findsNothing);
     expect(find.byKey(const Key('send_message_button')), findsOneWidget);
     expect(
@@ -1380,6 +1754,76 @@ void main() {
           ?.text,
       'Use this extra context',
     );
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('send_message_button')))
+          .onPressed,
+      isNotNull,
+    );
+
+    unawaited(events.close());
+  });
+
+  testWidgets('retract restores every queued message in send order', (
+    tester,
+  ) async {
+    final events = StreamController<sdk.ChatEvent>();
+    final fakeClient = FakeNapaxiChatClient(eventStream: events.stream);
+    await tester.pumpWidget(
+      _testApp(chatClientFactory: () async => fakeClient),
+    );
+    await configureSingleModel(tester);
+
+    await tester.enterText(find.byKey(const Key('chat_input_field')), 'Start');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('send_message_button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.enterText(
+      find.byKey(const Key('chat_input_field')),
+      'First queued',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('send_message_button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(
+      find.byKey(const Key('retract_queued_messages_button')),
+      findsOneWidget,
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('chat_input_field')),
+      'Second queued',
+    );
+    await tester.pump();
+    expect(find.byKey(const Key('send_message_button')), findsOneWidget);
+    expect(
+      find.byKey(const Key('retract_queued_messages_button')),
+      findsNothing,
+    );
+
+    await tester.tap(find.byKey(const Key('send_message_button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.tap(find.byKey(const Key('retract_queued_messages_button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(fakeClient.retractCount, 2);
+    expect(fakeClient.cancelCount, 0);
+    expect(find.byKey(const Key('pending_interjection_queue')), findsNothing);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('chat_input_field')))
+          .controller
+          ?.text,
+      'First queued\nSecond queued',
+    );
+    expect(find.byKey(const Key('send_message_button')), findsOneWidget);
 
     unawaited(events.close());
   });
@@ -1423,7 +1867,7 @@ void main() {
     expect(find.text('Next task'), findsOneWidget);
   });
 
-  testWidgets('stop cancels a run and restores a queued next turn', (
+  testWidgets('retract restores a queued next turn without cancelling', (
     tester,
   ) async {
     final events = StreamController<sdk.ChatEvent>();
@@ -1451,14 +1895,17 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const Key('pending_interjection_queue')), findsOneWidget);
+    expect(
+      find.byKey(const Key('retract_queued_messages_button')),
+      findsOneWidget,
+    );
 
-    await tester.tap(find.byKey(const Key('stop_message_button')));
+    await tester.tap(find.byKey(const Key('retract_queued_messages_button')));
     await tester.pump();
-    await _pumpUntilBackgroundStopped(tester, fakeClient);
     await tester.pump(const Duration(milliseconds: 50));
 
     expect(fakeClient.retractCount, 0);
-    expect(fakeClient.cancelCount, 1);
+    expect(fakeClient.cancelCount, 0);
     expect(fakeClient.sentMessages, ['Start']);
     expect(find.byKey(const Key('pending_interjection_queue')), findsNothing);
     expect(find.byKey(const Key('send_message_button')), findsOneWidget);
@@ -1651,6 +2098,8 @@ void main() {
       await revealByKey(tester, const Key('capability_imageAnalysis')),
       findsOneWidget,
     );
+    expect(find.text('Image understanding'), findsOneWidget);
+    expect(find.byKey(const Key('capability_audioAnalysis')), findsNothing);
     await tapVisible(tester, const Key('capability_imageAnalysis'));
     expect(
       find.byKey(const Key('capability_slot_imageAnalysis')),
@@ -1673,7 +2122,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Video generation'), findsOneWidget);
-    expect(find.text('Audio analysis'), findsOneWidget);
+    expect(find.text('Audio understanding'), findsNothing);
     await enterVisibleText(
       tester,
       const Key('system_prompt_field'),
@@ -1697,10 +2146,28 @@ void main() {
     await tester.tap(find.byKey(const Key('add_model_button')));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('provider_preset_field')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('DeepSeek').last);
-    await tester.pumpAndSettle();
+    Future<void> selectProvider(String name) async {
+      await tester.tap(find.byKey(const Key('provider_preset_field')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(name).last);
+      await tester.pumpAndSettle();
+    }
+
+    String baseUrl() => tester
+        .widget<TextField>(find.byKey(const Key('base_url_field')))
+        .controller!
+        .text;
+
+    await selectProvider('Anthropic');
+    expect(baseUrl(), 'https://api.anthropic.com');
+
+    await selectProvider('Google Gemini');
+    expect(baseUrl(), 'https://generativelanguage.googleapis.com/v1beta');
+
+    await selectProvider('GLM');
+    expect(baseUrl(), 'https://open.bigmodel.cn/api/paas/v4');
+
+    await selectProvider('DeepSeek');
 
     expect(find.text('DeepSeek'), findsWidgets);
     expect(find.text('https://api.deepseek.com/v1'), findsOneWidget);
@@ -1716,6 +2183,25 @@ void main() {
 
     expect(find.text('DeepSeek'), findsWidgets);
     expect(find.text('deepseek · deepseek-reasoner'), findsOneWidget);
+  });
+
+  test('maps mainstream provider presets to native SDK protocols', () {
+    sdk.LlmConfig configFor(String provider) {
+      return LlmModelProfile(
+        id: provider,
+        name: provider,
+        provider: provider,
+        apiKey: 'key',
+        model: 'model',
+      ).toSdkConfig();
+    }
+
+    expect(configFor('openai').provider, 'openai');
+    expect(configFor('openai-compatible').provider, 'openai_compatible');
+    expect(configFor('anthropic').provider, 'anthropic');
+    expect(configFor('gemini').provider, 'gemini');
+    expect(configFor('glm').provider, 'glm');
+    expect(configFor('custom-gateway').provider, 'openai_compatible');
   });
 
   testWidgets('clears a slot when a model capability is disabled', (
@@ -1840,7 +2326,7 @@ void main() {
           baseUrl: 'https://chat.example/v1',
           apiKey: 'chat-key',
           model: 'chat-model',
-          contextWindowTokens: 200000,
+          contextWindowTokens: 128000,
         ),
         LlmModelProfile(
           id: 'vision-profile',
@@ -1860,6 +2346,7 @@ void main() {
       selectedProfileIdByCapability: {
         ModelCapability.imageAnalysis: 'vision-profile',
       },
+      contextEngine: sdk.ContextEngineConfig(contextWindowTokens: 200000),
     );
 
     final config = state.selectedRuntimeProfile!.toSdkConfig();
@@ -1985,6 +2472,70 @@ void main() {
     expect(
       find.text(
         'Fake SDK reply from alpha-model: Use selected model',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('selects managed models without exposing edit actions', (
+    tester,
+  ) async {
+    final store = sdk.NapaxiConfigStore.memory();
+    await store.saveProfile(
+      const sdk.NapaxiConfigProfile(
+        id: 'managed-model',
+        name: 'Managed model',
+        provider: 'openai-compatible',
+        model: 'managed-model-id',
+        metadata: {'user_editable': false},
+      ),
+      apiKey: 'managed-token',
+    );
+    await store.saveProfile(
+      const sdk.NapaxiConfigProfile(
+        id: 'user-model',
+        name: 'User model',
+        provider: 'openai',
+        model: 'user-model-id',
+      ),
+      apiKey: 'user-token',
+    );
+    await store.saveSelection(
+      const sdk.NapaxiConfigSelection(selectedProfileId: 'user-model'),
+    );
+    final fakeClient = FakeNapaxiChatClient();
+
+    await tester.pumpWidget(
+      _testApp(configStore: store, chatClientFactory: () async => fakeClient),
+    );
+    await tester.pumpAndSettle();
+    await openModelConfiguration(tester);
+
+    expect(
+      find.byKey(const Key('model_profile_managed-model')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('edit_model_managed-model')), findsNothing);
+    expect(find.byKey(const Key('delete_model_managed-model')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('model_profile_managed-model')));
+    await tester.pumpAndSettle();
+    expect((await store.loadSelection()).selectedProfileId, 'managed-model');
+    await closeSettingsSheet(tester);
+
+    await tester.enterText(
+      find.byKey(const Key('chat_input_field')),
+      'Use managed model',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('send_message_button')));
+    await tester.pumpAndSettle();
+
+    expect(fakeClient.configuredProfile?.model, 'managed-model-id');
+    expect(
+      find.text(
+        'Fake SDK reply from managed-model-id: Use managed model',
         findRichText: true,
       ),
       findsOneWidget,
@@ -2141,6 +2692,88 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Saved chat'), findsOneWidget);
+  });
+
+  testWidgets('shows restored previews before inactive histories are opened', (
+    tester,
+  ) async {
+    final store = sdk.NapaxiConfigStore.memory();
+    await store.saveProfile(
+      const sdk.NapaxiConfigProfile(
+        id: 'persisted',
+        name: 'Persisted',
+        provider: 'openai',
+        model: 'saved-model',
+        metadata: {
+          'model_entries': [
+            {
+              'id': 'saved-model',
+              'display_name': '',
+              'capabilities': ['chat'],
+            },
+          ],
+        },
+      ),
+      apiKey: 'sk-saved',
+    );
+    await store.saveSelection(
+      const sdk.NapaxiConfigSelection(selectedProfileId: 'persisted'),
+    );
+    final fakeClient = FakeNapaxiChatClient(
+      sessions: const [
+        sdk.SessionInfo(
+          key: sdk.SessionKey(
+            channelType: 'app',
+            accountId: 'flutter_demo',
+            threadId: 'session-newest',
+          ),
+          title: 'Newest chat',
+          preview: 'Newest saved answer',
+          messageCount: 2,
+          createdAt: '2026-05-12T11:00:00.000',
+          updatedAt: '2026-05-12T11:01:00.000',
+        ),
+        sdk.SessionInfo(
+          key: sdk.SessionKey(
+            channelType: 'app',
+            accountId: 'flutter_demo',
+            threadId: 'session-older',
+          ),
+          title: 'Older chat',
+          preview: 'Older saved answer',
+          messageCount: 2,
+          createdAt: '2026-05-12T10:00:00.000',
+          updatedAt: '2026-05-12T10:01:00.000',
+        ),
+      ],
+      historyByThreadId: const {
+        'session-newest': [
+          sdk.ChatMessage(role: 'user', content: 'Newest question'),
+          sdk.ChatMessage(role: 'assistant', content: 'Newest saved answer'),
+        ],
+        'session-older': [
+          sdk.ChatMessage(role: 'user', content: 'Older question'),
+          sdk.ChatMessage(role: 'assistant', content: 'Older full answer'),
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      _testApp(configStore: store, chatClientFactory: () async => fakeClient),
+    );
+    await tester.pumpAndSettle();
+    await pumpUntilFound(tester, find.text('Newest question'));
+
+    expect(fakeClient.historyPageRequests, hasLength(1));
+    expect(fakeClient.historyPageRequests.single.threadId, 'session-newest');
+
+    await tester.tap(find.byKey(const Key('session_history_button')));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.byKey(const Key('session_tile_session-older')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Older saved answer'), findsOneWidget);
+    expect(fakeClient.historyPageRequests, hasLength(1));
   });
 
   testWidgets('restores SDK session history with the latest page first', (
@@ -2542,9 +3175,7 @@ void main() {
     expect(find.textContaining('/private/raw'), findsNothing);
   });
 
-  testWidgets('returns to the side menu when backing out of files', (
-    tester,
-  ) async {
+  testWidgets('opens files as a selected primary page', (tester) async {
     final fakeClient = FakeNapaxiChatClient(
       memoryFilesByDirectory: {
         '': const [sdk.WorkspaceEntry(path: 'MEMORY.md')],
@@ -2565,144 +3196,517 @@ void main() {
     await pumpUntilFound(tester, find.text('MEMORY.md'));
 
     expect(find.text('Files'), findsOneWidget);
+    expect(find.byKey(const Key('files_menu_button')), findsOneWidget);
+    expect(find.byKey(const Key('session_history_sheet')), findsOneWidget);
 
-    await tester.pageBack();
+    await tester.tap(find.byKey(const Key('files_menu_button')));
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('files_menu_item')), findsOneWidget);
     expect(find.byKey(const Key('skills_menu_item')), findsOneWidget);
-    expect(find.text('MEMORY.md'), findsNothing);
+    expect(find.byKey(const Key('files_menu_selected')), findsOneWidget);
+    expect(find.byKey(const Key('skills_menu_selected')), findsNothing);
   });
 
-  testWidgets('opens localized scenarios from settings', (tester) async {
-    const generalScenario = sdk.NapaxiScenarioPack(
-      id: 'napaxi.scenario.general',
-      version: '1',
-      label: 'General',
-      description: 'General scenario.',
-      risk: 'medium',
-      activation: 'manual',
-      executionPlanes: ['core'],
-      uiSurfaces: ['chat'],
-      memoryScopes: ['workspace', 'session'],
-    );
-    const scenario = sdk.NapaxiScenarioPack(
-      id: 'napaxi.scenario.mobile_development',
-      version: '1',
-      label: 'Developer Workbench',
-      description: 'Privileged mobile development scenario.',
-      risk: 'critical',
-      activation: 'host_policy',
-      executionPlanes: ['core', 'host_bridge'],
-      uiSurfaces: ['chat', 'terminal_panel'],
-      memoryScopes: ['project', 'workspace'],
-    );
-    const hiddenScenario = sdk.NapaxiScenarioPack(
-      id: 'napaxi.scenario.experimental_hidden',
-      version: '1',
-      label: 'Experimental Hidden Scenario',
-      description: 'Should stay hidden in the demo scenario anchors.',
-      risk: 'high',
-      activation: 'host_policy',
-    );
-    const status = sdk.NapaxiScenarioStatus(
-      definition: scenario,
-      registered: true,
-      available: false,
-      enabled: false,
-      missingRequiredCapabilities: ['napaxi.tool.git'],
-    );
-    const resolution = sdk.NapaxiScenarioResolution(
-      status: status,
-      activationPlan: sdk.NapaxiScenarioActivationPlan(
-        enabledCapabilities: ['napaxi.tool.file'],
-        hostRequiredCapabilities: ['napaxi.service.developer_workbench'],
-        remoteRequiredCapabilities: ['napaxi.tool.shell_remote'],
-        policyRequiredCapabilities: ['napaxi.policy.approval'],
-      ),
-    );
-    final fakeClient = FakeNapaxiChatClient(
-      scenarioPacks: const [generalScenario, scenario, hiddenScenario],
-      scenarioStatuses: const [status],
-      scenarioResolution: resolution,
-    );
+  testWidgets(
+    'opens the side menu after files and skills reach their first tab',
+    (tester) async {
+      final fakeClient = FakeNapaxiChatClient(
+        memoryFilesByDirectory: {
+          '': const [sdk.WorkspaceEntry(path: 'MEMORY.md')],
+        },
+        skills: const [
+          sdk.SkillInfo(
+            name: 'research',
+            version: '1.0.0',
+            description: 'Research skill.',
+            source: 'local',
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        _testApp(chatClientFactory: () async => fakeClient),
+      );
+      await configureSingleModel(tester);
+
+      await tester.tap(find.byKey(const Key('session_history_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('files_menu_item')));
+      await tester.pumpAndSettle();
+      await pumpUntilFound(tester, find.text('Workspace'));
+
+      var tabController = DefaultTabController.of(
+        tester.element(find.byType(TabBarView)),
+      );
+      expect(tabController.index, 0);
+
+      await tester.drag(find.byType(TabBarView), const Offset(-260, 0));
+      await tester.pumpAndSettle();
+
+      tabController = DefaultTabController.of(
+        tester.element(find.byType(TabBarView)),
+      );
+      expect(tabController.index, 1);
+      expect(find.byKey(const Key('session_history_sheet')), findsNothing);
+
+      await tester.drag(find.byType(TabBarView), const Offset(260, 0));
+      await tester.pumpAndSettle();
+
+      tabController = DefaultTabController.of(
+        tester.element(find.byType(TabBarView)),
+      );
+      expect(tabController.index, 0);
+      expect(find.byKey(const Key('session_history_sheet')), findsNothing);
+
+      await tester.drag(find.byType(TabBarView), const Offset(320, 0));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('session_history_sheet')), findsOneWidget);
+      expect(find.byKey(const Key('files_menu_selected')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('skills_menu_item')));
+      await tester.pumpAndSettle();
+      await pumpUntilFound(tester, find.text('Installed'));
+
+      tabController = DefaultTabController.of(
+        tester.element(find.byType(TabBarView)),
+      );
+      expect(tabController.index, 0);
+
+      await tester.drag(find.byType(TabBarView), const Offset(-260, 0));
+      await tester.pumpAndSettle();
+
+      tabController = DefaultTabController.of(
+        tester.element(find.byType(TabBarView)),
+      );
+      expect(tabController.index, 1);
+      expect(find.byKey(const Key('session_history_sheet')), findsNothing);
+
+      await tester.drag(find.byType(TabBarView), const Offset(260, 0));
+      await tester.pumpAndSettle();
+
+      tabController = DefaultTabController.of(
+        tester.element(find.byType(TabBarView)),
+      );
+      expect(tabController.index, 0);
+      expect(find.byKey(const Key('session_history_sheet')), findsNothing);
+
+      await tester.drag(find.byType(TabBarView), const Offset(320, 0));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('session_history_sheet')), findsOneWidget);
+      expect(find.byKey(const Key('skills_menu_selected')), findsOneWidget);
+    },
+  );
+
+  testWidgets('shows grouped settings and agent configuration', (tester) async {
     final preferencesStore = MemoryDemoPreferencesStore();
     await preferencesStore.saveLanguage(AppLanguage.chinese);
-
-    await tester.pumpWidget(
-      _testApp(
-        chatClientFactory: () async => fakeClient,
-        preferencesStore: preferencesStore,
+    final configStore = sdk.NapaxiConfigStore.memory();
+    await configStore.saveProfile(
+      const sdk.NapaxiConfigProfile(
+        id: 'primary-model',
+        name: '主力模型',
+        provider: 'openai',
+        model: 'primary-chat',
+      ),
+      apiKey: 'sk-primary',
+    );
+    await configStore.saveProfile(
+      const sdk.NapaxiConfigProfile(
+        id: 'secondary-model',
+        name: '备用模型',
+        provider: 'anthropic',
+        model: 'secondary-chat',
+      ),
+      apiKey: 'sk-secondary',
+    );
+    await configStore.saveSelection(
+      const sdk.NapaxiConfigSelection(
+        selectedProfileId: 'primary-model',
+        contextEngine: sdk.ContextEngineConfig(
+          compactionModel: 'legacy-compact-model',
+          preCompactionMemoryFlush: true,
+        ),
       ),
     );
-    await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('scenarios_button')), findsNothing);
+    await tester.pumpWidget(
+      _testApp(preferencesStore: preferencesStore, configStore: configStore),
+    );
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('session_history_button')));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('files_menu_item')), findsOneWidget);
-    expect(find.byKey(const Key('scenarios_menu_item')), findsNothing);
-    expect(find.byKey(const Key('skills_menu_item')), findsOneWidget);
-    expect(find.text('场景'), findsNothing);
-
     await tester.tap(find.byKey(const Key('settings_menu_button')));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('settings_basic_item')), findsOneWidget);
-    expect(find.byKey(const Key('settings_scenarios_item')), findsOneWidget);
-    expect(find.byKey(const Key('settings_engines_item')), findsNothing);
+    expect(find.byKey(const Key('session_history_sheet')), findsOneWidget);
+    expect(find.byKey(const Key('settings_bottom_sheet')), findsOneWidget);
+    expect(
+      find.byKey(const Key('settings_bottom_sheet_handle')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('settings_bottom_sheet_close_button')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('settings_page_menu_button')), findsNothing);
+    expect(
+      find.byKey(const Key('settings_bottom_sheet_gesture_surface')),
+      findsOneWidget,
+    );
+    await tester.drag(
+      find.byKey(const Key('settings_list_page')),
+      const Offset(0, -300),
+    );
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(const Key('settings_list_page')),
+      const Offset(0, 500),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('settings_bottom_sheet')), findsOneWidget);
+    expect(find.byKey(const Key('settings_list_page')), findsOneWidget);
+    expect(
+      tester
+          .widget<FractionallySizedBox>(
+            find.byKey(const Key('settings_bottom_sheet_frame')),
+          )
+          .heightFactor,
+      1,
+    );
+    expect(find.text('模型'), findsOneWidget);
+    expect(find.text('应用设置'), findsOneWidget);
+    expect(find.text('获取帮助'), findsOneWidget);
+    expect(find.byKey(const Key('settings_model_slot_chat')), findsOneWidget);
+    expect(
+      find.byKey(const Key('settings_model_slot_imageAnalysis')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('settings_model_slot_imageGeneration')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('settings_model_slot_audioAnalysis')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const Key('settings_model_slot_videoGeneration')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<DropdownButton<String>>(
+            find.byKey(const Key('settings_model_slot_chat')),
+          )
+          .value,
+      'primary-model',
+    );
+    await tester.tap(find.byKey(const Key('settings_model_slot_chat')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('备用模型').last);
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<DropdownButton<String>>(
+            find.byKey(const Key('settings_model_slot_chat')),
+          )
+          .value,
+      'secondary-model',
+    );
+    expect(
+      (await configStore.loadSelection()).selectedProfileId,
+      'secondary-model',
+    );
+    expect(
+      find.byKey(const Key('settings_model_management_item')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('settings_add_model_item')), findsNothing);
+    expect(find.byKey(const Key('settings_agent_item')), findsOneWidget);
+    expect(find.byKey(const Key('settings_language_dropdown')), findsOneWidget);
+    expect(
+      tester
+          .widget<DropdownButton<AppLanguage>>(
+            find.byKey(const Key('settings_language_dropdown')),
+          )
+          .value,
+      AppLanguage.chinese,
+    );
+    await tester.tap(find.byKey(const Key('settings_language_dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('English').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Models'), findsOneWidget);
+    expect(find.text('App settings'), findsOneWidget);
+    expect(find.text('Get help'), findsOneWidget);
+    expect(find.text('模型'), findsNothing);
+    expect(find.text('应用设置'), findsNothing);
+    expect(find.text('获取帮助'), findsNothing);
+    expect(find.byKey(const Key('settings_bottom_sheet')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('settings_language_dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('简体中文').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('settings_model_management_item')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('settings_model_management_page')),
+      findsOneWidget,
+    );
+    expect(find.text('模型管理'), findsOneWidget);
+    expect(
+      find.byKey(const Key('settings_model_management_add_button')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('settings_model_profile_primary-model')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const Key('settings_model_management_add_button')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('model_profile_form')), findsOneWidget);
+    expect(find.text('新增模型'), findsOneWidget);
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('settings_model_management_page')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const Key('settings_model_profile_primary-model')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('model_profile_form')), findsOneWidget);
+    expect(find.text('编辑模型'), findsOneWidget);
+    expect(
+      find.byKey(const Key('native_context_window_preset_field')),
+      findsNothing,
+    );
+    expect(find.byKey(const Key('context_window_preset_field')), findsNothing);
+    expect(
+      find.byKey(const Key('response_reserve_preset_field')),
+      findsNothing,
+    );
+    await tester.enterText(
+      find.descendant(
+        of: find.byKey(const Key('model_name_field')),
+        matching: find.byType(TextField),
+      ),
+      '更新后的模型',
+    );
+    await tester.tap(find.byKey(const Key('save_model_button')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('settings_model_management_page')),
+      findsOneWidget,
+    );
+    expect(find.text('更新后的模型'), findsOneWidget);
+
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('settings_list_page')), findsOneWidget);
+    expect(find.byKey(const Key('settings_scenarios_item')), findsNothing);
+    expect(find.byKey(const Key('settings_channels_item')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('settings_agent_item')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('agent_settings_page')), findsOneWidget);
+    expect(find.byKey(const Key('max_execution_rounds_field')), findsOneWidget);
+    expect(find.byKey(const Key('user_prompt_field')), findsOneWidget);
+    expect(find.text('最大执行轮次'), findsOneWidget);
+    expect(find.text('用户提示词'), findsOneWidget);
+    final contextWindowField = await revealByKey(
+      tester,
+      const Key('context_window_preset_field'),
+    );
+    expect(contextWindowField, findsOneWidget);
+    expect(
+      find.byKey(const Key('response_reserve_preset_field')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('context_settings_help_button')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('compaction_model_field')), findsNothing);
+    expect(
+      find.byKey(const Key('pre_compaction_memory_flush_switch')),
+      findsNothing,
+    );
+    await tester.tap(find.byKey(const Key('context_settings_help_button')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('context_settings_help_sheet')),
+      findsOneWidget,
+    );
+    expect(find.text('上下文设置'), findsOneWidget);
+    expect(find.text('自动'), findsWidgets);
+    expect(find.text('上下文长度'), findsWidgets);
+    expect(find.text('回复预留'), findsWidgets);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.tap(contextWindowField);
+    await tester.pumpAndSettle();
+    expect(find.text('自动'), findsWidgets);
+    expect(find.text('自定义'), findsOneWidget);
+    await tester.tap(find.text('200K').last);
+    await tester.pumpAndSettle();
+    final responseReserveField = await revealByKey(
+      tester,
+      const Key('response_reserve_preset_field'),
+    );
+    await tester.tap(responseReserveField);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('8K').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.descendant(
+        of: find.byKey(const Key('max_execution_rounds_field')),
+        matching: find.byType(TextField),
+      ),
+      '18',
+    );
+    await tester.enterText(
+      find.descendant(
+        of: find.byKey(const Key('user_prompt_field')),
+        matching: find.byType(TextField),
+      ),
+      '回答前先检查事实。',
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+    final agentSelection = await configStore.loadSelection();
+    expect(agentSelection.maxToolIterations, 18);
+    expect(agentSelection.systemPrompt, '回答前先检查事实。');
+    expect(agentSelection.contextEngine?.contextWindowTokens, 200000);
+    expect(agentSelection.contextEngine?.responseReserveTokens, 8192);
+    expect(
+      agentSelection.contextEngine?.compactionModel,
+      'legacy-compact-model',
+    );
+    expect(agentSelection.contextEngine?.preCompactionMemoryFlush, isTrue);
+
+    final slowSheetDrag = await tester.startGesture(
+      tester.getCenter(find.byKey(const Key('agent_settings_page'))),
+    );
+    await slowSheetDrag.moveBy(const Offset(0, 160));
+    await tester.pump();
+    expect(
+      tester
+          .widget<Transform>(
+            find.byKey(const Key('settings_bottom_sheet_drag_transform')),
+          )
+          .transform
+          .getTranslation()
+          .y,
+      greaterThan(0),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    await slowSheetDrag.up();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('settings_bottom_sheet')), findsOneWidget);
+    expect(find.byKey(const Key('agent_settings_page')), findsOneWidget);
+    expect(
+      tester
+          .widget<Transform>(
+            find.byKey(const Key('settings_bottom_sheet_drag_transform')),
+          )
+          .transform
+          .getTranslation()
+          .y,
+      0,
+    );
+
+    final slowBackDrag = await tester.startGesture(
+      tester.getCenter(find.byKey(const Key('agent_settings_page'))),
+    );
+    await slowBackDrag.moveBy(const Offset(120, 0));
+    await tester.pump();
+    expect(
+      tester
+          .widget<Transform>(
+            find.byKey(const Key('settings_detail_back_transition')),
+          )
+          .transform
+          .getTranslation()
+          .x,
+      greaterThan(0),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    await slowBackDrag.up();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('agent_settings_page')), findsOneWidget);
+    expect(
+      tester
+          .widget<Transform>(
+            find.byKey(const Key('settings_detail_back_transition')),
+          )
+          .transform
+          .getTranslation()
+          .x,
+      0,
+    );
+
+    await tester.drag(
+      find.byKey(const Key('agent_settings_page')),
+      const Offset(150, 0),
+    );
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(find.byKey(const Key('agent_settings_page')), findsOneWidget);
+    expect(find.byKey(const Key('settings_agent_item')), findsOneWidget);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('settings_bottom_sheet')), findsOneWidget);
+    expect(find.byKey(const Key('settings_agent_item')), findsOneWidget);
+    await tester.drag(
+      find.byKey(const Key('settings_list_page')),
+      const Offset(0, -480),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('settings_feedback_item')), findsOneWidget);
     expect(find.byKey(const Key('settings_about_item')), findsOneWidget);
-    expect(find.text('当前：通用'), findsOneWidget);
+  });
 
-    await tester.tap(find.byKey(const Key('settings_scenarios_item')));
-    await tester.pumpAndSettle();
-    await pumpUntilFound(tester, find.text('开发工作台'));
-
-    expect(find.text('当前场景：通用'), findsOneWidget);
-    expect(find.text('开发工作台'), findsOneWidget);
-    expect(find.text('日常对话、文件、记忆和常用技能。'), findsOneWidget);
-    expect(find.text('Android 项目、Git、构建和环境配置。'), findsNothing);
-
-    await tester.tap(find.text('开发工作台'));
+  testWidgets('model slots stay available and offer adding a model', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_testApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('Android 项目、Git、构建和环境配置。'), findsOneWidget);
-    expect(find.text('可以切换使用'), findsOneWidget);
-    expect(find.text('激活计划'), findsNothing);
-    expect(find.text('关键'), findsNothing);
-    expect(find.text('宿主策略'), findsNothing);
-    expect(find.text('宿主桥接'), findsNothing);
-    expect(find.byKey(const Key('scenario_apply_button')), findsOneWidget);
-    expect(find.text('Experimental Hidden Scenario'), findsNothing);
-    expect(find.text('Scenarios'), findsNothing);
-    expect(find.text('Developer Workbench'), findsNothing);
-
-    await tester.tap(find.byKey(const Key('scenario_apply_button')));
+    await tester.tap(find.byKey(const Key('session_history_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings_menu_button')));
     await tester.pumpAndSettle();
 
-    expect(fakeClient.appliedCapabilitySelection, isNotNull);
-    expect(
-      fakeClient.appliedCapabilitySelection!.config['scenario_id'],
-      'napaxi.scenario.mobile_development',
+    final imageSlot = find.byKey(
+      const Key('settings_model_slot_imageAnalysis'),
     );
-    expect(
-      fakeClient.appliedCapabilitySelection!.enabledCapabilities,
-      contains('napaxi.tool.git'),
-    );
-    expect(
-      fakeClient.appliedCapabilitySelection!.enabledCapabilities,
-      contains('napaxi.tool.shell_remote'),
-    );
-    // After applying, the active scenario label is reflected in more than one
-    // surface (the scenarios page and the settings entry).
-    expect(find.text('当前场景：开发工作台'), findsWidgets);
+    final dropdown = tester.widget<DropdownButton<String>>(imageSlot);
+    expect(dropdown.onChanged, isNotNull);
+    expect(dropdown.items, hasLength(1));
 
-    await tester.tap(find.byType(BackButton).first);
+    await tester.tap(imageSlot);
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('settings_model_slot_imageAnalysis_add_model')),
+    );
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('settings_engines_item')), findsOneWidget);
+    expect(find.byKey(const Key('model_profile_form')), findsOneWidget);
+    expect(find.text('Add model'), findsOneWidget);
+    final capabilityCheckbox = find.descendant(
+      of: find.byKey(const Key('capability_imageAnalysis')),
+      matching: find.byType(Checkbox),
+    );
+    expect(tester.widget<Checkbox>(capabilityCheckbox).value, isTrue);
   });
 
   testWidgets('mobile developer scenario uses engine runtime scope', (
@@ -2750,6 +3754,7 @@ void main() {
       tester,
       find.byKey(const Key('engine_selector_button')),
     );
+    await pumpUntilFound(tester, find.text('napaxi'));
 
     expect(find.byKey(const Key('engine_selector_button')), findsOneWidget);
     expect(find.byKey(const Key('agent_selector_button')), findsNothing);
@@ -3002,7 +4007,9 @@ void main() {
             current: false,
           ),
         ],
-        'napaxi': [DemoGitBranchInfo(name: 'dev', remote: false, current: true)],
+        'napaxi': [
+          DemoGitBranchInfo(name: 'dev', remote: false, current: true),
+        ],
       },
       gitRemotes: const {
         'openclaw': [
@@ -3617,9 +4624,7 @@ void main() {
     expect(find.text('Currently disabled.'), findsNothing);
   });
 
-  testWidgets('returns to the side menu when backing out of skills', (
-    tester,
-  ) async {
+  testWidgets('opens skills as a selected primary page', (tester) async {
     final fakeClient = FakeNapaxiChatClient(
       skills: const [
         sdk.SkillInfo(
@@ -3644,13 +4649,16 @@ void main() {
     await pumpUntilFound(tester, find.text('research'));
 
     expect(find.text('Skills'), findsOneWidget);
+    expect(find.byKey(const Key('skills_menu_button')), findsOneWidget);
+    expect(find.byKey(const Key('session_history_sheet')), findsNothing);
 
-    await tester.pageBack();
+    await tester.tap(find.byKey(const Key('skills_menu_button')));
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('files_menu_item')), findsOneWidget);
     expect(find.byKey(const Key('skills_menu_item')), findsOneWidget);
-    expect(find.text('research'), findsNothing);
+    expect(find.byKey(const Key('skills_menu_selected')), findsOneWidget);
+    expect(find.byKey(const Key('files_menu_selected')), findsNothing);
   });
 
   testWidgets('browses the skill store and installs catalog skills inline', (
@@ -3916,6 +4924,81 @@ void main() {
 
     expect(find.text('2026-05-13.md'), findsOneWidget);
     expect(find.text('README.md'), findsNothing);
+  });
+
+  testWidgets('searches workspace files recursively by name and path', (
+    tester,
+  ) async {
+    final modified = DateTime(2026, 5, 13, 10);
+    final fakeClient = FakeNapaxiChatClient(
+      workspaceFiles: [
+        sdk.WorkspaceFileInfo(
+          name: 'notes',
+          sandboxPath: '/workspace/notes',
+          realPath: '',
+          mimeType: 'inode/directory',
+          isDirectory: true,
+          sizeBytes: 0,
+          modified: modified,
+        ),
+        sdk.WorkspaceFileInfo(
+          name: 'roadmap.md',
+          sandboxPath: '/workspace/notes/roadmap.md',
+          realPath: '/tmp/roadmap.md',
+          mimeType: 'text/markdown',
+          isDirectory: false,
+          sizeBytes: 42,
+          modified: modified,
+        ),
+        sdk.WorkspaceFileInfo(
+          name: 'README.md',
+          sandboxPath: '/workspace/README.md',
+          realPath: '/tmp/README.md',
+          mimeType: 'text/markdown',
+          isDirectory: false,
+          sizeBytes: 8,
+          modified: modified,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      _testApp(chatClientFactory: () async => fakeClient),
+    );
+    await configureSingleModel(tester);
+
+    await tester.tap(find.byKey(const Key('session_history_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('files_menu_item')));
+    await tester.pumpAndSettle();
+    await pumpUntilFound(tester, find.text('README.md'));
+
+    expect(find.text('roadmap.md'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('files_search_button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('files_search_field')),
+      'roadmap',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('roadmap.md'), findsOneWidget);
+    expect(find.text('README.md'), findsNothing);
+
+    await tester.enterText(
+      find.byKey(const Key('files_search_field')),
+      'missing',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('No matching files'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('files_search_close_button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('README.md'), findsOneWidget);
+    expect(find.text('roadmap.md'), findsNothing);
   });
 
   testWidgets('shows parent directory entry inside an empty workspace folder', (
@@ -4791,7 +5874,9 @@ void main() {
     expect(find.text('编辑 snake.html +2 -1'), findsOneWidget);
   });
 
-  testWidgets('shows generated files as chat attachments', (tester) async {
+  testWidgets('shows generated files without favorite controls', (
+    tester,
+  ) async {
     final fakeClient = FakeNapaxiChatClient(
       detectedFiles: const [
         sdk.ResolvedFile(
@@ -4866,6 +5951,8 @@ void main() {
     );
     expect(find.text('snake.html'), findsOneWidget);
     expect(find.text('notes.md'), findsOneWidget);
+    expect(find.byTooltip('Add to favorites'), findsNothing);
+    expect(find.byTooltip('Remove from favorites'), findsNothing);
   });
 
   testWidgets('uses SDK thread id for generated attachment cache keys', (
@@ -5635,10 +6722,80 @@ void main() {
       find.byKey(const Key('session_history_search_button')),
       findsOneWidget,
     );
+    final headerActionGroup = find.byKey(
+      const Key('session_header_action_group'),
+    );
+    expect(headerActionGroup, findsOneWidget);
+    expect(
+      find.descendant(
+        of: headerActionGroup,
+        matching: find.byKey(const Key('session_history_search_button')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: headerActionGroup,
+        matching: find.byKey(const Key('settings_menu_button')),
+      ),
+      findsOneWidget,
+    );
+    final headerActionDecoration =
+        tester.widget<Container>(headerActionGroup).decoration as BoxDecoration;
+    expect(headerActionDecoration.borderRadius, BorderRadius.circular(24));
+    expect(headerActionDecoration.boxShadow, hasLength(1));
     expect(find.text('First conversation'), findsWidgets);
     expect(find.text('just now'), findsOneWidget);
     expect(find.byKey(const Key('new_session_button')), findsOneWidget);
     expect(find.text('Chat'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('session_history_list')),
+        matching: find.byKey(const Key('files_menu_item')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('session_history_list')),
+        matching: find.byKey(const Key('projects_menu_item')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('session_history_frosted_header')),
+      findsOneWidget,
+    );
+    final frostedHeaderSurface = find.byKey(
+      const Key('session_history_frosted_header_surface'),
+    );
+    expect(frostedHeaderSurface, findsOneWidget);
+    expect(
+      find.ancestor(
+        of: frostedHeaderSurface,
+        matching: find.byType(BackdropFilter),
+      ),
+      findsNothing,
+    );
+    expect(tester.widget(frostedHeaderSurface), isA<SizedBox>());
+    expect(
+      find.ancestor(
+        of: find.byKey(const Key('session_history_list')),
+        matching: find.byKey(const Key('session_history_scroll_fade')),
+      ),
+      findsOneWidget,
+    );
+    final progressiveBlur = find.byKey(
+      const Key('session_history_progressive_blur'),
+    );
+    expect(progressiveBlur, findsOneWidget);
+    expect(
+      find.descendant(
+        of: progressiveBlur,
+        matching: find.byType(BackdropFilter),
+      ),
+      findsNWidgets(6),
+    );
 
     await tester.tap(find.byKey(const Key('new_session_button')));
     await tester.pumpAndSettle();
@@ -5650,6 +6807,11 @@ void main() {
       ),
       findsOneWidget,
     );
+
+    await tester.tap(find.byKey(const Key('session_history_button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('session_tile_session-1')), findsOneWidget);
+    expect(find.byKey(const Key('session_tile_session-2')), findsNothing);
   });
 
   testWidgets('shows about page with current version and update action', (
@@ -5663,13 +6825,28 @@ void main() {
     await openAbout(tester);
 
     expect(find.text('About'), findsOneWidget);
-    expect(find.text('Current version'), findsOneWidget);
+    expect(find.text('Current version'), findsNothing);
     expect(find.byKey(const Key('about_current_version')), findsOneWidget);
-    expect(find.text('0.1.0+14'), findsOneWidget);
+    expect(find.text('0.2.0+14'), findsOneWidget);
+    expect(find.byKey(const Key('about_check_update_button')), findsOneWidget);
+    expect(find.byKey(const Key('about_feedback_button')), findsNothing);
+    expect(
+      find.byKey(const Key('open_source_licenses_button')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const Key('open_source_licenses_button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Open source licenses'), findsOneWidget);
+    expect(find.byKey(const Key('settings_bottom_sheet')), findsOneWidget);
+    await tester.drag(
+      find.byKey(const Key('settings_subpage_gesture_surface')),
+      const Offset(320, 0),
+    );
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('about_check_update_button')), findsOneWidget);
   });
 
-  testWidgets('about page hides update action when platform is unsupported', (
+  testWidgets('about page keeps update action visible on every platform', (
     tester,
   ) async {
     final updates = FakeDemoUpdateService(supportsUpdateCheck: false);
@@ -5680,9 +6857,9 @@ void main() {
     await openAbout(tester);
 
     expect(find.text('About'), findsOneWidget);
-    expect(find.text('Current version'), findsOneWidget);
-    expect(find.text('0.1.0+14'), findsOneWidget);
-    expect(find.byKey(const Key('about_check_update_button')), findsNothing);
+    expect(find.text('Current version'), findsNothing);
+    expect(find.text('0.2.0+14'), findsOneWidget);
+    expect(find.byKey(const Key('about_check_update_button')), findsOneWidget);
   });
 
   testWidgets('opens native contact page from the about page', (tester) async {
@@ -5702,9 +6879,16 @@ void main() {
     expect(find.text('WeChat community'), findsOneWidget);
     expect(find.text('Admin WeChat'), findsOneWidget);
     expect(find.text('shu_wentao'), findsOneWidget);
+    expect(find.byKey(const Key('settings_bottom_sheet')), findsOneWidget);
+    await tester.drag(
+      find.byKey(const Key('contact_page_list')),
+      const Offset(320, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('about_contact_button')), findsOneWidget);
   });
 
-  testWidgets('submits feedback from the about page', (tester) async {
+  testWidgets('submits feedback from the settings help group', (tester) async {
     final updates = FakeDemoUpdateService();
     final feedback = FakeDemoFeedbackService();
 
@@ -5713,8 +6897,16 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await openAbout(tester);
-    await tester.tap(find.byKey(const Key('about_feedback_button')));
+    await tester.tap(find.byKey(const Key('session_history_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings_menu_button')));
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(const Key('settings_list_page')),
+      const Offset(0, -480),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings_feedback_item')));
     await tester.pumpAndSettle();
 
     expect(find.text('Feedback'), findsOneWidget);
@@ -5736,7 +6928,7 @@ void main() {
       'The update installer page was confusing.',
     );
     expect(feedback.submittedRequest?.contact, 'tester@example.com');
-    expect(feedback.submittedRequest?.appVersion.display, '0.1.0+14');
+    expect(feedback.submittedRequest?.appVersion.display, '0.2.0+14');
     expect(find.text('Feedback submitted.'), findsOneWidget);
   });
 
@@ -5872,7 +7064,9 @@ void main() {
     expect(find.byKey(const Key('update_later_button')), findsNothing);
   });
 
-  testWidgets('failed install can fall back to GitHub releases', (tester) async {
+  testWidgets('failed install can fall back to GitHub releases', (
+    tester,
+  ) async {
     final updates = FakeDemoUpdateService(
       supportsExternalUpdatePage: true,
       installResult: const DemoUpdateInstallResult(
@@ -5929,242 +7123,12 @@ void main() {
     await tester.tap(find.byKey(const Key('install_update_button')));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('open_pgyer_install_page_button')), findsOneWidget);
+    expect(
+      find.byKey(const Key('open_pgyer_install_page_button')),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('open_release_page_button')), findsOneWidget);
   });
-
-  testWidgets('favorites and unfavorites chat attachments from the side menu', (
-    tester,
-  ) async {
-    SharedPreferences.setMockInitialValues({
-      'napaxi_demo.favorite_attachments.v1': jsonEncode([
-        {
-          'id': 'path:https://example.com/report.html',
-          'name': 'example.com',
-          'path': 'https://example.com/report.html',
-          'type': 'file',
-          'mime_type': 'text/uri-list',
-          'created_at': DateTime(2026, 5, 18).toIso8601String(),
-        },
-      ]),
-    });
-
-    await tester.pumpWidget(
-      _testApp(chatClientFactory: () async => FakeNapaxiChatClient()),
-    );
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byKey(const Key('chat_input_field')),
-      'Budget planning',
-    );
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('send_message_button')));
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.byKey(const Key('session_history_button')));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Favorites'), findsOneWidget);
-    expect(find.text('example.com'), findsOneWidget);
-    expect(find.text('Recent'), findsOneWidget);
-    expect(
-      tester.getTopLeft(find.text('Favorites')).dy,
-      lessThan(tester.getTopLeft(find.text('Recent')).dy),
-    );
-
-    await tester.tap(find.byKey(const Key('session_history_search_button')));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byKey(const Key('session_history_search_field')),
-      'example',
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.text('example.com'), findsOneWidget);
-    expect(
-      find.descendant(
-        of: find.byKey(const Key('session_history_list')),
-        matching: find.text('Budget planning'),
-      ),
-      findsNothing,
-    );
-
-    await tester.enterText(
-      find.byKey(const Key('session_history_search_field')),
-      'budget',
-    );
-    await tester.pumpAndSettle();
-
-    expect(
-      find.descendant(
-        of: find.byKey(const Key('session_history_list')),
-        matching: find.text('Budget planning'),
-      ),
-      findsWidgets,
-    );
-    expect(find.text('example.com'), findsNothing);
-
-    await tester.tap(find.byKey(const Key('session_history_search_close')));
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.byTooltip('Remove from favorites'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Favorites'), findsNothing);
-    expect(find.text('example.com'), findsNothing);
-  });
-
-  testWidgets(
-    'matches restored uploaded attachments to legacy path favorites',
-    (tester) async {
-      const sessionKey = sdk.SessionKey(
-        channelType: 'app',
-        accountId: 'flutter_demo',
-        threadId: 'session-42',
-      );
-      SharedPreferences.setMockInitialValues({
-        'napaxi_demo.favorite_attachments.v1': jsonEncode([
-          {
-            'id': 'path:/tmp/photo.jpg',
-            'name': 'photo.jpg',
-            'path': '/tmp/photo.jpg',
-            'type': 'image',
-            'mime_type': 'image/jpeg',
-            'created_at': DateTime(2026, 5, 18).toIso8601String(),
-          },
-        ]),
-      });
-      final store = sdk.NapaxiConfigStore.memory();
-      await store.saveProfile(
-        const sdk.NapaxiConfigProfile(
-          id: 'persisted',
-          name: 'Persisted',
-          provider: 'openai',
-          model: 'saved-model',
-          metadata: {
-            'model_entries': [
-              {
-                'id': 'saved-model',
-                'display_name': '',
-                'capabilities': ['chat'],
-              },
-            ],
-          },
-        ),
-        apiKey: 'sk-saved',
-      );
-      await store.saveSelection(
-        const sdk.NapaxiConfigSelection(selectedProfileId: 'persisted'),
-      );
-      final fakeClient = FakeNapaxiChatClient(
-        sessions: const [
-          sdk.SessionInfo(
-            key: sessionKey,
-            title: 'Photo chat',
-            preview: 'Uploaded a photo',
-            messageCount: 1,
-            createdAt: '2026-05-18T10:00:00.000',
-            updatedAt: '2026-05-18T10:01:00.000',
-          ),
-        ],
-        historyByThreadId: const {
-          'session-42': [
-            sdk.ChatMessage(
-              role: 'user',
-              content: 'Uploaded a photo',
-              attachments: [
-                sdk.ChatAttachment(
-                  kind: 'image',
-                  mimeType: 'image/jpeg',
-                  filename: 'photo.jpg',
-                  sandboxPath: '/workspace/attachments/session-42/photo.jpg',
-                ),
-              ],
-            ),
-          ],
-        },
-      );
-
-      await tester.pumpWidget(
-        _testApp(configStore: store, chatClientFactory: () async => fakeClient),
-      );
-      await tester.pumpAndSettle();
-      await pumpUntilFound(
-        tester,
-        find.byKey(const Key('favorite_attachment_on')),
-      );
-
-      expect(find.byKey(const Key('favorite_attachment_on')), findsOneWidget);
-
-      await tester.tap(
-        find.byKey(const Key('conversation_attachments_button')),
-      );
-      await tester.pumpAndSettle();
-
-      expect(
-        find.text(
-          'Uploaded · Image · /workspace/attachments/session-42/photo.jpg',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.text(
-          'Generated · Image · /workspace/attachments/session-42/photo.jpg',
-        ),
-        findsNothing,
-      );
-
-      await tester.tap(find.byTooltip('Close'));
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.byKey(const Key('favorite_attachment_on')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('session_history_button')));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Favorites'), findsNothing);
-      expect(find.text('photo.jpg'), findsNothing);
-    },
-  );
-
-  testWidgets(
-    'returns to the side menu after previewing a favorite attachment',
-    (tester) async {
-      WebViewPlatform.instance = _FakeWebViewPlatform();
-      SharedPreferences.setMockInitialValues({
-        'napaxi_demo.favorite_attachments.v1': jsonEncode([
-          {
-            'id': 'path:https://example.com/report.html',
-            'name': 'example.com',
-            'path': 'https://example.com/report.html',
-            'type': 'file',
-            'mime_type': 'text/uri-list',
-            'created_at': DateTime(2026, 5, 18).toIso8601String(),
-          },
-        ]),
-      });
-
-      await tester.pumpWidget(_testApp());
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('session_history_button')));
-      await tester.pumpAndSettle();
-
-      const favoriteId = 'path:https://example.com/report.html';
-      await tester.tap(
-        find.byKey(Key('favorite_attachment_tile_${favoriteId.hashCode}')),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('Preview'), findsOneWidget);
-
-      await tester.pageBack();
-      await tester.pumpAndSettle();
-
-      expect(find.byKey(const Key('session_history_list')), findsOneWidget);
-      expect(find.text('Favorites'), findsOneWidget);
-      expect(find.text('example.com'), findsOneWidget);
-    },
-  );
 
   testWidgets('does not extract content web links into references', (
     tester,
@@ -6414,7 +7378,7 @@ void main() {
     expect(newerTop, lessThan(olderTop));
   });
 
-  testWidgets('long-presses chat history to pin and delete sessions', (
+  testWidgets('previews, renames, pins, and deletes chat history sessions', (
     tester,
   ) async {
     final fakeClient = FakeNapaxiChatClient();
@@ -6446,6 +7410,101 @@ void main() {
 
     await tester.tap(find.byKey(const Key('session_history_button')));
     await tester.pumpAndSettle();
+
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('session_tile_session-1')),
+        matching: find.textContaining('Fake SDK reply'),
+      ),
+      findsNothing,
+    );
+    await tester.longPress(find.byKey(const Key('session_tile_session-1')));
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('session_pin_action_session-1')),
+        matching: find.byIcon(Icons.push_pin_outlined),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('session_pin_action_session-1')),
+        matching: find.byKey(const Key('session_action_icon_slash')),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('session_rename_action_session-1')),
+        matching: find.byIcon(Icons.edit_outlined),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('session_delete_action_session-1')),
+        matching: find.byIcon(Icons.delete_outline_rounded),
+      ),
+      findsOneWidget,
+    );
+
+    final previewCard = find.byKey(
+      const Key('session_preview_action_session-1'),
+    );
+    expect(previewCard, findsOneWidget);
+    expect(
+      find.descendant(
+        of: previewCard,
+        matching: find.textContaining('Older conversation'),
+      ),
+      findsWidgets,
+    );
+    expect(
+      find.descendant(
+        of: previewCard,
+        matching: find.textContaining('napaxi: Fake SDK reply'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: previewCard,
+        matching: find.textContaining('You: Older conversation'),
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(previewCard);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining(
+        'Fake SDK reply from napaxi-model: Older conversation',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('session_history_button')));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.byKey(const Key('session_tile_session-1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session_rename_action_session-1')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('session_rename_field_session-1')),
+      'Project Alpha',
+    );
+    await tester.tap(find.byKey(const Key('confirm_rename_session_session-1')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('session_tile_session-1')),
+        matching: find.text('Project Alpha'),
+      ),
+      findsOneWidget,
+    );
+
     await tester.longPress(find.byKey(const Key('session_tile_session-1')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('session_pin_action_session-1')));
@@ -6459,6 +7518,18 @@ void main() {
         .getTopLeft(find.byKey(const Key('session_tile_session-2')))
         .dy;
     expect(pinnedTop, lessThan(recentTop));
+
+    await tester.longPress(find.byKey(const Key('session_tile_session-1')));
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('session_pin_action_session-1')),
+        matching: find.byKey(const Key('session_action_icon_slash')),
+      ),
+      findsOneWidget,
+    );
+    await tester.tapAt(const Offset(4, 4));
+    await tester.pumpAndSettle();
 
     await tester.longPress(find.byKey(const Key('session_tile_session-2')));
     await tester.pumpAndSettle();
@@ -6481,6 +7552,355 @@ void main() {
     expect(fakeClient.deletedSession?.threadId, 'session-2');
     expect(fakeClient.deleteCount, 1);
     expect(find.byKey(const Key('session_tile_session-2')), findsNothing);
+  });
+
+  testWidgets(
+    'keeps a long chat at the same scroll position while renaming from history',
+    (tester) async {
+      final fakeClient = FakeNapaxiChatClient();
+      await tester.pumpWidget(
+        _testApp(chatClientFactory: () async => fakeClient),
+      );
+      await configureSingleModel(tester);
+
+      for (var index = 0; index < 12; index++) {
+        await tester.enterText(
+          find.byKey(const Key('chat_input_field')),
+          'Conversation message $index',
+        );
+        await tester.tap(find.byKey(const Key('send_message_button')));
+        await tester.pumpAndSettle();
+      }
+
+      final messageList = tester.widget<ListView>(
+        find.byKey(const Key('chat_message_list')),
+      );
+      final chatScrollController = messageList.controller!;
+      expect(chatScrollController.position.maxScrollExtent, greaterThan(0));
+      chatScrollController.jumpTo(
+        chatScrollController.position.maxScrollExtent * 0.45,
+      );
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('session_history_button')));
+      await tester.pumpAndSettle();
+      final scrollOffsetBeforeRename = chatScrollController.offset;
+      expect(scrollOffsetBeforeRename, greaterThan(0));
+      expect(
+        tester
+            .widget<IgnorePointer>(
+              find.byKey(const Key('chat_primary_interaction_lock')),
+            )
+            .ignoring,
+        isTrue,
+      );
+
+      await tester.longPress(find.byKey(const Key('session_tile_session-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('session_rename_action_session-1')),
+      );
+      await tester.pumpAndSettle();
+
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.pump();
+
+      expect(chatScrollController.offset, closeTo(scrollOffsetBeforeRename, 1));
+
+      await tester.enterText(
+        find.byKey(const Key('session_rename_field_session-1')),
+        'Renamed without scrolling',
+      );
+      tester.view.resetViewInsets();
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const Key('confirm_rename_session_session-1')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(chatScrollController.offset, closeTo(scrollOffsetBeforeRename, 1));
+      expect(find.text('Renamed without scrolling'), findsOneWidget);
+    },
+  );
+
+  testWidgets('creates a project and starts a project chat', (tester) async {
+    final fakeClient = FakeNapaxiChatClient();
+    await tester.pumpWidget(
+      _testApp(chatClientFactory: () async => fakeClient),
+    );
+    await configureSingleModel(tester);
+
+    await tester.enterText(
+      find.byKey(const Key('chat_input_field')),
+      'Existing conversation',
+    );
+    await tester.tap(find.byKey(const Key('send_message_button')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('session_history_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('projects_menu_item')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('projects_page')), findsOneWidget);
+    expect(find.byKey(const Key('session_history_sheet')), findsNothing);
+    await tester.tap(find.byKey(const Key('projects_menu_button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('session_history_sheet')), findsOneWidget);
+    final historyTileBackground = tester.widget<DecoratedBox>(
+      find.byKey(const Key('session_tile_background_session-1')),
+    );
+    expect(
+      (historyTileBackground.decoration as BoxDecoration).color,
+      Colors.transparent,
+    );
+    await tester.tap(find.byKey(const Key('projects_menu_item')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('session_history_sheet')), findsNothing);
+    expect(find.byKey(const Key('projects_page')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('add_project_button')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('create_project_bottom_sheet')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('new_project_name_field')), findsOneWidget);
+    expect(find.byKey(const Key('project_icon_options')), findsNothing);
+    await tester.tap(find.byKey(const Key('new_project_icon_button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('project_icon_options')), findsOneWidget);
+    expect(find.byKey(const Key('project_color_options')), findsOneWidget);
+    expect(find.byKey(const Key('project_icon_preview')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('project_icon_option_code')));
+    await tester.tap(find.byKey(const Key('project_color_option_violet')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('confirm_project_icon_button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('new_project_name_field')),
+      'Launch plan',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('confirm_create_project_button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Launch plan'), findsOneWidget);
+    expect(find.byIcon(Icons.code_rounded), findsOneWidget);
+    expect(
+      tester.widget<Icon>(find.byIcon(Icons.code_rounded)).color,
+      const Color(0xFF8057D9),
+    );
+    expect(find.byIcon(Icons.chevron_right_rounded), findsNothing);
+
+    await tester.longPress(find.text('Launch plan'));
+    await tester.pumpAndSettle();
+    expect(find.text('Pin'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+    expect(find.text('Delete'), findsOneWidget);
+    await tester.tap(find.text('Pin'));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.push_pin_outlined), findsOneWidget);
+
+    await tester.longPress(find.text('Launch plan'));
+    await tester.pumpAndSettle();
+    expect(find.text('Unpin'), findsOneWidget);
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('Project settings'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('new_project_name_field')))
+          .controller
+          ?.text,
+      'Launch plan',
+    );
+    await tester.enterText(
+      find.byKey(const Key('new_project_name_field')),
+      'Launch plan updated',
+    );
+    await tester.tap(find.byKey(const Key('new_project_icon_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('project_icon_option_rocket')));
+    await tester.tap(find.byKey(const Key('confirm_project_icon_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('confirm_create_project_button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Launch plan updated'), findsOneWidget);
+    expect(find.byIcon(Icons.rocket_launch_outlined), findsOneWidget);
+
+    await tester.tap(find.text('Launch plan updated'));
+    await tester.pumpAndSettle();
+    expect(find.text('Launch plan updated'), findsOneWidget);
+    expect(find.byIcon(Icons.rocket_launch_outlined), findsNothing);
+    expect(find.byKey(const Key('project_chat_input')), findsOneWidget);
+    expect(find.byKey(const Key('chat_input_container')), findsOneWidget);
+    expect(find.byKey(const Key('add_attachment_button')), findsOneWidget);
+    expect(find.byKey(const Key('context_status_button')), findsNothing);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('project_chat_input')))
+          .decoration
+          ?.hintText,
+      'Message Launch plan updated',
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('project_chat_input')),
+      'Prepare the release checklist',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('project_start_chat_button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Prepare the release checklist'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'Fake SDK reply from napaxi-model: Prepare the release checklist',
+      ),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('project_chat_back_button')), findsOneWidget);
+    expect(find.byKey(const Key('session_history_button')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('project_chat_back_button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('project_sessions_list')), findsOneWidget);
+    expect(find.text('Prepare the release checklist'), findsOneWidget);
+    expect(find.byKey(const Key('project_detail_back_button')), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('project_sessions_list')),
+        matching: find.byIcon(Icons.chevron_right_rounded),
+      ),
+      findsNothing,
+    );
+
+    await tester.longPress(find.text('Prepare the release checklist'));
+    await tester.pumpAndSettle();
+    expect(find.text('Pin'), findsOneWidget);
+    expect(find.text('Rename'), findsOneWidget);
+    expect(find.text('Remove from project'), findsOneWidget);
+    expect(find.text('Delete'), findsOneWidget);
+    await tester.tap(find.text('Pin'));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.push_pin_outlined), findsOneWidget);
+
+    await tester.longPress(find.text('Prepare the release checklist'));
+    await tester.pumpAndSettle();
+    expect(find.text('Unpin'), findsOneWidget);
+    await tester.tap(find.text('Rename'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('project_session_rename_field')),
+      'Release checklist',
+    );
+    await tester.tap(
+      find.byKey(const Key('confirm_project_session_rename_button')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Release checklist'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('project_detail_back_button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('projects_page')), findsOneWidget);
+    expect(find.byKey(const Key('projects_menu_button')), findsOneWidget);
+
+    await tester.tap(find.text('Launch plan updated'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Release checklist'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('project_chat_back_button')), findsOneWidget);
+
+    await tester.dragFrom(const Offset(20, 300), const Offset(220, 0));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('project_sessions_list')), findsOneWidget);
+    expect(find.text('Release checklist'), findsOneWidget);
+
+    await tester.dragFrom(const Offset(20, 300), const Offset(220, 0));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('projects_page')), findsOneWidget);
+    expect(find.byKey(const Key('projects_menu_button')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('projects_menu_button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('projects_menu_selected')), findsOneWidget);
+    expect(find.byKey(const Key('session_tile_session-1')), findsOneWidget);
+    expect(find.byKey(const Key('session_tile_session-2')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('projects_menu_item')));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('Launch plan updated'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete'));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete project?'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'To keep any chats, move them out of the project before deleting.',
+      ),
+      findsOneWidget,
+    );
+    expect(fakeClient.deleteCount, 0);
+    await tester.tap(find.byKey(const Key('confirm_delete_project_button')));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+      if (fakeClient.deleteCount == 1 &&
+          find.text('Launch plan updated').evaluate().isEmpty) {
+        break;
+      }
+    }
+    await tester.pumpAndSettle();
+    expect(fakeClient.deleteCount, 1);
+    expect(find.text('Launch plan updated'), findsNothing);
+  });
+
+  testWidgets('moves a project chat back to the main history', (tester) async {
+    final fakeClient = FakeNapaxiChatClient();
+    await tester.pumpWidget(
+      _testApp(chatClientFactory: () async => fakeClient),
+    );
+    await configureSingleModel(tester);
+
+    await tester.tap(find.byKey(const Key('session_history_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('projects_menu_item')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('add_project_button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('new_project_name_field')),
+      'Archive',
+    );
+    await tester.tap(find.byKey(const Key('confirm_create_project_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Archive'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const Key('project_chat_input')),
+      'Keep this chat',
+    );
+    await tester.tap(find.byKey(const Key('project_start_chat_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('project_chat_back_button')));
+    await tester.pumpAndSettle();
+
+    await tester.longPress(find.text('Keep this chat'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove from project'));
+    await tester.pumpAndSettle();
+    expect(find.text('Keep this chat'), findsNothing);
+    expect(fakeClient.deleteCount, 0);
+
+    await tester.tap(find.byKey(const Key('project_detail_back_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('projects_menu_button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Keep this chat'), findsOneWidget);
+    expect(find.byKey(const Key('session_history_sheet')), findsOneWidget);
   });
 
   testWidgets('searches chat history from the side menu', (tester) async {
@@ -6514,6 +7934,16 @@ void main() {
 
     expect(find.text('Recent'), findsNothing);
     expect(find.byKey(const Key('new_session_button')), findsNothing);
+    expect(
+      tester
+          .widget<Scaffold>(find.byKey(const Key('chat_root_scaffold')))
+          .resizeToAvoidBottomInset,
+      isFalse,
+    );
+    expect(
+      find.byKey(const Key('chat_background_keyboard_inset_isolation')),
+      findsOneWidget,
+    );
 
     await tester.enterText(
       find.byKey(const Key('session_history_search_field')),
@@ -6548,28 +7978,85 @@ void main() {
   testWidgets('swipes chat history open and closed', (tester) async {
     await tester.pumpWidget(_testApp());
 
+    expect(
+      tester.getTopLeft(find.byKey(const Key('chat_primary_surface'))).dx,
+      0,
+    );
+    expect(
+      tester
+          .widget<PhysicalModel>(find.byKey(const Key('chat_primary_surface')))
+          .color,
+      const Color(0xFFF7F8FA),
+    );
+    expect(
+      tester
+          .widget<Opacity>(find.byKey(const Key('chat_primary_content')))
+          .opacity,
+      1,
+    );
+    expect(
+      (tester
+                  .widget<Container>(
+                    find.byKey(const Key('chat_input_container')),
+                  )
+                  .decoration
+              as BoxDecoration)
+          .color,
+      const Color(0xFFF7F8FA),
+    );
+
     await tester.drag(
       find.byKey(const Key('chat_message_list')),
       const Offset(320, 0),
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Recent'), findsOneWidget);
+    expect(find.text('No chats yet'), findsOneWidget);
     expect(
       find.byKey(const Key('session_history_search_button')),
       findsOneWidget,
     );
     expect(find.byKey(const Key('new_session_button')), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.byKey(const Key('session_history_sheet'))).dx,
+      0,
+    );
+    expect(
+      tester
+          .widget<Material>(find.byKey(const Key('session_history_sheet')))
+          .color,
+      const Color(0xFFF7F8FA),
+    );
+    expect(
+      tester.getTopLeft(find.byKey(const Key('chat_primary_surface'))).dx,
+      greaterThan(300),
+    );
+    expect(
+      tester
+          .widget<Opacity>(find.byKey(const Key('chat_primary_content')))
+          .opacity,
+      lessThan(0.5),
+    );
 
     await tester.dragFrom(const Offset(320, 300), const Offset(-320, 0));
     await tester.pumpAndSettle();
 
-    expect(find.text('Recent'), findsNothing);
+    expect(find.text('No chats yet'), findsNothing);
     expect(
       find.byKey(const Key('session_history_search_button')),
       findsNothing,
     );
     expect(find.byKey(const Key('new_session_button')), findsNothing);
+    expect(
+      tester.getTopLeft(find.byKey(const Key('chat_primary_surface'))).dx,
+      0,
+    );
+    expect(
+      tester
+          .widget<Opacity>(find.byKey(const Key('chat_primary_content')))
+          .opacity,
+      1,
+    );
   });
 
   testWidgets('dismisses the keyboard focus when tapping the message list', (

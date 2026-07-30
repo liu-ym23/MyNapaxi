@@ -651,6 +651,7 @@ String _a2aPeerDisplayLabel(Object peer) {
 String _a2aDefaultPeerDisplayLabel(String peerId) {
   final normalized = peerId.trim().toLowerCase();
   if (normalized.startsWith('ios-')) return 'iOS Agent';
+  if (normalized == 'android-apk-build') return 'Android APK Build';
   if (normalized.startsWith('android-')) return 'Android Agent';
   return '附近 Agent';
 }
@@ -703,6 +704,12 @@ abstract class NapaxiChatClient {
   Future<void> applyCapabilitySelection(
     sdk.NapaxiCapabilitySelection capabilitySelection,
   );
+
+  Future<sdk.CodexAgentEngineConfigResult> syncCodexAgentEngineModel(
+    LlmModelProfile profile,
+  );
+
+  Future<sdk.CodexAgentEngineConfigResult> clearCodexAgentEngineModelConfig();
 
   Future<List<DemoAgent>> listAgents();
 
@@ -1278,7 +1285,7 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
   final FlutterSecureStorage _channelCredentialStore =
       const FlutterSecureStorage();
   _CliEngineBridge? _ccBridge;
-  _CliEngineBridge? _codexBridge;
+  final Map<String, String> _codexNativeThreadIds = {};
   Future<String?>? _cliWorkspaceHostPathFuture;
 
   DemoScenarioRuntimeProfile get _activeRuntimeProfile {
@@ -1401,6 +1408,23 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     await _ensureEngine(engine.config);
   }
 
+  @override
+  Future<sdk.CodexAgentEngineConfigResult> syncCodexAgentEngineModel(
+    LlmModelProfile profile,
+  ) async {
+    final engine = await _ensureManagementEngine();
+    return engine.syncCodexAgentEngineModel(
+      profile.toSdkConfig(responseLanguage: 'en'),
+    );
+  }
+
+  @override
+  Future<sdk.CodexAgentEngineConfigResult>
+  clearCodexAgentEngineModelConfig() async {
+    final engine = await _ensureManagementEngine();
+    return engine.clearCodexAgentEngineModelConfig();
+  }
+
   Future<String?> _systemUserTimezone() async {
     try {
       final context = await sdk.NapaxiPlatformContextResolver.resolve();
@@ -1437,6 +1461,8 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
         'napaxi.tool.custom_host',
         _localA2AToolCapabilityId,
         _DemoAutomationToolExecutor.gitCapabilityId,
+        sdk.codexAgentEngineId,
+        'napaxi.agent_engine.external_host',
         'napaxi.tool.agent_app_action',
         'napaxi.platform_tool.*',
         'napaxi.tool.browser',
@@ -1495,6 +1521,9 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
       config: effectiveConfig,
       toolExecutor: _automationToolExecutor,
       toolResultObserver: _automationToolExecutor.observeToolResult,
+      agentEngineExecutor: _CliAgentEngineExecutor(
+        bridgeForEngine: _getOrCreateBridge,
+      ),
       agentAppActionExecutor: _DemoAgentAppActionExecutor(
         androidExecutor: Platform.isAndroid
             ? sdk.AndroidAgentProviderActionExecutor()
@@ -1547,6 +1576,7 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
       sdk.NapaxiChannelCapability.im,
       sdk.NapaxiChannelCapability.device,
       'napaxi.tool.agent_app_action',
+      sdk.codexAgentEngineId,
       ...selection.enabledCapabilities,
     }.toList(growable: false);
     final disabled = selection.disabledCapabilities
@@ -3103,6 +3133,7 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
                 .map((profile) => profile.systemPrompt.trim())
                 .firstWhere((prompt) => prompt.isNotEmpty, orElse: () => ''),
       maxToolIterations: selection.maxToolIterations,
+      contextEngine: _restoredGlobalContextEngine(selection, restoredProfiles),
     );
     final modelProfileId = await _modelProfileIdForChannelAgent(
       engine,
@@ -3878,6 +3909,9 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
       provider: existing.provider,
       model: existing.model,
       modelProfileId: modelProfileId?.trim(),
+      engineId: existing.engineId,
+      engineProfileId: existing.engineProfileId,
+      engineConfig: existing.engineConfig,
       toolFilter: existing.toolFilter,
       toolList: existing.toolList,
       icon: existing.icon,
@@ -3903,12 +3937,27 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     required String agentId,
   }) async {
     await _ensureAgent(agentId);
-    return _requireEngine().createSession(
+    final engine = _requireEngine();
+    final session = await engine.createSession(
       channelType: 'app',
       accountId: _activeAccountId,
       threadId: threadId,
       agentId: agentId,
     );
+    if (agentId == 'engine.codex' && threadId.trim().isNotEmpty) {
+      _codexNativeThreadIds[session.threadId] = threadId;
+      final binding = await engine.bindCodexAgentEngineThread(
+        session: session,
+        nativeThreadId: threadId,
+        agentId: agentId,
+      );
+      if (!binding.success) {
+        debugPrint(
+          '[$_codexHistoryLogTag] bind thread=$threadId session=${session.threadId} error=${binding.errorCode}:${binding.error}',
+        );
+      }
+    }
+    return session;
   }
 
   @override
@@ -3923,14 +3972,8 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     if (agentId == 'engine.cc') {
       return _sendToCliBridge('cc', session.threadId, message);
     }
-    if (agentId == 'engine.codex') {
-      return _sendToCliBridge(
-        'codex',
-        session.threadId,
-        message,
-        onNativeThreadId: onNativeThreadId,
-      );
-    }
+    // Codex is routed through the core-owned `napaxi.agent_engine.codex`
+    // runner. Flutter no longer hosts the Codex app-server PTY.
     _automationToolExecutor.setCurrentSession(session, agentId: agentId);
     return _requireEngine().sendToSession(
       session,
@@ -3974,8 +4017,6 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     switch (engineId) {
       case 'cc':
         return _ccBridge ??= _CliEngineBridge(spec: _CliEngineSpec.cc);
-      case 'codex':
-        return _codexBridge ??= _CliEngineBridge(spec: _CliEngineSpec.codex);
       default:
         throw ArgumentError('Unknown CLI engine: $engineId');
     }
@@ -3987,12 +4028,14 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
       case 'cc':
         _ccBridge?.resetForNewConversation();
       case 'codex':
-        _codexBridge?.resetForNewConversation();
+        // Core owns Codex session/thread state; no Flutter PTY bridge reset.
+        return;
     }
   }
 
   @override
   Future<void> clearCliNativeId(String engineId) async {
+    if (engineId == 'codex') return;
     try {
       await _getOrCreateBridge(engineId).clearNativeIds();
     } catch (_) {}
@@ -4041,10 +4084,6 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
       _ccBridge?.sendInterrupt();
       return Future.value(true);
     }
-    if (agentId == 'engine.codex') {
-      _codexBridge?.sendInterrupt();
-      return Future.value(true);
-    }
     return _requireEngine().cancelSession(session, agentId: agentId);
   }
 
@@ -4052,8 +4091,25 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
   Future<bool> deleteSession(
     sdk.SessionKey session, {
     required String agentId,
-  }) {
-    return _requireEngine().deleteSession(session, agentId: agentId);
+  }) async {
+    final engine = _requireEngine();
+    if (agentId == 'engine.codex') {
+      final nativeThreadId =
+          _codexNativeThreadIds[session.threadId] ?? session.threadId;
+      final native = await engine.deleteCodexAgentEngineThread(
+        nativeThreadId,
+        session: session,
+        agentId: agentId,
+      );
+      if (!native.success) {
+        debugPrint(
+          '[$_codexHistoryLogTag] thread/delete failed native=$nativeThreadId session=${session.threadId} error=${native.errorCode}:${native.error}',
+        );
+        return false;
+      }
+      _codexNativeThreadIds.remove(session.threadId);
+    }
+    return engine.deleteSession(session, agentId: agentId);
   }
 
   @override
@@ -4081,10 +4137,6 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     final ccBridge = _ccBridge;
     if (ccBridge != null) {
       return ccBridge.answerHumanRequest(requestId, response);
-    }
-    final codexBridge = _codexBridge;
-    if (codexBridge != null) {
-      return codexBridge.answerHumanRequest(requestId, response);
     }
     return _requireEngine().answerHumanRequest(requestId, response);
   }
@@ -4149,44 +4201,6 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
 
   @override
   Future<List<sdk.SessionInfo>> listSessions({required String agentId}) async {
-    if (agentId == 'engine.codex') {
-      // Codex: pull threads directly via thread/list RPC. The codex thread id
-      // doubles as the UI session id — no mapping layer.
-      final bridge = _getOrCreateBridge('codex');
-      final threads = await bridge.listThreads();
-      debugPrint(
-        '[$_codexHistoryLogTag] listSessions codex threads=${threads.length}',
-      );
-      final sessions = threads
-          .map((thread) {
-            final id = thread['id'] as String;
-            final createdMs = thread['createdAt'] as int;
-            final updatedMs = thread['updatedAt'] as int;
-            final title = (thread['name'] as String).trim().isNotEmpty
-                ? thread['name'] as String
-                : (thread['preview'] as String);
-            return sdk.SessionInfo(
-              key: sdk.SessionKey(
-                channelType: 'cli',
-                accountId: agentId,
-                threadId: id,
-              ),
-              title: title,
-              preview: thread['preview'] as String,
-              createdAt: DateTime.fromMillisecondsSinceEpoch(
-                createdMs,
-              ).toIso8601String(),
-              updatedAt: DateTime.fromMillisecondsSinceEpoch(
-                updatedMs,
-              ).toIso8601String(),
-            );
-          })
-          .toList(growable: false);
-      debugPrint(
-        '[$_codexHistoryLogTag] listSessions codex mapped=${sessions.length} first=${sessions.isEmpty ? 'none' : sessions.first.key.threadId}',
-      );
-      return sessions;
-    }
     if (agentId == 'engine.cc') {
       final sessions = await _getOrCreateBridge(
         'cc',
@@ -4197,10 +4211,64 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
       return sessions;
     }
     await _ensureAgent(agentId);
-    return (await _ensureManagementEngine()).listSessions(
+    final engine = await _ensureManagementEngine();
+    final stored = await engine.listSessions(
       accountId: _activeAccountId,
       agentId: agentId,
     );
+    if (agentId != 'engine.codex') return stored;
+
+    final native = await engine.listCodexAgentEngineThreads(
+      accountId: _activeAccountId,
+      agentId: agentId,
+    );
+    if (!native.success) {
+      debugPrint(
+        '[$_codexHistoryLogTag] thread/list failed error=${native.errorCode}:${native.error}',
+      );
+      return stored;
+    }
+    if (native.threads.isEmpty) return stored;
+    final now = DateTime.now();
+    final nativeSessions = <sdk.SessionInfo>[];
+    for (final thread in native.threads) {
+      final session = await engine.createSession(
+        agentId: agentId,
+        channelType: 'cli',
+        accountId: _activeAccountId,
+        threadId: thread.id,
+      );
+      _codexNativeThreadIds[session.threadId] = thread.id;
+      final binding = await engine.bindCodexAgentEngineThread(
+        session: session,
+        nativeThreadId: thread.id,
+        agentId: agentId,
+      );
+      if (!binding.success) {
+        debugPrint(
+          '[$_codexHistoryLogTag] restore bind native=${thread.id} session=${session.threadId} error=${binding.errorCode}:${binding.error}',
+        );
+      }
+      final createdAt = thread.createdAtMs > 0
+          ? DateTime.fromMillisecondsSinceEpoch(thread.createdAtMs)
+          : now;
+      final updatedAt = thread.updatedAtMs > 0
+          ? DateTime.fromMillisecondsSinceEpoch(thread.updatedAtMs)
+          : createdAt;
+      final title = thread.name.trim().isNotEmpty
+          ? thread.name
+          : thread.preview;
+      nativeSessions.add(
+        sdk.SessionInfo(
+          key: session,
+          title: title,
+          preview: thread.preview,
+          createdAt: createdAt.toIso8601String(),
+          updatedAt: updatedAt.toIso8601String(),
+        ),
+      );
+    }
+    return nativeSessions;
   }
 
   @override
@@ -4208,13 +4276,22 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     String threadId, {
     required String agentId,
   }) async {
-    if (agentId == 'engine.cc' || agentId == 'engine.codex') {
+    if (agentId == 'engine.cc') {
       return _getCliEngineHistory(threadId, agentId);
     }
-    return (await _ensureManagementEngine()).getHistory(
-      threadId,
-      agentId: agentId,
-    );
+    final engine = await _ensureManagementEngine();
+    if (agentId == 'engine.codex') {
+      final nativeThreadId = _codexNativeThreadIds[threadId] ?? threadId;
+      final native = await engine.readCodexAgentEngineThread(
+        nativeThreadId,
+        accountId: _activeAccountId,
+        agentId: agentId,
+      );
+      if (native.success && native.messages.isNotEmpty) {
+        return native.messages;
+      }
+    }
+    return engine.getHistory(threadId, agentId: agentId);
   }
 
   @override
@@ -4224,11 +4301,23 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     String? before,
     int limit = 80,
   }) async {
-    if (agentId == 'engine.cc' || agentId == 'engine.codex') {
+    if (agentId == 'engine.cc') {
       final messages = await _getCliEngineHistory(threadId, agentId);
       return sdk.HistoryPage(messages: messages, hasMore: false);
     }
-    return (await _ensureManagementEngine()).getHistoryPage(
+    final engine = await _ensureManagementEngine();
+    if (agentId == 'engine.codex' && before == null) {
+      final nativeThreadId = _codexNativeThreadIds[threadId] ?? threadId;
+      final native = await engine.readCodexAgentEngineThread(
+        nativeThreadId,
+        accountId: _activeAccountId,
+        agentId: agentId,
+      );
+      if (native.success && native.messages.isNotEmpty) {
+        return sdk.HistoryPage(messages: native.messages, hasMore: false);
+      }
+    }
+    return engine.getHistoryPage(
       threadId,
       agentId: agentId,
       before: before,
@@ -4374,12 +4463,19 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     if (!sdk.NapaxiFileBridge.isInitialized) {
       throw StateError('napaxi file bridge has not been initialized');
     }
-    final cliWorkspace = await _cliWorkspaceFiles(
-      agentId: agentId,
-      subdir: subdir,
-      recursive: recursive,
-    );
-    if (cliWorkspace != null) return cliWorkspace;
+    // Only the legacy CC external CLI engine uses the host-side
+    // environment-workspace mirror. Codex is now core-owned and shares
+    // Napaxi's default engine workspace through FileBridge scoped listing;
+    // otherwise the Files panel looks at the stale environment-workspace/codex
+    // mirror.
+    if (agentId == 'engine.cc') {
+      final cliWorkspace = await _cliWorkspaceFiles(
+        agentId: agentId,
+        subdir: subdir,
+        recursive: recursive,
+      );
+      if (cliWorkspace != null) return cliWorkspace;
+    }
     return sdk.NapaxiFileBridge.instance.listFilesScoped(
       accountId: _activeAccountId,
       agentId: agentId,
@@ -4396,12 +4492,14 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     if (!sdk.NapaxiFileBridge.isInitialized) {
       throw StateError('napaxi file bridge has not been initialized');
     }
-    final cliDeletePath = await _cliSandboxDeletePath(
-      agentId: agentId,
-      sandboxPath: sandboxPath,
-    );
-    if (cliDeletePath != null) {
-      return sdk.NapaxiFileBridge.instance.deleteFile(cliDeletePath);
+    if (agentId == 'engine.cc') {
+      final cliDeletePath = await _cliSandboxDeletePath(
+        agentId: agentId,
+        sandboxPath: sandboxPath,
+      );
+      if (cliDeletePath != null) {
+        return sdk.NapaxiFileBridge.instance.deleteFile(cliDeletePath);
+      }
     }
     return sdk.NapaxiFileBridge.instance.deleteFileScoped(
       sandboxPath,
@@ -5474,7 +5572,9 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
       );
       await file.writeAsString(jsonEncode(artifact.toJson()));
     } catch (error) {
-      debugPrint('[napaxiToolTrace] local A2A blob index persist failed=$error');
+      debugPrint(
+        '[napaxiToolTrace] local A2A blob index persist failed=$error',
+      );
     }
   }
 
@@ -6453,24 +6553,60 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     await engine.getOrCreateAgent(agentId);
   }
 
+  sdk.AgentDefinition _runtimeAgentDefinition(
+    DemoScenarioRuntimeProfile runtimeProfile,
+  ) {
+    final isCodex = runtimeProfile.agentId == 'engine.codex';
+    final isDeveloper = runtimeProfile.isDeveloper;
+    return sdk.AgentDefinition(
+      id: runtimeProfile.agentId,
+      name: runtimeProfile.activeEngine.label,
+      description: isCodex
+          ? (isDeveloper
+                ? 'Codex CLI engine runtime hosted by the core-owned Codex agent engine boundary.'
+                : 'Codex beta runtime hosted by the core-owned Codex agent engine boundary.')
+          : 'Focused mobile development engine runtime.',
+      systemPrompt: isDeveloper
+          ? 'You are a focused mobile development engine. Prioritize concise project-aware coding help, use dedicated Git/project tools when available, and avoid multi-agent delegation unless the host explicitly exposes it.'
+          : 'You are Napaxi, a concise helpful mobile-native assistant.',
+      engineId: isCodex ? sdk.codexAgentEngineId : sdk.napaxiCoreAgentEngineId,
+      engineProfileId: isCodex ? 'codex' : '',
+      engineConfig: isCodex ? const {'kind': 'codex'} : const {},
+      icon: 'terminal',
+    );
+  }
+
+  bool _runtimeAgentDefinitionNeedsUpdate(
+    sdk.AgentDefinition existing,
+    sdk.AgentDefinition desired,
+  ) {
+    return existing.name != desired.name ||
+        existing.description != desired.description ||
+        existing.systemPrompt != desired.systemPrompt ||
+        existing.engineId != desired.engineId ||
+        existing.engineProfileId != desired.engineProfileId ||
+        jsonEncode(existing.engineConfig) != jsonEncode(desired.engineConfig) ||
+        existing.icon != desired.icon;
+  }
+
   Future<void> _ensureRuntimeAgent(sdk.NapaxiEngine engine) async {
     final runtimeProfile = _activeRuntimeProfile;
-    if (runtimeProfile.supportsAgents) {
+    if (runtimeProfile.supportsAgents ||
+        runtimeProfile.agentId == sdk.NapaxiEngine.defaultAgentId) {
       engine.ensureAgent();
+      await _ensureRuntimePresetSkills(engine, runtimeProfile);
       return;
     }
+    final desiredDefinition = _runtimeAgentDefinition(runtimeProfile);
     final existing = await engine.getAgentDefinition(runtimeProfile.agentId);
     if (existing == null) {
-      await engine.createAgentDefinition(
-        sdk.AgentDefinition(
-          id: runtimeProfile.agentId,
-          name: runtimeProfile.activeEngine.label,
-          description: 'Focused mobile development engine runtime.',
-          systemPrompt:
-              'You are a focused mobile development engine. Prioritize concise project-aware coding help, use dedicated Git/project tools when available, and avoid multi-agent delegation unless the host explicitly exposes it.',
-          icon: 'terminal',
-        ),
-      );
+      await engine.createAgentDefinition(desiredDefinition);
+    } else if (_runtimeAgentDefinitionNeedsUpdate(
+      existing,
+      desiredDefinition,
+    )) {
+      await engine.updateAgentDefinition(desiredDefinition);
+      engine.deleteAgent(runtimeProfile.agentId);
     }
     final created = await engine.createAgentFromDefinition(
       runtimeProfile.agentId,
@@ -6485,13 +6621,14 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     sdk.NapaxiEngine engine,
     DemoScenarioRuntimeProfile runtimeProfile,
   ) async {
-    if (!runtimeProfile.isDeveloper) return;
+    final presetSkills = _runtimePresetSkills(runtimeProfile);
+    if (presetSkills.isEmpty) return;
     final installed = {
       for (final skill in engine.listSkills(agentId: runtimeProfile.agentId))
         skill.name.trim().toLowerCase(),
     };
     var changed = false;
-    for (final preset in _defaultPresetSkills()) {
+    for (final preset in presetSkills) {
       final name = preset.name.trim().toLowerCase();
       if (name.isEmpty || installed.contains(name)) continue;
       final result = await engine.installSkill(
@@ -6506,6 +6643,19 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     if (changed) {
       await engine.reloadSkills(agentId: runtimeProfile.agentId);
     }
+  }
+
+  List<DemoPresetSkill> _runtimePresetSkills(
+    DemoScenarioRuntimeProfile runtimeProfile,
+  ) {
+    final presetSkills = _defaultPresetSkills();
+    if (runtimeProfile.isDeveloper) return presetSkills;
+    if (runtimeProfile.mode == DemoScenarioRuntimeMode.general) {
+      return presetSkills
+          .where((skill) => skill.name == 'android-apk-build')
+          .toList(growable: false);
+    }
+    return const [];
   }
 
   Future<void> _reloadProviderAgent(String agentId) async {
@@ -10460,7 +10610,9 @@ echo "build/app.apk"
         return _a2aPeerWithFreshEndpoint(peer, candidate);
       }
     } catch (error) {
-      debugPrint('[napaxiToolTrace] local A2A peer send refresh failed: $error');
+      debugPrint(
+        '[napaxiToolTrace] local A2A peer send refresh failed: $error',
+      );
     }
     return null;
   }

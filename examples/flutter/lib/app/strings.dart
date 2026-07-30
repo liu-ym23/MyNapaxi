@@ -5,6 +5,9 @@ class AppStrings {
     required this.appTitle,
     required this.welcomeMessage,
     required this.welcomeReadyMessage,
+    required this.starterPromptTitle,
+    required this.starterPromptDevelopApk,
+    required this.starterPromptCompressPhoto,
     required this.noModelConfigured,
     required this.sessionsTooltip,
     required this.llmSettingsTooltip,
@@ -29,6 +32,7 @@ class AppStrings {
     required this.cancelEditTooltip,
     required this.sendTooltip,
     required this.stopTooltip,
+    required this.retractQueuedTooltip,
     required this.addAttachmentTooltip,
     required this.conversationAttachmentsTooltip,
     required this.terminalTitle,
@@ -231,6 +235,10 @@ class AppStrings {
     required this.recallFilesTitle,
     required this.noFilesTitle,
     required this.noFilesDescription,
+    required this.searchFilesTooltip,
+    required this.searchFilesHint,
+    required this.searchFilesNoResultsTitle,
+    required this.searchFilesNoResultsDescription,
     required this.fileLoadFailed,
     required this.fileOpenFailed,
     required this.deleteFile,
@@ -307,16 +315,15 @@ class AppStrings {
     required this.removeSkillConfirmationTitle,
     required this.removeSkillConfirmationMessage,
     required this.configureToViewSkills,
-    required this.favorites,
-    required this.noFavoritesTitle,
-    required this.noFavoritesDescription,
-    required this.addFavorite,
-    required this.removeFavorite,
     required this.recent,
     required this.currentChat,
     required this.pinned,
     required this.pinChat,
     required this.unpinChat,
+    required this.renameChat,
+    required this.renameChatTitle,
+    required this.renameChatHint,
+    required this.latestMessage,
     required this.deleteChat,
     required this.deleteChatConfirmationTitle,
     required this.deleteChatConfirmationMessage,
@@ -333,6 +340,9 @@ class AppStrings {
   final String appTitle;
   final String welcomeMessage;
   final String welcomeReadyMessage;
+  final String starterPromptTitle;
+  final String starterPromptDevelopApk;
+  final String starterPromptCompressPhoto;
   final String noModelConfigured;
   final String sessionsTooltip;
   final String llmSettingsTooltip;
@@ -357,6 +367,7 @@ class AppStrings {
   final String cancelEditTooltip;
   final String sendTooltip;
   final String stopTooltip;
+  final String retractQueuedTooltip;
   final String addAttachmentTooltip;
   final String conversationAttachmentsTooltip;
   final String terminalTitle;
@@ -561,6 +572,10 @@ class AppStrings {
   final String recallFilesTitle;
   final String noFilesTitle;
   final String noFilesDescription;
+  final String searchFilesTooltip;
+  final String searchFilesHint;
+  final String searchFilesNoResultsTitle;
+  final String searchFilesNoResultsDescription;
   final String Function(String message) fileLoadFailed;
   final String Function(String message) fileOpenFailed;
   final String deleteFile;
@@ -637,16 +652,15 @@ class AppStrings {
   final String removeSkillConfirmationTitle;
   final String Function(String name) removeSkillConfirmationMessage;
   final String configureToViewSkills;
-  final String favorites;
-  final String noFavoritesTitle;
-  final String noFavoritesDescription;
-  final String addFavorite;
-  final String removeFavorite;
   final String recent;
   final String currentChat;
   final String pinned;
   final String pinChat;
   final String unpinChat;
+  final String renameChat;
+  final String renameChatTitle;
+  final String renameChatHint;
+  final String latestMessage;
   final String deleteChat;
   final String deleteChatConfirmationTitle;
   final String Function(String title) deleteChatConfirmationMessage;
@@ -671,10 +685,14 @@ class AppStrings {
   }
 
   static final english = AppStrings(
-    appTitle: 'napaxi',
+    appTitle: 'Napaxi',
     welcomeMessage:
         'Welcome to napaxi. Open Basic configuration from Settings, then chat with the SDK-backed agent.',
     welcomeReadyMessage: 'napaxi is ready. Ask anything to start chatting.',
+    starterPromptTitle: 'Try asking',
+    starterPromptDevelopApk:
+        'Build me an expense-tracking APK and install it on my phone',
+    starterPromptCompressPhoto: 'Compress this photo to under 1 MB',
     noModelConfigured: 'No model configured',
     sessionsTooltip: 'Chat history',
     llmSettingsTooltip: 'Basic configuration',
@@ -701,6 +719,7 @@ class AppStrings {
     cancelEditTooltip: 'Cancel editing',
     sendTooltip: 'Send',
     stopTooltip: 'Stop',
+    retractQueuedTooltip: 'Retract queued messages',
     addAttachmentTooltip: 'Add attachment',
     conversationAttachmentsTooltip: 'Conversation attachments',
     terminalTitle: 'Terminal',
@@ -790,17 +809,17 @@ class AppStrings {
     apiKeyInvalidForHeader:
         'API Key contains unsupported characters. Paste the raw key only.',
     noModelsFound: 'No models returned. You can still enter one manually.',
-    openConfiguration: 'Open basic configuration',
+    openConfiguration: 'Open model settings',
     noSavedModelsTitle: 'No models yet',
     modelCapabilitiesTitle: 'Model capabilities',
     addModelIdLabel: 'Model ID',
     addModelIdHint: 'model-id',
     addModelId: 'Add model ID',
     capabilityChat: 'Chat',
-    capabilityImageAnalysis: 'Image analysis',
+    capabilityImageAnalysis: 'Image understanding',
     capabilityImageGeneration: 'Image generation',
     capabilityVideoGeneration: 'Video generation',
-    capabilityAudioAnalysis: 'Audio analysis',
+    capabilityAudioAnalysis: 'Audio understanding',
     capabilitySlotsTitle: 'Capability slots',
     noCapabilityModels: (capability) =>
         'Add a model that supports $capability to enable this slot.',
@@ -821,16 +840,16 @@ class AppStrings {
     maxTokensHint: '40960',
     contextAdvancedTitle: 'Context',
     contextAdvancedDescription:
-        'These settings only affect this profile when it is used as the main reasoning/chat model.',
+        'Global context settings for the agent. Auto follows the active reasoning model and falls back to 128K when its limit cannot be identified.',
     nativeContextWindowLabel: 'Native context window',
     nativeContextWindowHelp:
         'The model/provider advertised limit. It explains capacity but does not force the whole window to be used.',
     nativeContextWindowCustomLabel: 'Custom native window',
     nativeContextWindowCustomHint: '1000000',
-    contextWindowLabel: 'Effective context budget',
+    contextWindowLabel: 'Context length',
     contextWindowHelp:
-        'The actual budget used for planning, pruning, compaction, and overflow checks.',
-    contextWindowCustomLabel: 'Custom effective budget',
+        'Used globally for planning, pruning, compaction, and overflow checks.',
+    contextWindowCustomLabel: 'Custom context length',
     contextWindowCustomHint: '1000000',
     responseReserveLabel: 'Response reserve',
     responseReserveHelp:
@@ -922,6 +941,10 @@ class AppStrings {
     recallFilesTitle: 'Recall',
     noFilesTitle: 'No files yet',
     noFilesDescription: 'Files created by the agent will appear here.',
+    searchFilesTooltip: 'Search files',
+    searchFilesHint: 'Search by name or path',
+    searchFilesNoResultsTitle: 'No matching files',
+    searchFilesNoResultsDescription: 'Try a different file name or path.',
     fileLoadFailed: (message) => 'Could not load files: $message',
     fileOpenFailed: (message) => 'Could not open file: $message',
     deleteFile: 'Delete',
@@ -1011,16 +1034,15 @@ class AppStrings {
     removeSkillConfirmationMessage: (name) => 'Remove "$name" from this agent?',
     configureToViewSkills:
         'Configure an LLM model and API key before managing skills.',
-    favorites: 'Favorites',
-    noFavoritesTitle: 'No favorites yet',
-    noFavoritesDescription: 'Tap the star on any attachment to keep it here.',
-    addFavorite: 'Add to favorites',
-    removeFavorite: 'Remove from favorites',
     recent: 'Recent',
     currentChat: 'Current',
     pinned: 'Pinned',
     pinChat: 'Pin',
     unpinChat: 'Unpin',
+    renameChat: 'Rename',
+    renameChatTitle: 'Rename chat',
+    renameChatHint: 'Chat title',
+    latestMessage: 'Latest message',
     deleteChat: 'Delete',
     deleteChatConfirmationTitle: 'Delete chat?',
     deleteChatConfirmationMessage: (title) =>
@@ -1036,9 +1058,12 @@ class AppStrings {
   );
 
   static final chinese = AppStrings(
-    appTitle: 'napaxi',
+    appTitle: 'Napaxi',
     welcomeMessage: '欢迎使用 napaxi。请从设置里的“基础配置”添加模型，然后开始对话。',
     welcomeReadyMessage: 'napaxi 已准备好，可以直接开始对话。',
+    starterPromptTitle: '试试问',
+    starterPromptDevelopApk: '帮我开发一个记账APK，并安装到手机上',
+    starterPromptCompressPhoto: '帮我压缩这张照片到1MB以内',
     noModelConfigured: '未配置模型',
     sessionsTooltip: '会话历史',
     llmSettingsTooltip: '基础配置',
@@ -1064,6 +1089,7 @@ class AppStrings {
     cancelEditTooltip: '取消编辑',
     sendTooltip: '发送',
     stopTooltip: '停止',
+    retractQueuedTooltip: '撤回等待消息',
     addAttachmentTooltip: '添加附件',
     conversationAttachmentsTooltip: '本次对话附件',
     terminalTitle: '终端',
@@ -1148,17 +1174,17 @@ class AppStrings {
     apiKeyRequiredForTest: '请先填写 API Key 再测试。',
     apiKeyInvalidForHeader: 'API Key 包含无法用于请求头的字符，请只粘贴原始 key。',
     noModelsFound: '接口没有返回模型，也可以手动填写。',
-    openConfiguration: '打开基础配置',
+    openConfiguration: '打开模型设置',
     noSavedModelsTitle: '还没有模型',
     modelCapabilitiesTitle: '模型能力',
     addModelIdLabel: '模型 ID',
     addModelIdHint: 'model-id',
     addModelId: '添加模型 ID',
     capabilityChat: '聊天',
-    capabilityImageAnalysis: '图片分析',
+    capabilityImageAnalysis: '图片理解',
     capabilityImageGeneration: '图片生成',
     capabilityVideoGeneration: '视频生成',
-    capabilityAudioAnalysis: '语音分析',
+    capabilityAudioAnalysis: '语音理解',
     capabilitySlotsTitle: '能力槽位',
     noCapabilityModels: (capability) => '添加支持$capability的模型后可选择。',
     capabilitySelectionCleared: (model, capability) =>
@@ -1176,14 +1202,14 @@ class AppStrings {
     maxTokensLabel: '输出 Token',
     maxTokensHint: '40960',
     contextAdvancedTitle: '上下文',
-    contextAdvancedDescription: '这些设置仅在该模型作为主力推理/聊天模型时生效。',
+    contextAdvancedDescription: '智能体的全局上下文设置。自动会跟随当前主力推理模型，无法识别模型上限时使用 128K。',
     nativeContextWindowLabel: '原生上下文窗口',
     nativeContextWindowHelp: '模型或 provider 宣称的理论窗口，用于说明容量，不代表会把窗口全部用满。',
     nativeContextWindowCustomLabel: '自定义原生窗口',
     nativeContextWindowCustomHint: '1000000',
-    contextWindowLabel: '有效上下文预算',
-    contextWindowHelp: '实际用于预算、工具裁剪、上下文压缩和超限判断的窗口。',
-    contextWindowCustomLabel: '自定义有效预算',
+    contextWindowLabel: '上下文长度',
+    contextWindowHelp: '全局用于预算、工具裁剪、上下文压缩和超限判断。',
+    contextWindowCustomLabel: '自定义上下文长度',
     contextWindowCustomHint: '1000000',
     responseReserveLabel: '回复预留',
     responseReserveHelp: '预留给模型输出的 token；可用 prompt 预算约等于有效预算减去回复预留。',
@@ -1235,8 +1261,7 @@ class AppStrings {
     updateNoticeClose: '知道了',
     openInstallPage: '打开蒲公英页面',
     openReleasePage: '打开 GitHub 发布页',
-    updateReleasePagePrompt:
-        '当前构建不支持自动应用内更新，是否前往 GitHub 发布页手动下载最新安装包？',
+    updateReleasePagePrompt: '当前构建不支持自动应用内更新，是否前往 GitHub 发布页手动下载最新安装包？',
     releasePageOpenFailed: '无法打开 GitHub 发布页。',
     feedbackTitle: '问题反馈',
     feedbackContentLabel: '问题描述',
@@ -1270,6 +1295,10 @@ class AppStrings {
     recallFilesTitle: '召回',
     noFilesTitle: '暂无文件',
     noFilesDescription: 'Agent 创建的文件会显示在这里。',
+    searchFilesTooltip: '搜索文件',
+    searchFilesHint: '搜索文件名或路径',
+    searchFilesNoResultsTitle: '没有匹配文件',
+    searchFilesNoResultsDescription: '换一个文件名或路径试试。',
     fileLoadFailed: (message) => '无法加载文件：$message',
     fileOpenFailed: (message) => '无法打开文件：$message',
     deleteFile: '删除',
@@ -1354,16 +1383,15 @@ class AppStrings {
     removeSkillConfirmationTitle: '移除技能？',
     removeSkillConfirmationMessage: (name) => '确定从当前 Agent 移除“$name”吗？',
     configureToViewSkills: '请先配置 LLM 模型和 API Key，再管理技能。',
-    favorites: '收藏',
-    noFavoritesTitle: '还没有收藏',
-    noFavoritesDescription: '点击任意附件上的星星，就会保存在这里。',
-    addFavorite: '收藏附件',
-    removeFavorite: '取消收藏',
     recent: '最近',
     currentChat: '当前',
-    pinned: '置顶',
+    pinned: '已置顶',
     pinChat: '置顶',
     unpinChat: '取消置顶',
+    renameChat: '重命名',
+    renameChatTitle: '重命名会话',
+    renameChatHint: '会话标题',
+    latestMessage: '最新内容',
     deleteChat: '删除',
     deleteChatConfirmationTitle: '删除会话？',
     deleteChatConfirmationMessage: (title) => '确定删除“$title”吗？此操作无法撤销。',

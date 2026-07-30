@@ -1,5 +1,20 @@
 part of '../main.dart';
 
+const String _debugHotReloadTargetFromEnvironment = String.fromEnvironment(
+  'NAPAXI_DEBUG_HOT_RELOAD_TARGET',
+  defaultValue: '',
+);
+
+/// Hot-reload-friendly debug target.
+///
+/// Edit the fallback literal while `flutter run` is active, then press `r` to
+/// jump without restarting. A `--dart-define=NAPAXI_DEBUG_HOT_RELOAD_TARGET=...`
+/// value still wins for one-off runs.
+String get _debugHotReloadTarget =>
+    _debugHotReloadTargetFromEnvironment.trim().isNotEmpty
+    ? _debugHotReloadTargetFromEnvironment
+    : 'debug';
+
 const String _a2aProtocolFieldPattern =
     r'(?:kind|delivery|deliveryError|fromPeerId|toPeerId|peerId|sessionId|taskId|messageId|endpoint|transport|conversationTurn|conversationId|turnKind|turnId|replyToTurnId|sentIntent|remoteIntent|speechAct|requiresResponse|conversationOpen|conversationNeedsResponse|openQuestionCount|delivery_error|from_peer_id|to_peer_id|peer_id|session_id|task_id|message_id|conversation_turn|conversation_id|turn_kind|turn_id|reply_to_turn_id|sent_intent|remote_intent|speech_act|requires_response|conversation_open|conversation_needs_response|open_question_count)';
 
@@ -30,6 +45,10 @@ String _sanitizeA2AProtocolText(String value) {
   text = text.replaceAll(
     RegExp(r'`?\bnapaxi:[A-Za-z0-9_.:-]+\b`?', caseSensitive: false),
     '附近 Agent',
+  );
+  text = text.replaceAll(
+    RegExp(r'`?\bandroid-apk-build\b`?', caseSensitive: false),
+    'Android APK Build',
   );
   text = text.replaceAll(
     RegExp(r'`?\bandroid-[A-Za-z0-9_.:-]{6,}\b`?', caseSensitive: false),
@@ -131,6 +150,7 @@ String _localA2AChannelPeerLabel(DemoChannelBridgeEvent event) {
   ]) {
     final label = (value ?? '').trim();
     final normalized = label.toLowerCase();
+    if (normalized == 'android-apk-build') return 'Android APK Build';
     if (normalized.startsWith('android-')) return 'Android Agent';
     if (normalized.startsWith('ios-')) return 'iOS Agent';
     if (_isGenericA2APeerLabel(label)) continue;
@@ -150,6 +170,226 @@ String _channelBridgeDisplayTitle(DemoChannelBridgeEvent event) {
   return event.displayTitle;
 }
 
+double _sessionDrawerWidth(BuildContext context) {
+  return math.min(MediaQuery.sizeOf(context).width * 0.82, 390);
+}
+
+class _SessionMenuPageShift extends StatelessWidget {
+  const _SessionMenuPageShift({
+    required this.animation,
+    required this.distance,
+    required this.onDismiss,
+    required this.onHorizontalDragUpdate,
+    required this.onHorizontalDragEnd,
+    required this.child,
+  });
+
+  final Animation<double> animation;
+  final double distance;
+  final VoidCallback onDismiss;
+  final GestureDragUpdateCallback onHorizontalDragUpdate;
+  final GestureDragEndCallback onHorizontalDragEnd;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: animation,
+      child: child,
+      builder: (context, child) {
+        final value = animation.value;
+        final progress = Curves.easeOutCubic.transform(value);
+
+        return Transform.translate(
+          offset: Offset(distance * progress, 0),
+          child: PhysicalModel(
+            key: const Key('chat_primary_surface'),
+            color: _appSurfaceColor,
+            elevation: 20 * progress,
+            shadowColor: Colors.black.withValues(alpha: 0.22),
+            borderRadius: BorderRadius.circular(32 * progress),
+            clipBehavior: Clip.antiAlias,
+            child: Stack(
+              fit: StackFit.passthrough,
+              children: [
+                IgnorePointer(
+                  key: const Key('chat_primary_interaction_lock'),
+                  ignoring: value > 0,
+                  child: Opacity(
+                    key: const Key('chat_primary_content'),
+                    opacity: 1 - (0.58 * progress),
+                    child: child!,
+                  ),
+                ),
+                if (value > 0)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: onDismiss,
+                      onHorizontalDragUpdate: onHorizontalDragUpdate,
+                      onHorizontalDragEnd: onHorizontalDragEnd,
+                      child: const ColoredBox(color: Colors.transparent),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _KeyboardInsetIsolation extends StatelessWidget {
+  const _KeyboardInsetIsolation({required this.enabled, required this.child});
+
+  final bool enabled;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    // Keep this wrapper stable when a sidebar field gains focus. Replacing
+    // the child subtree here recreates the message ListView and loses its
+    // current ScrollPosition.
+    return MediaQuery.removeViewInsets(
+      key: const Key('chat_background_keyboard_inset_isolation'),
+      context: context,
+      removeBottom: enabled,
+      child: child,
+    );
+  }
+}
+
+class _SettingsSheetDragSurface extends StatefulWidget {
+  const _SettingsSheetDragSurface({
+    super.key,
+    required this.canStartDismiss,
+    required this.onDismissed,
+    required this.child,
+  });
+
+  final bool Function() canStartDismiss;
+  final VoidCallback onDismissed;
+  final Widget child;
+
+  @override
+  State<_SettingsSheetDragSurface> createState() =>
+      _SettingsSheetDragSurfaceState();
+}
+
+class _SettingsSheetDragSurfaceState extends State<_SettingsSheetDragSurface>
+    with SingleTickerProviderStateMixin {
+  static const double _flingVelocity = 700;
+  late final AnimationController _dragController;
+  int? _pointer;
+  Offset? _origin;
+  VelocityTracker? _velocityTracker;
+  bool _canDrag = false;
+  bool _dragActive = false;
+  bool _dismissed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _dragController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 230),
+      reverseDuration: const Duration(milliseconds: 250),
+    );
+  }
+
+  @override
+  void dispose() {
+    _dragController.dispose();
+    super.dispose();
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    if (_pointer != null || _dismissed || _dragController.isAnimating) return;
+    _pointer = event.pointer;
+    _origin = event.position;
+    _canDrag = widget.canStartDismiss();
+    _dragActive = false;
+    _velocityTracker = VelocityTracker.withKind(event.kind)
+      ..addPosition(event.timeStamp, event.position);
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (event.pointer != _pointer || !_canDrag || _dismissed) return;
+    _velocityTracker?.addPosition(event.timeStamp, event.position);
+    final origin = _origin;
+    if (origin == null) return;
+    final delta = event.position - origin;
+    if (!_dragActive) {
+      if (delta.dy <= 8 || delta.dy <= delta.dx.abs() * 1.15) return;
+      _dragActive = true;
+    }
+    final height = context.size?.height ?? MediaQuery.sizeOf(context).height;
+    _dragController.value = (delta.dy / height).clamp(0.0, 1.0);
+  }
+
+  void _handlePointerEnd(PointerEvent event) {
+    if (event.pointer != _pointer) return;
+    _velocityTracker?.addPosition(event.timeStamp, event.position);
+    final velocity = _velocityTracker?.getVelocity().pixelsPerSecond.dy ?? 0.0;
+    final wasDragging = _dragActive;
+    _resetPointer();
+    if (!wasDragging) return;
+    if (velocity > _flingVelocity || _dragController.value >= 0.5) {
+      unawaited(_finishDismiss());
+    } else {
+      unawaited(_dragController.animateBack(0, curve: Curves.easeOutCubic));
+    }
+  }
+
+  void _handlePointerCancel(PointerEvent event) {
+    if (event.pointer != _pointer) return;
+    final wasDragging = _dragActive;
+    _resetPointer();
+    if (wasDragging) {
+      unawaited(_dragController.animateBack(0, curve: Curves.easeOutCubic));
+    }
+  }
+
+  void _resetPointer() {
+    _pointer = null;
+    _origin = null;
+    _velocityTracker = null;
+    _canDrag = false;
+    _dragActive = false;
+  }
+
+  Future<void> _finishDismiss() async {
+    if (_dismissed) return;
+    _dismissed = true;
+    await _dragController.animateTo(1, curve: Curves.easeOutCubic);
+    if (mounted) widget.onDismissed();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: _handlePointerDown,
+      onPointerMove: _handlePointerMove,
+      onPointerUp: _handlePointerEnd,
+      onPointerCancel: _handlePointerCancel,
+      child: AnimatedBuilder(
+        animation: _dragController,
+        child: widget.child,
+        builder: (context, child) => Transform.translate(
+          key: const Key('settings_bottom_sheet_drag_transform'),
+          offset: Offset(
+            0,
+            MediaQuery.sizeOf(context).height * _dragController.value,
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
@@ -159,6 +399,7 @@ class ChatScreen extends StatefulWidget {
     required this.updateService,
     required this.feedbackService,
     this.chatClientFactory,
+    this.codexModelCatalogFetcher,
     this.terminalBackendFactory,
   });
 
@@ -168,6 +409,7 @@ class ChatScreen extends StatefulWidget {
   final DemoUpdateService updateService;
   final DemoFeedbackService feedbackService;
   final NapaxiChatClientFactory? chatClientFactory;
+  final CodexModelCatalogFetcher? codexModelCatalogFetcher;
 
   /// 终端后端工厂（测试注入 / 未来 PTY 替换）。为空时 [SandboxTerminalScreen]
   /// 用默认的 [ReplTerminalBackend]。
@@ -177,21 +419,384 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
+enum _ChatPrimaryView { chat, files, skills, projects, projectDetail }
+
+class _CodexInstallProgress {
+  const _CodexInstallProgress({
+    required this.label,
+    required this.value,
+    required this.running,
+    this.success,
+    this.detail = '',
+    this.substeps = const [],
+  });
+
+  final String label;
+  final double value;
+  final bool running;
+  final bool? success;
+  final String detail;
+  final List<String> substeps;
+}
+
+String _formatElapsed(Duration duration) {
+  final minutes = duration.inMinutes;
+  final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+  return minutes > 0 ? '$minutes:$seconds' : '${duration.inSeconds}s';
+}
+
+class _CodexInstallCancelled implements Exception {
+  const _CodexInstallCancelled();
+}
+
+class _CodexInstallProgressDialog extends StatelessWidget {
+  const _CodexInstallProgressDialog({
+    required this.progress,
+    required this.onCancel,
+  });
+
+  final ValueNotifier<_CodexInstallProgress> progress;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<_CodexInstallProgress>(
+      valueListenable: progress,
+      builder: (context, state, _) {
+        final finished = !state.running;
+        final success = state.success == true;
+        final secondaryTextStyle = Theme.of(
+          context,
+        ).textTheme.bodySmall?.copyWith(color: _configTextSecondary);
+        return AlertDialog(
+          backgroundColor: _configSurface,
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          titleTextStyle: const TextStyle(
+            color: _configTextPrimary,
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+          ),
+          contentTextStyle: const TextStyle(
+            color: _configTextSecondary,
+            fontSize: 15,
+            height: 1.45,
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+          title: Text(
+            finished ? (success ? 'Codex 已安装' : 'Codex 安装失败') : '正在安装 Codex',
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(state.label),
+              const SizedBox(height: 12),
+              LinearProgressIndicator(
+                value: state.value.clamp(0, 1),
+                color: _configTextPrimary,
+                backgroundColor: _configBorderFaint,
+              ),
+              const SizedBox(height: 8),
+              Text('${(state.value.clamp(0, 1) * 100).round()}%'),
+              if (!finished) ...[
+                const SizedBox(height: 4),
+                Text('预计等待 1–3 分钟', style: secondaryTextStyle),
+              ],
+              if (state.substeps.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                ...state.substeps.map(
+                  (step) => Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('• '),
+                        Expanded(child: Text(step, style: secondaryTextStyle)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+              if (state.detail.trim().isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(state.detail, style: secondaryTextStyle),
+              ],
+            ],
+          ),
+          actions: [
+            if (!finished)
+              TextButton(
+                style: TextButton.styleFrom(
+                  foregroundColor: _configTextSecondary,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 11,
+                  ),
+                ),
+                onPressed: () {
+                  onCancel();
+                  Navigator.of(context).pop(false);
+                },
+                child: const Text('取消'),
+              ),
+            if (finished)
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: _configTextPrimary,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: _configBorderFaint,
+                  disabledForegroundColor: _configTextTertiary,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 11,
+                  ),
+                ),
+                onPressed: () => Navigator.of(context).pop(success),
+                child: Text(success ? '继续' : '关闭'),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _EmptyChatStarterPrompts extends StatefulWidget {
+  const _EmptyChatStarterPrompts({
+    required this.onDevelopApkTap,
+    required this.onCompressPhotoTap,
+  });
+
+  final VoidCallback onDevelopApkTap;
+  final VoidCallback onCompressPhotoTap;
+
+  @override
+  State<_EmptyChatStarterPrompts> createState() =>
+      _EmptyChatStarterPromptsState();
+}
+
+class _EmptyChatStarterPromptsState extends State<_EmptyChatStarterPrompts>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _entranceController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 720),
+  );
+  bool _entranceStarted = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_entranceStarted) return;
+    _entranceStarted = true;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _entranceController.value = 1;
+    } else {
+      _entranceController.forward();
+    }
+  }
+
+  @override
+  void dispose() {
+    _entranceController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppStrings.of(context);
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _StarterPromptEntrance(
+              key: const Key('starter_prompt_title_entrance'),
+              animation: _entranceController,
+              start: 0,
+              end: 0.42,
+              distance: 8,
+              minimumScale: 0.985,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 5, bottom: 10),
+                child: Text(
+                  strings.starterPromptTitle,
+                  key: const Key('starter_prompt_title'),
+                  style: const TextStyle(
+                    color: Color(0xFF6B7280),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ),
+            ),
+            _StarterPromptEntrance(
+              key: const Key('starter_prompt_develop_apk_entrance'),
+              animation: _entranceController,
+              start: 0.12,
+              end: 0.72,
+              child: _StarterPromptButton(
+                key: const Key('starter_prompt_develop_apk'),
+                label: strings.starterPromptDevelopApk,
+                onTap: widget.onDevelopApkTap,
+              ),
+            ),
+            const SizedBox(height: 10),
+            _StarterPromptEntrance(
+              key: const Key('starter_prompt_compress_photo_entrance'),
+              animation: _entranceController,
+              start: 0.3,
+              end: 1,
+              child: _StarterPromptButton(
+                key: const Key('starter_prompt_compress_photo'),
+                label: strings.starterPromptCompressPhoto,
+                onTap: widget.onCompressPhotoTap,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StarterPromptEntrance extends StatelessWidget {
+  const _StarterPromptEntrance({
+    super.key,
+    required this.animation,
+    required this.start,
+    required this.end,
+    required this.child,
+    this.distance = 16,
+    this.minimumScale = 0.965,
+  });
+
+  final Animation<double> animation;
+  final double start;
+  final double end;
+  final double distance;
+  final double minimumScale;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: animation,
+      child: child,
+      builder: (context, child) {
+        final progress = ((animation.value - start) / (end - start)).clamp(
+          0.0,
+          1.0,
+        );
+        final fade = Curves.easeOutCubic.transform(progress);
+        final motion = Curves.easeOutBack.transform(progress);
+        return Opacity(
+          opacity: fade,
+          child: Transform.translate(
+            offset: Offset(0, distance * (1 - motion)),
+            child: Transform.scale(
+              scale: minimumScale + ((1 - minimumScale) * motion),
+              alignment: Alignment.bottomCenter,
+              child: child,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _StarterPromptButton extends StatelessWidget {
+  const _StarterPromptButton({
+    super.key,
+    required this.label,
+    required this.onTap,
+  });
+
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.035),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 9, sigmaY: 9),
+          child: Material(
+            color: Colors.white.withValues(alpha: 0.58),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(18),
+              onTap: onTap,
+              child: Container(
+                width: double.infinity,
+                constraints: const BoxConstraints(minHeight: 52),
+                alignment: Alignment.centerLeft,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 14,
+                ),
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: const Color(0xFFD1D5DB).withValues(alpha: 0.52),
+                  ),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    color: Color(0xFF5B6472),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ChatScreenState extends State<ChatScreen>
     with
         TickerProviderStateMixin,
         WidgetsBindingObserver,
         _ChatScreenChannelMixin,
         _ChatScreenA2AMixin {
-  static const String _favoriteAttachmentsKey =
-      'napaxi_demo.favorite_attachments.v1';
   static const String _pinnedSessionsKey = 'napaxi_demo.pinned_sessions.v1';
+  static const String _renamedSessionsKey = 'napaxi_demo.renamed_sessions.v1';
+  static const String _chatProjectsKey = 'napaxi_demo.chat_projects.v1';
   static const String _assistantAttachmentsKey =
       'napaxi_demo.assistant_attachments.v1';
   static const String _seenAttachmentsKey = 'napaxi_demo.seen_attachments.v1';
   static const String _activeScenarioKey = 'napaxi_demo.active_scenario.v1';
   static const double _sessionMenuFlingVelocity = 650;
   static const double _bottomFollowThreshold = 72;
+  static const double _bottomPinnedTolerance = 1;
   static const double _historyTopLoadThreshold = 360;
   static const int _initialHistoryPageLimit = 30;
   static const int _olderHistoryPageLimit = 24;
@@ -254,10 +859,13 @@ class _ChatScreenState extends State<ChatScreen>
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final FocusNode _inputFocusNode = FocusNode();
+  final GlobalKey<_ChatInputBarState> _chatInputBarKey =
+      GlobalKey<_ChatInputBarState>();
   bool _autoFollowEnabled = true;
   bool _isPinnedToBottom = true;
   bool _showJumpToLatest = false;
   bool _isProgrammaticScrollInFlight = false;
+  bool _isUserDraggingChat = false;
   bool _isPrependingHistory = false;
   int _autoFollowSyncToken = 0;
 
@@ -277,6 +885,7 @@ class _ChatScreenState extends State<ChatScreen>
   StreamSubscription<DemoChannelBridgeEvent>? _channelBridgeSubscription;
   final Map<String, Timer> _evolutionPollTimers = {};
   final Map<String, Timer> _evolutionHideTimers = {};
+  final Set<String> _unsavedSessionIds = <String>{};
   final Map<String, ChatSessionRunState> _sessionRuns = {};
   final Set<String> _a2aUnreadConversationSessionIds = <String>{};
   _SessionHistoryView _sessionHistoryInitialView = _SessionHistoryView.menu;
@@ -284,14 +893,30 @@ class _ChatScreenState extends State<ChatScreen>
       _SettingsSection.menu;
   _SkillsInitialTab _sessionHistoryInitialSkillsTab =
       _SkillsInitialTab.installed;
+  _ChatPrimaryView _primaryView = _ChatPrimaryView.chat;
+  Future<NapaxiChatClient>? _primaryFilesClientFuture;
+  Future<NapaxiChatClient>? _primarySkillsClientFuture;
+  String? _selectedChatProjectId;
+  bool _isRenamingSessionTitle = false;
+  bool _isSessionHistorySearching = false;
+  bool _isDebugJumpPageOpen = false;
+  int _sessionHistoryKeyboardIsolationEpoch = 0;
   String _activeScenarioId = _generalScenarioId;
   String _activeDeveloperEngineId = _defaultDeveloperEngineId;
   DemoGitSettings _gitSettings = const DemoGitSettings();
   final Set<String> _stoppingSessionIds = {};
+  bool _isRetractingPendingInterjections = false;
   int _nextInterjectionId = 1;
   bool _isHandlingNotificationStop = false;
   bool _isHandlingProviderInstall = false;
   bool _isHandlingAgentTrigger = false;
+  bool _isCheckingCodexEnvironment = false;
+  Future<bool>? _codexEnvironmentPreflight;
+  bool _codexEnvironmentReady = false;
+  Future<void> _configPersistenceQueue = Future.value();
+  Future<void> _codexConfigSyncQueue = Future.value();
+  int _codexConfigSyncRevision = 0;
+  String? _codexVerifiedModelFingerprint;
   bool _isEnsuringConfiguredChannels = false;
   int _channelInputRefreshSerial = 0;
   int _channelInputLoopSerial = 0;
@@ -303,7 +928,9 @@ class _ChatScreenState extends State<ChatScreen>
   String? _channelInputActiveAccountId;
   final Map<String, sdk.SessionKey> _sdkSessions = {};
   Set<String> _pinnedSessionIds = const {};
-  List<FavoriteAttachment> _favoriteAttachments = const [];
+  Map<String, String> _renamedSessionTitles = const {};
+  List<_ChatProject> _chatProjects = const [];
+  Map<String, String> _projectSessionIds = const {};
   Map<String, List<ChatAttachment>> _assistantAttachmentCache = const {};
   Map<String, List<ChatAttachment>> _pendingAssistantAttachments = const {};
   Map<String, Set<String>> _seenAttachmentIds = const {};
@@ -399,16 +1026,6 @@ class _ChatScreenState extends State<ChatScreen>
     return List.unmodifiable(items);
   }
 
-  List<FavoriteAttachment> get _activeFavoriteAttachments {
-    return _favoriteAttachments
-        .where(
-          (favorite) =>
-              favorite.accountId == _activeAccountId &&
-              favorite.agentId == _activeAgentId,
-        )
-        .toList(growable: false);
-  }
-
   /// Flatten the active session's messages into render items, aggregating each
   /// turn's generated attachments into a single block at the END OF THAT TURN.
   ///
@@ -436,6 +1053,7 @@ class _ChatScreenState extends State<ChatScreen>
     }
 
     for (final message in _messages) {
+      if (message.id == 'welcome' && _hasReadyChatModel) continue;
       if (message.isUser) {
         // Close out the previous turn before this user bubble starts a new one.
         flushTurn();
@@ -473,6 +1091,13 @@ class _ChatScreenState extends State<ChatScreen>
       return true;
     }
     return _hasVisibleAgentTrace(message);
+  }
+
+  bool get _hasReadyChatModel {
+    final selectedProfile = _config.selectedRuntimeProfile;
+    return selectedProfile != null &&
+        selectedProfile.hasModel &&
+        selectedProfile.apiKey.trim().isNotEmpty;
   }
 
   /// Identities of every generated attachment across the conversation, used to
@@ -570,6 +1195,22 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
+  Future<void> _sendStarterPrompt(String prompt) async {
+    _inputController.value = TextEditingValue(
+      text: prompt,
+      selection: TextSelection.collapsed(offset: prompt.length),
+    );
+    await _sendMessage(const []);
+  }
+
+  Future<void> _applyPhotoCompressionStarterPrompt(String prompt) async {
+    _inputController.value = TextEditingValue(
+      text: prompt,
+      selection: TextSelection.collapsed(offset: prompt.length),
+    );
+    await _chatInputBarKey.currentState?.pickGalleryImage();
+  }
+
   ChatSession _refreshWelcomeMessage(ChatSession session) {
     final messages = [...session.messages];
     final welcomeIndex = messages.indexWhere(
@@ -596,16 +1237,31 @@ class _ChatScreenState extends State<ChatScreen>
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_handleChatScroll);
     _inputFocusNode.addListener(_handleInputFocusChanged);
+    _unsavedSessionIds.add(_activeSessionId);
     _restorePersistedStateFuture = _restorePersistedState();
     unawaited(_restorePersistedStateFuture);
-    unawaited(_restoreFavoriteAttachments());
     unawaited(_restorePinnedSessions());
+    unawaited(_restoreRenamedSessions());
+    unawaited(_restoreChatProjects());
     unawaited(_restoreAssistantAttachments());
     unawaited(_restoreSeenAttachments());
     unawaited(_refreshSkillSlashCommands());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_checkForUpdates(automatic: true));
     });
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+
+    assert(() {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _handleDebugHotReloadTarget();
+      });
+      return true;
+    }());
   }
 
   @override
@@ -653,6 +1309,7 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   void _handleInputFocusChanged() {
+    if (_sessionMenuController.value > 0) return;
     if (!_inputFocusNode.hasFocus) return;
     _scrollToBottom(force: true);
   }
@@ -660,6 +1317,7 @@ class _ChatScreenState extends State<ChatScreen>
   @override
   void didChangeMetrics() {
     super.didChangeMetrics();
+    if (_sessionMenuController.value > 0) return;
     if (!_inputFocusNode.hasFocus) return;
     _scrollToBottom(force: true);
   }
@@ -668,6 +1326,7 @@ class _ChatScreenState extends State<ChatScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
+      unawaited(_enqueueCodexConfigSync(_config));
       unawaited(_handlePendingProviderInstall());
       unawaited(_handlePendingAgentTrigger());
       unawaited(_ensureConfiguredChannelsConnected());
@@ -690,7 +1349,7 @@ class _ChatScreenState extends State<ChatScreen>
       });
       return;
     }
-    final nextAutoFollowEnabled = isNearBottom;
+    final nextAutoFollowEnabled = _isUserDraggingChat ? false : isNearBottom;
     final nextShowJumpToLatest = isNearBottom ? false : _showJumpToLatest;
     if (isNearBottom == _isPinnedToBottom &&
         nextAutoFollowEnabled == _autoFollowEnabled &&
@@ -705,6 +1364,33 @@ class _ChatScreenState extends State<ChatScreen>
       _showJumpToLatest = nextShowJumpToLatest;
     });
     _maybeLoadOlderHistory();
+  }
+
+  bool _handleChatScrollNotification(ScrollNotification notification) {
+    if (notification.depth != 0) return false;
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      _autoFollowSyncToken += 1;
+      if (!_isUserDraggingChat || _autoFollowEnabled) {
+        setState(() {
+          _isUserDraggingChat = true;
+          _autoFollowEnabled = false;
+        });
+      }
+    } else if (notification is ScrollEndNotification && _isUserDraggingChat) {
+      final isAtBottom =
+          notification.metrics.maxScrollExtent - notification.metrics.pixels <=
+          _bottomPinnedTolerance;
+      setState(() {
+        _isUserDraggingChat = false;
+        if (isAtBottom) {
+          _autoFollowEnabled = true;
+          _isPinnedToBottom = true;
+          _showJumpToLatest = false;
+        }
+      });
+    }
+    return false;
   }
 
   bool _isNearBottom() {
@@ -745,6 +1431,10 @@ class _ChatScreenState extends State<ChatScreen>
     bool force = false,
     int stablePassesRequired = 2,
   }) {
+    if (_isUserDraggingChat) {
+      _markNewContentAvailable();
+      return;
+    }
     if (_isPrependingHistory && !force) return;
     if (!force && !_autoFollowEnabled) {
       _markNewContentAvailable();
@@ -871,6 +1561,22 @@ class _ChatScreenState extends State<ChatScreen>
             return PopScope(
               canPop: !downloading && !update.needForceUpdate,
               child: AlertDialog(
+                backgroundColor: _configSurface,
+                surfaceTintColor: Colors.transparent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                titleTextStyle: const TextStyle(
+                  color: _configTextPrimary,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                ),
+                contentTextStyle: const TextStyle(
+                  color: _configTextSecondary,
+                  fontSize: 15,
+                  height: 1.45,
+                ),
+                actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
                 title: Text(strings.updateAvailableTitle),
                 content: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -955,6 +1661,7 @@ class _ChatScreenState extends State<ChatScreen>
                       !update.needForceUpdate)
                     TextButton(
                       key: const Key('update_later_button'),
+                      style: _updateDialogTextButtonStyle(),
                       onPressed: () {
                         unawaited(widget.updateService.skipUpdate(update));
                         Navigator.of(dialogContext).pop();
@@ -965,6 +1672,7 @@ class _ChatScreenState extends State<ChatScreen>
                       update.appUrl.isNotEmpty)
                     TextButton(
                       key: const Key('open_pgyer_install_page_button'),
+                      style: _updateDialogTextButtonStyle(),
                       onPressed: () {
                         unawaited(widget.updateService.openInstallPage(update));
                       },
@@ -974,6 +1682,7 @@ class _ChatScreenState extends State<ChatScreen>
                       widget.updateService.supportsExternalUpdatePage)
                     TextButton(
                       key: const Key('open_release_page_button'),
+                      style: _updateDialogTextButtonStyle(),
                       onPressed: () {
                         unawaited(_showReleasePageDialog());
                       },
@@ -983,6 +1692,7 @@ class _ChatScreenState extends State<ChatScreen>
                       stage == _UpdateInstallStage.permissionRequired)
                     TextButton(
                       key: const Key('update_done_button'),
+                      style: _updateDialogTextButtonStyle(),
                       onPressed: () => Navigator.of(dialogContext).pop(),
                       child: Text(
                         MaterialLocalizations.of(context).okButtonLabel,
@@ -992,6 +1702,7 @@ class _ChatScreenState extends State<ChatScreen>
                       stage == _UpdateInstallStage.failed)
                     FilledButton(
                       key: const Key('install_update_button'),
+                      style: _updateDialogFilledButtonStyle(),
                       onPressed: () async {
                         setDialogState(() {
                           stage = _UpdateInstallStage.downloading;
@@ -1029,6 +1740,7 @@ class _ChatScreenState extends State<ChatScreen>
                     )
                   else if (downloading)
                     FilledButton(
+                      style: _updateDialogFilledButtonStyle(),
                       onPressed: null,
                       child: Text(strings.updateInstalling),
                     ),
@@ -1217,17 +1929,16 @@ class _ChatScreenState extends State<ChatScreen>
     // state 里没有现成 branch，点击时跑一次 git 取当前分支。
     final workspaceDir = await _resolveWorkspaceDir();
     final runner = DemoGitRunner.defaultFor(Directory(workspaceDir));
-    final result = await runner.runGit(
-      ['rev-parse', '--abbrev-ref', 'HEAD'],
-      workingDirectory: runner.workspacePath(workspaceDir),
-    );
+    final result = await runner.runGit([
+      'rev-parse',
+      '--abbrev-ref',
+      'HEAD',
+    ], workingDirectory: runner.workspacePath(workspaceDir));
     if (!mounted) return;
     final exitCode = result['exitCode'] as int? ?? -1;
     final branch = (result['stdout'] ?? '').toString().trim();
     // detached HEAD 时 `--abbrev-ref` 返回 "HEAD"，不算真正的分支名。
-    final resolved = exitCode == 0 &&
-            branch.isNotEmpty &&
-            branch != 'HEAD'
+    final resolved = exitCode == 0 && branch.isNotEmpty && branch != 'HEAD'
         ? branch
         : null;
     if (resolved != null) {
@@ -1281,10 +1992,27 @@ class _ChatScreenState extends State<ChatScreen>
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
+          backgroundColor: _configSurface,
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          titleTextStyle: const TextStyle(
+            color: _configTextPrimary,
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+          ),
+          contentTextStyle: const TextStyle(
+            color: _configTextSecondary,
+            fontSize: 15,
+            height: 1.45,
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
           title: Text(strings.checkForUpdates),
           content: Text(message),
           actions: [
             TextButton(
+              style: _updateDialogTextButtonStyle(),
               onPressed: () => Navigator.of(dialogContext).pop(),
               child: Text(strings.updateNoticeClose),
             ),
@@ -1300,15 +2028,33 @@ class _ChatScreenState extends State<ChatScreen>
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
+          backgroundColor: _configSurface,
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          titleTextStyle: const TextStyle(
+            color: _configTextPrimary,
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+          ),
+          contentTextStyle: const TextStyle(
+            color: _configTextSecondary,
+            fontSize: 15,
+            height: 1.45,
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
           title: Text(strings.checkForUpdates),
           content: Text(strings.updateReleasePagePrompt),
           actions: [
             TextButton(
+              style: _updateDialogTextButtonStyle(),
               onPressed: () => Navigator.of(dialogContext).pop(false),
               child: Text(strings.cancel),
             ),
             FilledButton(
               key: const Key('confirm_open_release_page_button'),
+              style: _updateDialogFilledButtonStyle(),
               onPressed: () => Navigator.of(dialogContext).pop(true),
               child: Text(strings.openReleasePage),
             ),
@@ -1320,6 +2066,25 @@ class _ChatScreenState extends State<ChatScreen>
     final opened = await widget.updateService.openExternalUpdatePage();
     if (!mounted || opened) return;
     await _showUpdateNoticeDialog(strings.releasePageOpenFailed);
+  }
+
+  ButtonStyle _updateDialogTextButtonStyle() {
+    return TextButton.styleFrom(
+      foregroundColor: _configTextSecondary,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+    );
+  }
+
+  ButtonStyle _updateDialogFilledButtonStyle() {
+    return FilledButton.styleFrom(
+      backgroundColor: _configTextPrimary,
+      foregroundColor: Colors.white,
+      disabledBackgroundColor: _configBorderFaint,
+      disabledForegroundColor: _configTextTertiary,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+    );
   }
 
   Future<void> _loadSessionHistory(String sessionId) async {
@@ -1770,7 +2535,7 @@ class _ChatScreenState extends State<ChatScreen>
       _showContextStatusDetails(
         context,
         status,
-        onConfigure: () => unawaited(_openActiveContextModelConfig()),
+        onConfigure: () => unawaited(_openContextSettings()),
         onCompact: () => unawaited(_compactActiveContext()),
       );
       return;
@@ -1789,12 +2554,20 @@ class _ChatScreenState extends State<ChatScreen>
   bool get _usesInjectedChatClient => widget.chatClientFactory != null;
 
   void _handleConfigChanged(LlmConfigState config) {
-    _configRevision += 1;
+    final revision = ++_configRevision;
+    _codexVerifiedModelFingerprint = null;
     setState(() {
       _config = config;
+      _primaryFilesClientFuture = null;
+      _primarySkillsClientFuture = null;
       _sessions = _sessions.map(_refreshWelcomeMessage).toList();
     });
-    unawaited(_persistConfig(config));
+    final previous = _configPersistenceQueue;
+    final task = previous
+        .catchError((_) {})
+        .then((_) => _persistConfig(config, revision: revision));
+    _configPersistenceQueue = task;
+    unawaited(task);
   }
 
   Future<void> _restorePersistedState() async {
@@ -1831,10 +2604,16 @@ class _ChatScreenState extends State<ChatScreen>
                   .map((profile) => profile.systemPrompt.trim())
                   .firstWhere((prompt) => prompt.isNotEmpty, orElse: () => ''),
         maxToolIterations: selection.maxToolIterations,
+        contextEngine: _restoredGlobalContextEngine(
+          selection,
+          restoredProfiles,
+        ),
       );
       if (!mounted || revision != _configRevision) return;
       setState(() {
         _config = restoredConfig;
+        _primaryFilesClientFuture = null;
+        _primarySkillsClientFuture = null;
         _activeScenarioId = restoredRuntimeProfile.scenarioId;
         _activeDeveloperEngineId = restoredRuntimeProfile.activeEngineId;
         _activeAgentId = restoredRuntimeProfile.agentId;
@@ -1844,6 +2623,7 @@ class _ChatScreenState extends State<ChatScreen>
         _gitSettings = restoredGitSettings;
         _sessions = _sessions.map(_refreshWelcomeMessage).toList();
       });
+      unawaited(_enqueueCodexConfigSync(restoredConfig));
       await _refreshAgents();
       await _restoreSdkSessions(restoredConfig);
       if (!_usesInjectedChatClient) {
@@ -1893,48 +2673,21 @@ class _ChatScreenState extends State<ChatScreen>
                   .map((profile) => profile.systemPrompt.trim())
                   .firstWhere((prompt) => prompt.isNotEmpty, orElse: () => ''),
         maxToolIterations: selection.maxToolIterations,
+        contextEngine: _restoredGlobalContextEngine(
+          selection,
+          restoredProfiles,
+        ),
       );
       setState(() {
         _config = restoredConfig;
+        _primaryFilesClientFuture = null;
+        _primarySkillsClientFuture = null;
         _sessions = _sessions.map(_refreshWelcomeMessage).toList();
       });
+      unawaited(_enqueueCodexConfigSync(restoredConfig));
     } catch (_) {
       // Keep the normal no-model prompt if the config store is unavailable.
     }
-  }
-
-  Future<void> _restoreFavoriteAttachments() async {
-    try {
-      final preferences = await SharedPreferences.getInstance();
-      final raw = preferences.getString(_favoriteAttachmentsKey);
-      if (raw == null || raw.trim().isEmpty) return;
-      final decoded = jsonDecode(raw);
-      if (decoded is! List) return;
-      final favorites = decoded
-          .whereType<Map>()
-          .map(
-            (entry) =>
-                FavoriteAttachment.fromMap(Map<String, Object?>.from(entry)),
-          )
-          .where((favorite) => favorite.id.trim().isNotEmpty)
-          .toList(growable: false);
-      if (!mounted) return;
-      setState(
-        () => _favoriteAttachments = _dedupeFavoriteAttachments(favorites),
-      );
-    } catch (_) {
-      // Favorites are a convenience cache; ignore corrupt local state.
-    }
-  }
-
-  Future<void> _persistFavoriteAttachments() async {
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(
-      _favoriteAttachmentsKey,
-      jsonEncode([
-        for (final favorite in _favoriteAttachments) favorite.toMap(),
-      ]),
-    );
   }
 
   String _pinnedSessionKey(String agentId, String sessionId) {
@@ -1975,6 +2728,673 @@ class _ChatScreenState extends State<ChatScreen>
       _pinnedSessionsKey,
       _pinnedSessionIds.toList()..sort(),
     );
+  }
+
+  String _renamedSessionKey(String agentId, String sessionId) {
+    return _sessionCacheKey(agentId, sessionId);
+  }
+
+  ChatSession _sessionForHistory(ChatSession session) {
+    final title =
+        _renamedSessionTitles[_renamedSessionKey(_activeAgentId, session.id)];
+    if (title == null || title == session.title) return session;
+    return session.copyWith(title: title);
+  }
+
+  Future<void> _restoreRenamedSessions() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final raw = preferences.getString(_renamedSessionsKey);
+      if (raw == null || raw.trim().isEmpty) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      final renamedSessionTitles = <String, String>{};
+      for (final entry in decoded.entries) {
+        final key = entry.key.toString().trim();
+        final title = entry.value?.toString().trim() ?? '';
+        if (key.isNotEmpty && title.isNotEmpty) {
+          renamedSessionTitles[key] = title;
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _renamedSessionTitles = Map.unmodifiable(renamedSessionTitles);
+      });
+    } catch (_) {
+      // Renamed titles are local UI state; ignore corrupt preferences.
+    }
+  }
+
+  Future<void> _persistRenamedSessions() async {
+    final preferences = await SharedPreferences.getInstance();
+    final entries = _renamedSessionTitles.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    await preferences.setString(
+      _renamedSessionsKey,
+      jsonEncode({for (final entry in entries) entry.key: entry.value}),
+    );
+  }
+
+  void _renameSession(String sessionId, String title) {
+    final normalizedTitle = title.trim();
+    if (normalizedTitle.isEmpty) return;
+    final key = _renamedSessionKey(_activeAgentId, sessionId);
+    setState(() {
+      _renamedSessionTitles = Map.unmodifiable({
+        ..._renamedSessionTitles,
+        key: normalizedTitle,
+      });
+    });
+    unawaited(_persistRenamedSessions());
+  }
+
+  Future<void> _restoreChatProjects() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final raw = preferences.getString(_chatProjectsKey);
+      if (raw == null || raw.trim().isEmpty) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+
+      final projects = <_ChatProject>[];
+      final rawProjects = decoded['projects'];
+      if (rawProjects is List) {
+        for (final item in rawProjects.whereType<Map>()) {
+          final project = _ChatProject.fromMap(Map<String, Object?>.from(item));
+          if (project.id.isNotEmpty &&
+              project.agentId.isNotEmpty &&
+              project.name.isNotEmpty) {
+            projects.add(project);
+          }
+        }
+      }
+
+      final projectIds = projects.map((project) => project.id).toSet();
+      final sessionProjects = <String, String>{};
+      final rawSessionProjects = decoded['sessionProjects'];
+      if (rawSessionProjects is Map) {
+        for (final entry in rawSessionProjects.entries) {
+          final sessionKey = entry.key.toString().trim();
+          final projectId = entry.value?.toString().trim() ?? '';
+          if (sessionKey.isNotEmpty && projectIds.contains(projectId)) {
+            sessionProjects[sessionKey] = projectId;
+          }
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _chatProjects = List.unmodifiable(projects);
+        _projectSessionIds = Map.unmodifiable(sessionProjects);
+      });
+    } catch (_) {
+      // Projects are local organization metadata; ignore corrupt preferences.
+    }
+  }
+
+  Future<void> _persistChatProjects() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(
+      _chatProjectsKey,
+      jsonEncode({
+        'projects': [for (final project in _chatProjects) project.toMap()],
+        'sessionProjects': _projectSessionIds,
+      }),
+    );
+  }
+
+  void _createChatProject(_NewProjectDraft draft) {
+    final normalizedName = draft.name.trim();
+    if (normalizedName.isEmpty) return;
+    final now = DateTime.now();
+    final project = _ChatProject(
+      id: 'project-${now.microsecondsSinceEpoch}',
+      agentId: _activeAgentId,
+      name: normalizedName,
+      iconKey: _projectIconForKey(draft.iconKey).key,
+      colorKey: _projectColorForKey(draft.colorKey).key,
+      isPinned: false,
+      createdAt: now,
+    );
+    setState(() {
+      _chatProjects = List.unmodifiable([..._chatProjects, project]);
+    });
+    unawaited(_persistChatProjects());
+  }
+
+  void _toggleChatProjectPin(_ChatProject project) {
+    setState(() {
+      _chatProjects = List.unmodifiable([
+        for (final item in _chatProjects)
+          if (item.id == project.id)
+            item.copyWith(isPinned: !item.isPinned)
+          else
+            item,
+      ]);
+    });
+    unawaited(_persistChatProjects());
+  }
+
+  void _updateChatProject(_ChatProject project, _NewProjectDraft draft) {
+    final normalizedName = draft.name.trim();
+    if (normalizedName.isEmpty) return;
+    setState(() {
+      _chatProjects = List.unmodifiable([
+        for (final item in _chatProjects)
+          if (item.id == project.id)
+            item.copyWith(
+              name: normalizedName,
+              iconKey: _projectIconForKey(draft.iconKey).key,
+              colorKey: _projectColorForKey(draft.colorKey).key,
+            )
+          else
+            item,
+      ]);
+    });
+    unawaited(_persistChatProjects());
+  }
+
+  void _showProjectsFromMenu() {
+    _dismissKeyboard();
+    setState(() {
+      _primaryView = _ChatPrimaryView.projects;
+      _selectedChatProjectId = null;
+    });
+    _closeSessionHistory();
+  }
+
+  void _showFilesFromMenu() {
+    _dismissKeyboard();
+    setState(() {
+      _primaryView = _ChatPrimaryView.files;
+      _primaryFilesClientFuture = _buildFilesClientFuture();
+    });
+    _closeSessionHistory();
+  }
+
+  void _showSkillsFromMenu() {
+    _dismissKeyboard();
+    setState(() {
+      _primaryView = _ChatPrimaryView.skills;
+      _primarySkillsClientFuture = _buildSkillsClientFuture();
+    });
+    _closeSessionHistory();
+  }
+
+  Future<void> _showSettingsSheet(
+    _SettingsSection section, {
+    bool focusContextSettings = false,
+  }) async {
+    _dismissKeyboard();
+    if (!mounted) return;
+    final settingsPageKey = GlobalKey<_SettingsPageState>();
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      enableDrag: false,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.24),
+      builder: (sheetContext) => _SettingsSheetDragSurface(
+        key: const Key('settings_bottom_sheet_gesture_surface'),
+        canStartDismiss: () {
+          final settingsState = settingsPageKey.currentState;
+          return settingsState?.canPullSheetDownFromCurrentContent == true;
+        },
+        onDismissed: () => Navigator.of(sheetContext).pop(),
+        child: FractionallySizedBox(
+          key: const Key('settings_bottom_sheet_frame'),
+          heightFactor: 1,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: _configPageBackground,
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(28),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.12),
+                  blurRadius: 30,
+                  offset: const Offset(0, -6),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(28),
+              ),
+              child: Material(
+                key: const Key('settings_bottom_sheet'),
+                color: _configPageBackground,
+                child: Column(
+                  children: [
+                    const SizedBox(
+                      height: 22,
+                      child: Center(
+                        child: SizedBox(
+                          key: Key('settings_bottom_sheet_handle'),
+                          width: 38,
+                          height: 4,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: Color(0xFFD2D4D8),
+                              borderRadius: BorderRadius.all(
+                                Radius.circular(2),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: _SettingsPage(
+                        key: settingsPageKey,
+                        initialConfig: _config,
+                        language: widget.language,
+                        onConfigChanged: _handleConfigChanged,
+                        onLanguageChanged: widget.onLanguageChanged,
+                        onEngineConfigChanged: _handleEngineConfigChanged,
+                        createScenariosClientFuture:
+                            _buildScenariosClientFuture,
+                        createNearbyClientFuture: _getChatClient,
+                        activeScenarioId: _activeScenarioId,
+                        gitSettings: _gitSettings,
+                        onScenarioApplied: _handleScenarioApplied,
+                        onGitSettingsChanged: _handleGitSettingsChanged,
+                        onGitSettingsCleared: _handleGitSettingsCleared,
+                        updateService: widget.updateService,
+                        feedbackService: widget.feedbackService,
+                        onCheckForUpdates: () =>
+                            _checkForUpdates(automatic: false),
+                        onNearbyStart: () =>
+                            _setA2AConnectionAllowedFromSettings(true),
+                        onNearbyStop: () =>
+                            _setA2AConnectionAllowedFromSettings(false),
+                        onNearbyInvite: () => _createA2AInvite('/a2a invite'),
+                        onNearbyScan: () => _scanA2AInvite('/a2a scan'),
+                        onNearbyDeletePeer: _deleteA2APairedPeer,
+                        getNearbyPairingDiagnostic: () async =>
+                            _lastA2APairingDiagnostic,
+                        onBack: () async {
+                          Navigator.of(sheetContext).pop();
+                          return false;
+                        },
+                        onClose: () => Navigator.of(sheetContext).pop(),
+                        initialSection: section,
+                        initiallyFocusAgentContext: focusContextSettings,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _handleEngineConfigChanged() {
+    if (!mounted) return;
+    setState(() {
+      _primaryFilesClientFuture = null;
+      _primarySkillsClientFuture = null;
+    });
+  }
+
+  void _showSettingsFromMenu() {
+    unawaited(_showSettingsSheet(_SettingsSection.menu));
+  }
+
+  void _openChatProject(_ChatProject project) {
+    setState(() {
+      _selectedChatProjectId = project.id;
+      _primaryView = _ChatPrimaryView.projectDetail;
+    });
+  }
+
+  String? get _activeSessionProjectId {
+    final projectId =
+        _projectSessionIds[_sessionCacheKey(_activeAgentId, _activeSessionId)];
+    if (projectId == null) return null;
+    final projectExists = _chatProjects.any(
+      (project) => project.id == projectId && project.agentId == _activeAgentId,
+    );
+    return projectExists ? projectId : null;
+  }
+
+  bool get _isActiveProjectChat =>
+      _primaryView == _ChatPrimaryView.chat && _activeSessionProjectId != null;
+
+  void _returnToActiveProject() {
+    final projectId = _activeSessionProjectId;
+    if (projectId == null) return;
+    _dismissKeyboard();
+    setState(() {
+      _selectedChatProjectId = projectId;
+      _primaryView = _ChatPrimaryView.projectDetail;
+    });
+  }
+
+  void _openProjectSession(String sessionId) {
+    _dismissKeyboard();
+    setState(() => _primaryView = _ChatPrimaryView.chat);
+    _selectSession(sessionId);
+  }
+
+  void _removeSessionFromProject(String sessionId) {
+    final key = _sessionCacheKey(_activeAgentId, sessionId);
+    if (!_projectSessionIds.containsKey(key)) return;
+    setState(() {
+      _projectSessionIds = Map.unmodifiable({
+        for (final entry in _projectSessionIds.entries)
+          if (entry.key != key) entry.key: entry.value,
+      });
+    });
+    unawaited(_persistChatProjects());
+    _showChatSnackBar(
+      _projectCopy(
+        context,
+        english: 'Chat removed from project',
+        chinese: '已从项目移出',
+      ),
+    );
+  }
+
+  Future<void> _showProjectSessionRename(ChatSession session) async {
+    final appView = View.of(context);
+    _handleSessionRenameEditingChanged(true);
+    String? title;
+    try {
+      title = await showModalBottomSheet<String>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        enableDrag: true,
+        backgroundColor: Colors.transparent,
+        barrierColor: Colors.black.withValues(alpha: 0.22),
+        builder: (_) => _RenameProjectSessionSheet(
+          initialTitle: _sessionHistoryDisplayTitle(session),
+        ),
+      );
+      final deadline = DateTime.now().add(const Duration(seconds: 1));
+      while (appView.viewInsets.bottom > 0 &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+      }
+    } finally {
+      if (mounted) _handleSessionRenameEditingChanged(false);
+    }
+    if (!mounted || title == null) return;
+    _renameSession(session.id, title);
+  }
+
+  Future<void> _showCreateChatProjectDialog() async {
+    final appView = View.of(context);
+    _handleSessionRenameEditingChanged(true);
+    _NewProjectDraft? draft;
+    try {
+      draft = await showModalBottomSheet<_NewProjectDraft>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        enableDrag: true,
+        backgroundColor: Colors.transparent,
+        barrierColor: Colors.black.withValues(alpha: 0.22),
+        builder: (_) => const _CreateProjectSheet(),
+      );
+      final deadline = DateTime.now().add(const Duration(seconds: 1));
+      while (appView.viewInsets.bottom > 0 &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+      }
+    } finally {
+      if (mounted) _handleSessionRenameEditingChanged(false);
+    }
+    if (!mounted || draft == null) return;
+    _createChatProject(draft);
+  }
+
+  Future<void> _showChatProjectSettings(_ChatProject project) async {
+    final appView = View.of(context);
+    _handleSessionRenameEditingChanged(true);
+    _NewProjectDraft? draft;
+    try {
+      draft = await showModalBottomSheet<_NewProjectDraft>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        enableDrag: true,
+        backgroundColor: Colors.transparent,
+        barrierColor: Colors.black.withValues(alpha: 0.22),
+        builder: (_) => _CreateProjectSheet(
+          initialDraft: _NewProjectDraft(
+            name: project.name,
+            iconKey: project.iconKey,
+            colorKey: project.colorKey,
+          ),
+        ),
+      );
+      final deadline = DateTime.now().add(const Duration(seconds: 1));
+      while (appView.viewInsets.bottom > 0 &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+      }
+    } finally {
+      if (mounted) _handleSessionRenameEditingChanged(false);
+    }
+    if (!mounted || draft == null) return;
+    _updateChatProject(project, draft);
+  }
+
+  Future<void> _confirmDeleteChatProject(_ChatProject project) async {
+    final projectSessionIds = _sessions
+        .where(
+          (session) =>
+              _projectSessionIds[_sessionCacheKey(
+                project.agentId,
+                session.id,
+              )] ==
+              project.id,
+        )
+        .map((session) => session.id)
+        .toList(growable: false);
+    final count = projectSessionIds.length;
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.24),
+      builder: (sheetContext) => SafeArea(
+        top: false,
+        child: Material(
+          color: _appSurfaceColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 12, 22, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Center(
+                  child: SizedBox(
+                    width: 38,
+                    height: 4,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Color(0xFFD2D4D8),
+                        borderRadius: BorderRadius.all(Radius.circular(2)),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 22),
+                Text(
+                  _projectCopy(
+                    context,
+                    english: 'Delete project?',
+                    chinese: '删除项目？',
+                  ),
+                  style: const TextStyle(
+                    color: _sessionMenuText,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  _projectCopy(
+                    context,
+                    english:
+                        'Deleting “${project.name}” will permanently delete all $count ${count == 1 ? 'chat' : 'chats'} in it. To keep any chats, move them out of the project before deleting.',
+                    chinese:
+                        '删除“${project.name}”后，其中的 $count 个聊天记录也会被永久删除。如需保留聊天记录，请先将它们移出项目。',
+                  ),
+                  style: const TextStyle(
+                    color: _sessionMenuMuted,
+                    fontSize: 15,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 22),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(sheetContext).pop(false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _sessionMenuText,
+                          minimumSize: const Size.fromHeight(48),
+                          side: const BorderSide(color: _appSurfaceBorderColor),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: Text(
+                          _projectCopy(
+                            context,
+                            english: 'Cancel',
+                            chinese: '取消',
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('confirm_delete_project_button'),
+                        onPressed: () => Navigator.of(sheetContext).pop(true),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFDC2626),
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size.fromHeight(48),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: Text(
+                          _projectCopy(
+                            context,
+                            english: 'Delete project',
+                            chinese: '删除项目',
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (confirmed != true) return;
+
+    for (final sessionId in projectSessionIds) {
+      final deleted = await _deleteSession(sessionId, showFeedback: false);
+      if (!deleted) {
+        if (mounted) {
+          _showChatSnackBar(
+            _projectCopy(
+              context,
+              english: 'The project could not be completely deleted.',
+              chinese: '项目未能完全删除，请重试。',
+            ),
+          );
+        }
+        return;
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _chatProjects = List.unmodifiable(
+        _chatProjects.where((item) => item.id != project.id),
+      );
+      _projectSessionIds = Map.unmodifiable({
+        for (final entry in _projectSessionIds.entries)
+          if (entry.value != project.id) entry.key: entry.value,
+      });
+      if (_selectedChatProjectId == project.id) {
+        _selectedChatProjectId = null;
+        _primaryView = _ChatPrimaryView.projects;
+      }
+    });
+    await _persistChatProjects();
+    if (!mounted) return;
+    _showChatSnackBar(
+      _projectCopy(context, english: 'Project deleted', chinese: '项目已删除'),
+    );
+  }
+
+  void _assignSessionToProject({
+    required String agentId,
+    required String sessionId,
+    required String projectId,
+  }) {
+    final key = _sessionCacheKey(agentId, sessionId);
+    setState(() {
+      _projectSessionIds = Map.unmodifiable({
+        ..._projectSessionIds,
+        key: projectId,
+      });
+    });
+    unawaited(_persistChatProjects());
+  }
+
+  Future<void> _startProjectChat(
+    String projectId,
+    String initialMessage, [
+    List<ChatAttachment> attachments = const [],
+    List<String> pinnedSkillNames = const [],
+  ]) async {
+    final message = initialMessage.trim();
+    if (message.isEmpty && attachments.isEmpty) return;
+    final isValidProject = _chatProjects.any(
+      (project) => project.id == projectId && project.agentId == _activeAgentId,
+    );
+    if (!isValidProject) return;
+
+    final agentId = _activeAgentId;
+    _startNewSession();
+    final sessionId = _activeSessionId;
+    _assignSessionToProject(
+      agentId: agentId,
+      sessionId: sessionId,
+      projectId: projectId,
+    );
+    setState(() => _primaryView = _ChatPrimaryView.chat);
+    _closeSessionHistory();
+    _inputController.text = message;
+    await _sendMessage(attachments, pinnedSkillNames: pinnedSkillNames);
+  }
+
+  void _returnToProjects() {
+    _dismissKeyboard();
+    setState(() {
+      _selectedChatProjectId = null;
+      _primaryView = _ChatPrimaryView.projects;
+    });
   }
 
   Future<void> _restoreAssistantAttachments() async {
@@ -2285,6 +3705,7 @@ class _ChatScreenState extends State<ChatScreen>
         ChatSession(
           id: sessionId,
           title: info.title,
+          summaryPreview: info.preview,
           isPinned: _isSessionPinned(agentId, sessionId),
           createdAt: _parseStoredDate(info.createdAt),
           updatedAt: _parseStoredDate(info.updatedAt),
@@ -2294,6 +3715,7 @@ class _ChatScreenState extends State<ChatScreen>
     }
     if (restoredSessions.isEmpty) return;
     setState(() {
+      _unsavedSessionIds.clear();
       _sessions = List.unmodifiable(restoredSessions);
       _activeSessionId = restoredSessions.first.id;
       _nextSessionId = _nextSessionNumber(restoredSessions);
@@ -2350,12 +3772,12 @@ class _ChatScreenState extends State<ChatScreen>
       );
       if (!mounted) return;
       setState(() {
+        _unsavedSessionIds
+          ..clear()
+          ..add(session.id);
         _activeAgentId = agentId;
         _activeSessionId = session.id;
-        final hasExisting = _sessions.any((s) => s.id == session.id);
-        if (!hasExisting) {
-          _sessions = [session, ..._sessions];
-        }
+        _sessions = [session];
         _nextMessageId = _nextMessageNumber(_sessions);
         _editingMessageId = null;
         _inputController.clear();
@@ -2378,6 +3800,7 @@ class _ChatScreenState extends State<ChatScreen>
         ChatSession(
           id: sessionId,
           title: title,
+          summaryPreview: info.preview,
           isPinned: _isSessionPinned(agentId, sessionId),
           createdAt: _parseStoredDate(info.createdAt),
           updatedAt: _parseStoredDate(info.updatedAt),
@@ -2387,6 +3810,7 @@ class _ChatScreenState extends State<ChatScreen>
     }
     if (restored.isEmpty || !mounted) return;
     setState(() {
+      _unsavedSessionIds.clear();
       _activeAgentId = agentId;
       _sessions = List.unmodifiable(restored);
       _activeSessionId = restored.first.id;
@@ -2680,6 +4104,9 @@ class _ChatScreenState extends State<ChatScreen>
     final now = DateTime.now();
     final sessionId = _newSessionId();
     setState(() {
+      _unsavedSessionIds
+        ..clear()
+        ..add(sessionId);
       _activeAgentId = agentId;
       _activeSessionId = sessionId;
       _channelInputSources = const [];
@@ -2698,7 +4125,10 @@ class _ChatScreenState extends State<ChatScreen>
     });
   }
 
-  Future<void> _persistConfig(LlmConfigState config) async {
+  Future<void> _persistConfig(
+    LlmConfigState config, {
+    required int revision,
+  }) async {
     final existingProfiles = await widget.configStore.loadProfiles();
     final nextProfileIds = config.profiles.map((profile) => profile.id).toSet();
     for (final profile in existingProfiles) {
@@ -2713,6 +4143,12 @@ class _ChatScreenState extends State<ChatScreen>
       );
     }
     await widget.configStore.saveSelection(_storedSelectionFromConfig(config));
+    if (revision != _configRevision) return;
+    await _enqueueCodexConfigSync(
+      config,
+      showFailure: true,
+      sourceConfigRevision: revision,
+    );
   }
 
   void _updateSessionRun(
@@ -2778,6 +4214,11 @@ class _ChatScreenState extends State<ChatScreen>
     final oldPinnedKey = _pinnedSessionKey(agentId, oldSessionId);
     final nextPinnedKey = _pinnedSessionKey(agentId, nextSessionId);
     final wasPinned = _pinnedSessionIds.contains(oldPinnedKey);
+    final oldRenamedKey = _renamedSessionKey(agentId, oldSessionId);
+    final nextRenamedKey = _renamedSessionKey(agentId, nextSessionId);
+    final renamedTitle = _renamedSessionTitles[oldRenamedKey];
+    final projectId = _projectSessionIds[oldSdkCacheKey];
+    final wasUnsaved = _unsavedSessionIds.contains(oldSessionId);
     final assistantPrefix = '$agentId::$oldSessionId::';
     var didMoveAssistantCache = false;
 
@@ -2791,6 +4232,11 @@ class _ChatScreenState extends State<ChatScreen>
       }).toList();
       if (_activeSessionId == oldSessionId) {
         _activeSessionId = nextSessionId;
+      }
+      if (wasUnsaved) {
+        _unsavedSessionIds
+          ..remove(oldSessionId)
+          ..add(nextSessionId);
       }
 
       _sdkSessions.remove(oldSdkCacheKey);
@@ -2822,6 +4268,20 @@ class _ChatScreenState extends State<ChatScreen>
           if (key != oldPinnedKey) key,
         if (wasPinned) nextPinnedKey,
       };
+      if (renamedTitle != null) {
+        _renamedSessionTitles = Map.unmodifiable({
+          for (final entry in _renamedSessionTitles.entries)
+            if (entry.key != oldRenamedKey) entry.key: entry.value,
+          nextRenamedKey: renamedTitle,
+        });
+      }
+      if (projectId != null) {
+        _projectSessionIds = Map.unmodifiable({
+          for (final entry in _projectSessionIds.entries)
+            if (entry.key != oldSdkCacheKey) entry.key: entry.value,
+          nextSdkCacheKey: projectId,
+        });
+      }
 
       _assistantAttachmentCache = Map.unmodifiable({
         for (final entry in _assistantAttachmentCache.entries)
@@ -2837,8 +4297,460 @@ class _ChatScreenState extends State<ChatScreen>
     });
 
     if (wasPinned) unawaited(_persistPinnedSessions());
+    if (renamedTitle != null) unawaited(_persistRenamedSessions());
+    if (projectId != null) unawaited(_persistChatProjects());
     if (didMoveAssistantCache) unawaited(_persistAssistantAttachments());
     return nextSessionId;
+  }
+
+  Future<sdk.CodexAgentEngineConfigResult?> _enqueueCodexConfigSync(
+    LlmConfigState config, {
+    bool showFailure = false,
+    int? sourceConfigRevision,
+  }) {
+    if (!Platform.isAndroid && !_usesInjectedChatClient) {
+      return Future.value(null);
+    }
+    final revision = ++_codexConfigSyncRevision;
+    final completer = Completer<sdk.CodexAgentEngineConfigResult?>();
+    final previous = _codexConfigSyncQueue;
+    final task = previous.catchError((_) {}).then((_) async {
+      if (revision != _codexConfigSyncRevision ||
+          (sourceConfigRevision != null &&
+              sourceConfigRevision != _configRevision)) {
+        completer.complete(null);
+        return;
+      }
+      try {
+        final client = await _getChatClient();
+        if (revision != _codexConfigSyncRevision ||
+            (sourceConfigRevision != null &&
+                sourceConfigRevision != _configRevision)) {
+          completer.complete(null);
+          return;
+        }
+        final profile = config.selectedRuntimeProfile;
+        final result = profile == null || !profile.hasModel
+            ? await client.clearCodexAgentEngineModelConfig()
+            : await client.syncCodexAgentEngineModel(profile);
+        if (!result.success && showFailure && mounted) {
+          _showChatSnackBar(_codexConfigFailureMessage(result));
+        }
+        completer.complete(result);
+      } catch (error) {
+        if (showFailure && mounted) {
+          _showChatSnackBar(
+            widget.language == AppLanguage.chinese
+                ? '主模型已保存，但 Codex 配置同步失败：$error'
+                : 'The main model was saved, but Codex configuration sync failed: $error',
+          );
+        }
+        completer.complete(
+          sdk.CodexAgentEngineConfigResult(
+            success: false,
+            providerAvailable: true,
+            errorCode: 'config_write_failed',
+            error: error.toString(),
+          ),
+        );
+      }
+    });
+    _codexConfigSyncQueue = task;
+    return completer.future;
+  }
+
+  Future<bool> _ensureCodexMainModelReady() async {
+    final profile = _config.selectedRuntimeProfile;
+    if (profile == null || !profile.hasModel) {
+      await _enqueueCodexConfigSync(_config);
+      _showChatSnackBar(
+        widget.language == AppLanguage.chinese
+            ? '请先在模型管理中选择主模型，再运行 Codex'
+            : 'Choose a main model before running Codex.',
+      );
+      return false;
+    }
+    if (profile.apiKey.trim().isEmpty) {
+      await _enqueueCodexConfigSync(_config);
+      _showChatSnackBar(
+        widget.language == AppLanguage.chinese
+            ? '请先为主模型配置 API Key，再运行 Codex'
+            : 'Add an API key to the main model before running Codex.',
+      );
+      return false;
+    }
+
+    final result = await _enqueueCodexConfigSync(_config);
+    if (result == null || !result.success || !result.modelUsable) {
+      if (result != null) {
+        _showChatSnackBar(_codexConfigFailureMessage(result));
+      }
+      return false;
+    }
+
+    final fingerprint = _codexModelFingerprint(profile);
+    if (_codexVerifiedModelFingerprint == fingerprint) return true;
+    final modelCatalogFetcher = widget.codexModelCatalogFetcher;
+    if (Platform.environment.containsKey('FLUTTER_TEST') &&
+        modelCatalogFetcher == null) {
+      _codexVerifiedModelFingerprint = fingerprint;
+      return true;
+    }
+
+    try {
+      final models =
+          await (modelCatalogFetcher ?? _ModelCatalogClient.fetchModels)(
+            provider: profile.provider,
+            baseUrl: profile.baseUrl.trim().isEmpty
+                ? 'https://api.openai.com/v1'
+                : profile.baseUrl,
+            apiKey: profile.apiKey,
+          );
+      if (!models.contains(profile.model.trim())) {
+        _showChatSnackBar(
+          widget.language == AppLanguage.chinese
+              ? '主模型 ${profile.model} 不在服务商返回的可用模型列表中'
+              : 'The provider did not list ${profile.model} as an available model.',
+        );
+        return false;
+      }
+    } on CodexModelCatalogHttpException catch (error) {
+      if (!_codexCatalogUnsupported(error.statusCode)) {
+        _showChatSnackBar(
+          widget.language == AppLanguage.chinese
+              ? '无法验证主模型 ${profile.model}：${error.message}'
+              : 'Could not verify ${profile.model}: ${error.message}',
+        );
+        return false;
+      }
+    } catch (error) {
+      _showChatSnackBar(
+        widget.language == AppLanguage.chinese
+            ? '无法验证主模型 ${profile.model}：${_friendlyError(error)}'
+            : 'Could not verify ${profile.model}: ${_friendlyError(error)}',
+      );
+      return false;
+    }
+
+    _codexVerifiedModelFingerprint = fingerprint;
+    return true;
+  }
+
+  bool _codexCatalogUnsupported(int statusCode) =>
+      statusCode == 404 || statusCode == 405 || statusCode == 501;
+
+  String _codexModelFingerprint(LlmModelProfile profile) {
+    return crypto.sha256
+        .convert(
+          utf8.encode(
+            [
+              profile.provider.trim().toLowerCase(),
+              profile.baseUrl.trim(),
+              profile.model.trim(),
+              profile.apiKey.trim(),
+            ].join('\u0000'),
+          ),
+        )
+        .toString();
+  }
+
+  String _codexConfigFailureMessage(sdk.CodexAgentEngineConfigResult result) {
+    if (widget.language != AppLanguage.chinese) {
+      return result.error ?? 'The selected main model cannot be used by Codex.';
+    }
+    return switch (result.errorCode) {
+      'missing_main_model' => '请先选择主模型，再运行 Codex',
+      'missing_api_key' => '请先为主模型配置 API Key，再运行 Codex',
+      'missing_base_url' => '请先为兼容服务商配置有效的 Base URL',
+      'unsupported_provider' => '当前主模型的服务商协议不受 Codex 支持',
+      'model_not_available' => '当前主模型不在服务商的可用模型列表中',
+      'model_check_failed' => '主模型可用性校验失败，请检查网络和服务商配置',
+      'config_write_failed' => '主模型已保存，但 Codex 沙箱配置写入失败',
+      'unsupported_platform' => '当前平台暂不支持 Codex 引擎',
+      _ => result.error ?? '当前主模型无法用于 Codex',
+    };
+  }
+
+  Future<bool> _ensureCodexEnvironmentReady({
+    String? agentId,
+    bool promptToInstall = true,
+  }) async {
+    final targetAgentId = agentId ?? _activeAgentId;
+    if (targetAgentId != 'engine.codex') return true;
+    if (!Platform.isAndroid) {
+      if (_usesInjectedChatClient) {
+        if (widget.codexModelCatalogFetcher == null) return true;
+        return _ensureCodexMainModelReady();
+      }
+      _showChatSnackBar(
+        widget.language == AppLanguage.chinese
+            ? '当前平台暂不支持 Codex 引擎'
+            : 'Codex is not supported on this platform.',
+      );
+      return false;
+    }
+    if (!await _ensureCodexMainModelReady()) return false;
+    if (_codexEnvironmentReady) {
+      final check = await _runDemoEnvironmentShell(
+        _codexCliCheckCommand,
+        timeoutSeconds: 10,
+      );
+      if (check.success) return true;
+      _traceChat(
+        'codex cached preflight invalidated error="${_tracePreview(check.error.isNotEmpty ? check.error : check.output)}"',
+      );
+      _codexEnvironmentReady = false;
+    }
+    final inFlight = _codexEnvironmentPreflight;
+    if (inFlight != null) return inFlight;
+
+    final future = _runCodexEnvironmentPreflight(
+      promptToInstall: promptToInstall,
+    );
+    _codexEnvironmentPreflight = future;
+    try {
+      final ready = await future;
+      _codexEnvironmentReady = ready;
+      return ready;
+    } finally {
+      if (identical(_codexEnvironmentPreflight, future)) {
+        _codexEnvironmentPreflight = null;
+      }
+    }
+  }
+
+  Future<bool> _runCodexEnvironmentPreflight({
+    required bool promptToInstall,
+  }) async {
+    if (_isCheckingCodexEnvironment) return false;
+    if (!mounted) return false;
+    setState(() => _isCheckingCodexEnvironment = true);
+    try {
+      _traceChat('codex preflight check start');
+      final check = await _runDemoEnvironmentShell(
+        _codexCliCheckCommand,
+        timeoutSeconds: 30,
+      );
+      if (!mounted) return false;
+      if (check.success) {
+        _traceChat(
+          'codex preflight installed version="${_tracePreview(_firstOutputLine(check.output))}"',
+        );
+        return true;
+      }
+      _traceChat(
+        'codex preflight missing error="${_tracePreview(check.error.isNotEmpty ? check.error : check.output)}"',
+      );
+      if (!promptToInstall) return false;
+      final install = await _showCodexInstallPrompt(check);
+      if (install != true || !mounted) return false;
+      final installed = await _showCodexInstallProgressDialog();
+      if (!mounted) return false;
+      if (!installed) return false;
+      _showChatSnackBar('Codex 引擎已安装，可以开始对话');
+      return true;
+    } finally {
+      if (mounted) setState(() => _isCheckingCodexEnvironment = false);
+    }
+  }
+
+  Future<bool?> _showCodexInstallPrompt(_EnvironmentCommandResult check) {
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _configSurface,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        titleTextStyle: const TextStyle(
+          color: _configTextPrimary,
+          fontSize: 20,
+          fontWeight: FontWeight.w700,
+        ),
+        contentTextStyle: const TextStyle(
+          color: _configTextSecondary,
+          fontSize: 15,
+          height: 1.45,
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+        title: const Text('安装 Codex 后即可使用'),
+        content: const Text(
+          '首次使用 Codex 前需要先完成一次安装。\n\n'
+          '预计下载大小：大约 80 MB\n\n'
+          '安装过程中请保持网络连接。',
+        ),
+        actions: [
+          TextButton(
+            style: _updateDialogTextButtonStyle(),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: _updateDialogFilledButtonStyle(),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('安装'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _showCodexInstallProgressDialog() async {
+    final progress = ValueNotifier<_CodexInstallProgress>(
+      const _CodexInstallProgress(label: '准备安装…', value: 0, running: true),
+    );
+    var cancelRequested = false;
+    final installFuture = _installCodexWithProgress(
+      progress,
+      isCancelled: () => cancelRequested,
+    );
+    unawaited(installFuture.whenComplete(progress.dispose));
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _CodexInstallProgressDialog(
+        progress: progress,
+        onCancel: () => cancelRequested = true,
+      ),
+    );
+    return result ?? false;
+  }
+
+  Future<void> _installCodexWithProgress(
+    ValueNotifier<_CodexInstallProgress> progress, {
+    required bool Function() isCancelled,
+  }) async {
+    Future<_EnvironmentCommandResult> runStep(
+      String label,
+      double value,
+      String command, {
+      int timeoutSeconds = 600,
+      double? endValue,
+      List<String> hints = const [],
+    }) async {
+      if (isCancelled()) throw const _CodexInstallCancelled();
+      Timer? timer;
+      final startedAt = DateTime.now();
+      progress.value = _CodexInstallProgress(
+        label: label,
+        value: value,
+        running: true,
+        detail: '',
+        substeps: hints,
+      );
+      if (endValue != null && endValue > value) {
+        timer = Timer.periodic(const Duration(seconds: 2), (_) {
+          final elapsed = DateTime.now().difference(startedAt);
+          final elapsedSeconds = elapsed.inSeconds;
+          final span = endValue - value;
+          final animated = value + span * (1 - 1 / (1 + elapsedSeconds / 18));
+          progress.value = _CodexInstallProgress(
+            label: label,
+            value: animated.clamp(value, endValue).toDouble(),
+            running: true,
+            detail: '已等待 ${_formatElapsed(elapsed)}，请保持应用打开。',
+            substeps: hints,
+          );
+        });
+      }
+      try {
+        final result = await _runDemoEnvironmentShell(
+          command,
+          timeoutSeconds: timeoutSeconds,
+        );
+        if (isCancelled()) throw const _CodexInstallCancelled();
+        return result;
+      } finally {
+        timer?.cancel();
+      }
+    }
+
+    try {
+      var result = await runStep(
+        '检查安装环境…',
+        0.12,
+        'command -v node && node --version && command -v npm && npm --version',
+        timeoutSeconds: 30,
+      );
+      if (!result.success) {
+        _completeCodexInstall(progress, result);
+        return;
+      }
+
+      result = await runStep(
+        '准备安装文件…',
+        0.36,
+        _prepareCodexNpmPrefixCommand,
+        timeoutSeconds: 60,
+      );
+      if (!result.success) {
+        _completeCodexInstall(progress, result);
+        return;
+      }
+
+      result = await runStep(
+        '获取安装信息…',
+        0.56,
+        _codexNpmPackageCheckCommand,
+        timeoutSeconds: 90,
+        endValue: 0.64,
+      );
+      if (!result.success) {
+        _completeCodexInstall(progress, result);
+        return;
+      }
+
+      result = await runStep(
+        '下载并安装 Codex…',
+        0.66,
+        _installCodexCliCommand,
+        endValue: 0.9,
+      );
+      if (!result.success) {
+        _completeCodexInstall(progress, result);
+        return;
+      }
+
+      result = await runStep(
+        '完成安装…',
+        0.95,
+        _codexCliCheckCommand,
+        timeoutSeconds: 30,
+      );
+      _completeCodexInstall(progress, result);
+    } on _CodexInstallCancelled {
+      progress.value = const _CodexInstallProgress(
+        label: '已取消安装',
+        value: 1,
+        running: false,
+        success: false,
+      );
+    } catch (error) {
+      progress.value = _CodexInstallProgress(
+        label: '安装失败',
+        value: 1,
+        running: false,
+        success: false,
+        detail: error.toString(),
+      );
+    }
+  }
+
+  void _completeCodexInstall(
+    ValueNotifier<_CodexInstallProgress> progress,
+    _EnvironmentCommandResult result,
+  ) {
+    final detail = result.success
+        ? _firstOutputLine(result.output)
+        : _shortEnvironmentMessage(
+            result.error.isNotEmpty ? result.error : result.output,
+          );
+    progress.value = _CodexInstallProgress(
+      label: result.success ? 'Codex CLI 安装完成' : 'Codex CLI 安装失败',
+      value: 1,
+      running: false,
+      success: result.success,
+      detail: detail,
+    );
   }
 
   Future<void> _sendMessage(
@@ -2849,6 +4761,10 @@ class _ChatScreenState extends State<ChatScreen>
     if (text.isEmpty && attachments.isEmpty) return;
     if (!_initialStateRestored) await _restoreConfigForFirstTurn();
     if (await _handleSlashCommand(text, attachments)) return;
+    if (_activeAgentId == 'engine.codex' &&
+        !await _ensureCodexEnvironmentReady()) {
+      return;
+    }
     await _ensureA2AConnectionReadyForUserTurn();
 
     // Prepend /skill_name mentions for pinned skills so the engine
@@ -2881,7 +4797,7 @@ class _ChatScreenState extends State<ChatScreen>
         'route=inject-running session=$_activeSessionId '
         'assistant=${activeRun.assistantMessageId}',
       );
-      await _sendRunningMessage(effectiveText, attachments);
+      await _sendRunningMessage(effectiveText, attachments, displayText: text);
       return;
     }
     _traceChat('route=new-turn session=$_activeSessionId');
@@ -2999,6 +4915,7 @@ class _ChatScreenState extends State<ChatScreen>
     final now = DateTime.now();
     final sessionId = _activeSessionId;
     setState(() {
+      _unsavedSessionIds.remove(sessionId);
       _sessions = _sessions.map((session) {
         if (session.id != sessionId) return session;
         return session.copyWith(
@@ -3144,6 +5061,7 @@ class _ChatScreenState extends State<ChatScreen>
     final interjection = PendingInterjection(
       id: 'interjection-${_nextInterjectionId++}',
       content: text,
+      draftContent: displayText ?? text,
       attachments: List.unmodifiable(attachments),
       attachmentCount: attachments.length,
       createdAt: DateTime.now(),
@@ -3261,6 +5179,7 @@ class _ChatScreenState extends State<ChatScreen>
     ];
 
     setState(() {
+      _unsavedSessionIds.remove(sessionId);
       _pendingAssistantAttachments = Map.unmodifiable({
         for (final entry in _pendingAssistantAttachments.entries)
           if (entry.key != sessionId) entry.key: entry.value,
@@ -3289,7 +5208,7 @@ class _ChatScreenState extends State<ChatScreen>
 
     try {
       final client = await _getChatClient();
-      if (!isCliEngine) {
+      if (agentId != 'engine.cc') {
         await client.configure(
           selectedProfile!,
           responseLanguage: _responseLanguageCode,
@@ -3303,8 +5222,8 @@ class _ChatScreenState extends State<ChatScreen>
         await _prepareBackgroundRunFeedback(client);
       }
       final sdk.SessionKey session;
-      if (isCliEngine) {
-        // CLI bridges (CC/Codex) manage their own sessions through PTY.
+      if (agentId == 'engine.cc') {
+        // CC still owns sessions directly through its PTY bridge.
         // Create a synthetic SessionKey so downstream fields are type-correct.
         session = sdk.SessionKey(
           channelType: 'cli',
@@ -3312,6 +5231,10 @@ class _ChatScreenState extends State<ChatScreen>
           threadId: activeSession.id,
         );
       } else {
+        // Codex now routes through Rust core's napaxi.agent_engine.codex engine,
+        // so it must use a core-created UUID session. Rust core owns the
+        // Codex native thread mapping instead of letting Flutter bridge state
+        // become the UI/core id.
         session = await _getSdkSession(client, activeSession.id, agentId);
         if (!mounted) return;
         sessionId = _migrateLiveSessionId(
@@ -3324,26 +5247,9 @@ class _ChatScreenState extends State<ChatScreen>
       final sdkAttachments = await _toSdkAttachments(attachments);
       if (!mounted) return;
 
-      // Codex only knows the real thread id once thread/start responds. For a
-      // brand-new conversation the UI sent a placeholder id; migrate it to the
-      // real id (and move the live run with it) the moment codex reports it.
+      // Codex native thread ids are now core-owned. Do not migrate the
+      // UI/core session id away from the UUID that Rust storage requires.
       void Function(String)? onNativeThreadId;
-      if (isCliEngine && agentId == 'engine.codex') {
-        onNativeThreadId = (String nativeThreadId) {
-          if (!mounted) return;
-          final newKey = sdk.SessionKey(
-            channelType: 'cli',
-            accountId: agentId,
-            threadId: nativeThreadId,
-          );
-          sessionId = _migrateLiveSessionId(
-            agentId: agentId,
-            oldSessionId: sessionId,
-            sessionKey: newKey,
-          );
-          unawaited(_refreshContextStatusForSession(agentId, sessionId));
-        };
-      }
 
       var currentAssistantMessageId = assistantMessageId;
       var sawResponseDelta = false;
@@ -3776,11 +5682,9 @@ class _ChatScreenState extends State<ChatScreen>
                   );
                   _updateAssistantMessage(
                     currentAssistantMessageId,
-                    (chatMessage) => chatMessage.copyWith(
-                      content: strings.sdkError(message),
-                      isStreaming: false,
-                      action: ChatMessageAction.openConfiguration,
-                      completedAt: DateTime.now(),
+                    (chatMessage) => _assistantMessageAfterError(
+                      chatMessage,
+                      strings.sdkError(message),
                     ),
                   );
                 case sdk.InterruptedEvent():
@@ -3905,8 +5809,9 @@ class _ChatScreenState extends State<ChatScreen>
 
   Future<void> _sendRunningMessage(
     String text,
-    List<ChatAttachment> attachments,
-  ) async {
+    List<ChatAttachment> attachments, {
+    String? displayText,
+  }) async {
     if (text.isEmpty && attachments.isEmpty) return;
     final sessionId = _activeSessionId;
     final run = _sessionRuns[sessionId];
@@ -3936,6 +5841,7 @@ class _ChatScreenState extends State<ChatScreen>
     final interjection = PendingInterjection(
       id: 'interjection-${_nextInterjectionId++}',
       content: text,
+      draftContent: displayText ?? text,
       attachments: List.unmodifiable(attachments),
       attachmentCount: attachments.length,
       createdAt: now,
@@ -3980,36 +5886,70 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   Future<void> _stopActiveSend() async {
-    final run = _activeRun;
-    if (run != null && run.pendingInterjections.isNotEmpty) {
-      await _restoreLatestPendingInterjection(_activeSessionId, run);
-    }
-    await _stopSessionRun(_activeSessionId, clearPendingInterjections: true);
+    await _stopSessionRun(_activeSessionId);
   }
 
-  Future<void> _restoreLatestPendingInterjection(
-    String sessionId,
-    ChatSessionRunState run,
-  ) async {
-    final interjection = run.pendingInterjections.last;
-    if (interjection.retractsFromSdk) {
-      final client = await _getChatClient();
-      try {
-        await client.retractInjectedMessage(
-          run.sessionKey,
-          interjection.content,
-        );
-      } catch (_) {
-        // The run is being cancelled; restoring the draft locally is still useful.
+  Future<void> _retractPendingInterjections() async {
+    if (_isRetractingPendingInterjections) return;
+    final sessionId = _activeSessionId;
+    final run = _sessionRuns[sessionId];
+    if (run == null || run.pendingInterjections.isEmpty) return;
+    _isRetractingPendingInterjections = true;
+    try {
+      final pending = List<PendingInterjection>.of(run.pendingInterjections);
+      final client =
+          pending.any(
+            (item) =>
+                item.retractsFromSdk &&
+                item.status == PendingInterjectionStatus.queued,
+          )
+          ? await _getChatClient()
+          : null;
+
+      for (final interjection in pending.reversed) {
+        if (!interjection.retractsFromSdk ||
+            interjection.status != PendingInterjectionStatus.queued) {
+          continue;
+        }
+        try {
+          await client?.retractInjectedMessage(
+            run.sessionKey,
+            interjection.content,
+          );
+        } catch (_) {
+          // Always restore the local draft even if the best-effort SDK retract fails.
+        }
+        if (!mounted) return;
       }
-      if (!mounted) return;
+
+      final pendingIds = pending.map((item) => item.id).toSet();
+      _updateSessionRun(sessionId, (current) {
+        final remaining = current.pendingInterjections
+            .where((item) => !pendingIds.contains(item.id))
+            .toList(growable: false);
+        return current.copyWith(
+          activity: remaining.isEmpty
+              ? 'Running'
+              : 'Processing queued messages',
+          pendingInterjections: List.unmodifiable(remaining),
+        );
+      });
+
+      final restoredText = pending
+          .map((item) => item.draftContent ?? item.content)
+          .where((content) => content.trim().isNotEmpty)
+          .join('\n');
+      _inputController.value = TextEditingValue(
+        text: restoredText,
+        selection: TextSelection.collapsed(offset: restoredText.length),
+      );
+      _chatInputBarKey.currentState?.restoreAttachments(
+        pending.expand((item) => item.attachments),
+      );
+      _inputFocusNode.requestFocus();
+    } finally {
+      _isRetractingPendingInterjections = false;
     }
-    _removePendingInterjection(sessionId, interjection.id);
-    _inputController.value = TextEditingValue(
-      text: interjection.content,
-      selection: TextSelection.collapsed(offset: interjection.content.length),
-    );
-    _inputFocusNode.requestFocus();
   }
 
   void _removePendingInterjection(String sessionId, String interjectionId) {
@@ -4353,7 +6293,9 @@ class _ChatScreenState extends State<ChatScreen>
       );
     }
     if (!isLocalA2A || event.openAssistant || previousSessionId == sessionId) {
-      _scrollToBottom(force: inboundText.isNotEmpty || event.openAssistant);
+      _scrollToBottom(
+        force: inboundText.isNotEmpty || previousSessionId != sessionId,
+      );
     }
     if (inboundText.isNotEmpty ||
         event.completeAssistant ||
@@ -4434,7 +6376,7 @@ class _ChatScreenState extends State<ChatScreen>
       unawaited(_persistA2AConversationSessions());
     }
     if (_activeSessionId == sessionId) {
-      _scrollToBottom(force: event.chatEvent != null);
+      _scrollToBottom();
     }
   }
 
@@ -4679,11 +6621,9 @@ class _ChatScreenState extends State<ChatScreen>
       case sdk.ErrorEvent(:final message):
         _updateAssistantMessage(
           assistantMessageId,
-          (chatMessage) => chatMessage.copyWith(
-            content: strings.sdkError(message),
-            isStreaming: false,
-            action: ChatMessageAction.openConfiguration,
-            completedAt: DateTime.now(),
+          (chatMessage) => _assistantMessageAfterError(
+            chatMessage,
+            strings.sdkError(message),
           ),
         );
       default:
@@ -4797,54 +6737,6 @@ class _ChatScreenState extends State<ChatScreen>
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
-  }
-
-  bool _isFavoriteAttachment(ChatAttachment attachment) {
-    return _activeFavoriteAttachments.any(
-      (favorite) => _favoriteMatchesAttachment(favorite, attachment),
-    );
-  }
-
-  void _toggleFavoriteAttachment(ChatAttachment attachment) {
-    final id = _attachmentFavoriteId(attachment);
-    final index = _favoriteAttachments.indexWhere(
-      (favorite) =>
-          favorite.accountId == _activeAccountId &&
-          favorite.agentId == _activeAgentId &&
-          (favorite.id == id ||
-              _favoriteMatchesAttachment(favorite, attachment)),
-    );
-    setState(() {
-      if (index == -1) {
-        _favoriteAttachments = _dedupeFavoriteAttachments([
-          FavoriteAttachment(
-            id: id,
-            attachment: attachment,
-            createdAt: DateTime.now(),
-            accountId: _activeAccountId,
-            agentId: _activeAgentId,
-          ),
-          ..._favoriteAttachments,
-        ]);
-      } else {
-        _favoriteAttachments = _dedupeFavoriteAttachments([
-          for (var i = 0; i < _favoriteAttachments.length; i++)
-            if (i != index) _favoriteAttachments[i],
-        ]);
-      }
-    });
-    unawaited(_persistFavoriteAttachments());
-  }
-
-  void _openFavoriteAttachment(ChatAttachment attachment) {
-    unawaited(
-      _openAttachment(
-        context,
-        attachment,
-        accountId: _activeAccountId,
-        agentId: _activeAgentId,
-      ),
-    );
   }
 
   Future<void> _openConversationAttachments() async {
@@ -5205,7 +7097,7 @@ class _ChatScreenState extends State<ChatScreen>
             ChatMessage(
               id: 'user-${_nextMessageId++}',
               role: ChatRole.user,
-              content: interjection.content,
+              content: interjection.draftContent ?? interjection.content,
               attachments: interjection.attachments,
               createdAt: now,
             ),
@@ -5758,6 +7650,21 @@ $candidate
         );
       }).toList();
     });
+  }
+
+  ChatMessage _assistantMessageAfterError(
+    ChatMessage message,
+    String errorContent,
+  ) {
+    final hasPartialContent = message.content.trim().isNotEmpty;
+    return message.copyWith(
+      content: hasPartialContent ? message.content : errorContent,
+      isStreaming: false,
+      action: hasPartialContent
+          ? message.action
+          : ChatMessageAction.openConfiguration,
+      completedAt: DateTime.now(),
+    );
   }
 
   ChatMessage _sanitizeAssistantVisibleMessage(ChatMessage message) {
@@ -6338,88 +8245,42 @@ $candidate
   }
 
   Future<void> _openConfigPage() async {
-    _dismissKeyboard();
-    setState(() {
-      _sessionHistoryInitialView = _SessionHistoryView.settings;
-      _sessionHistoryInitialSettingsSection = _SettingsSection.configuration;
-      _sessionHistoryInitialSkillsTab = _SkillsInitialTab.installed;
-    });
-    await _sessionMenuController.forward();
+    await _showSettingsSheet(_SettingsSection.configuration);
   }
 
-  Future<void> _openActiveContextModelConfig() async {
+  Future<void> _openModelSettingsPage() async {
+    await _showSettingsSheet(_SettingsSection.menu);
+  }
+
+  Future<void> _openContextSettings() async {
     _dismissKeyboard();
-    final explicitProfileId = _modelProfileIdForAgent(_activeAgentId);
-    final profile =
-        _config.profileById(explicitProfileId) ??
-        _config.selectedProfileFor(ModelCapability.chat) ??
-        _config.selectedProfile;
-    if (profile == null) {
-      await _openConfigPage();
-      return;
-    }
-
-    final updatedProfile = await Navigator.of(context).push<LlmModelProfile>(
-      MaterialPageRoute(
-        builder: (context) => _LlmModelProfilePage(initialProfile: profile),
-      ),
-    );
-    if (updatedProfile == null) return;
-
-    final nextProfiles = _config.profiles
-        .map((item) => item.id == updatedProfile.id ? updatedProfile : item)
-        .toList();
-    final nextCapabilitySelection =
-        Map<ModelCapability, String>.from(_config.selectedProfileIdByCapability)
-          ..removeWhere((capability, profileId) {
-            return profileId == updatedProfile.id &&
-                !updatedProfile.supports(capability);
-          });
-
-    _handleConfigChanged(
-      LlmConfigState(
-        profiles: List.unmodifiable(nextProfiles),
-        selectedProfileId: _config.selectedProfileId ?? updatedProfile.id,
-        selectedProfileIdByCapability: Map.unmodifiable(
-          nextCapabilitySelection,
-        ),
-        systemPrompt: _config.systemPrompt,
-        maxToolIterations: _config.maxToolIterations,
-      ),
+    await _showSettingsSheet(
+      _SettingsSection.agent,
+      focusContextSettings: true,
     );
     unawaited(_refreshActiveContextStatus());
   }
 
   Future<NapaxiChatClient> _buildFilesClientFuture() {
-    final strings = AppStrings.of(context);
-    final agentId = _activeAgentId;
-    final selectedProfile = _runtimeProfileForAgent(agentId);
-    return () async {
-      if (selectedProfile == null ||
-          !selectedProfile.hasModel ||
-          selectedProfile.apiKey.trim().isEmpty) {
-        throw Exception(strings.configureToViewFiles);
-      }
-      final client = await _getChatClient();
-      await client.configure(
-        selectedProfile,
-        responseLanguage: _responseLanguageCode,
-        capabilitySelection: _activeScenarioCapabilitySelection,
-      );
-      return client;
-    }();
+    return _buildContentBrowserClient(
+      missingConfigMessage: AppStrings.of(context).configureToViewFiles,
+    );
   }
 
   Future<NapaxiChatClient> _buildSkillsClientFuture() {
-    final strings = AppStrings.of(context);
+    return _buildContentBrowserClient(
+      missingConfigMessage: AppStrings.of(context).configureToViewSkills,
+    );
+  }
+
+  Future<NapaxiChatClient> _buildContentBrowserClient({
+    required String missingConfigMessage,
+  }) async {
     final agentId = _activeAgentId;
     final selectedProfile = _runtimeProfileForAgent(agentId);
-    return () async {
-      if (selectedProfile == null ||
-          !selectedProfile.hasModel ||
-          selectedProfile.apiKey.trim().isEmpty) {
-        throw Exception(strings.configureToViewSkills);
-      }
+    if (selectedProfile != null &&
+        selectedProfile.hasModel &&
+        selectedProfile.apiKey.trim().isNotEmpty) {
       final client = await _getChatClient();
       await client.configure(
         selectedProfile,
@@ -6427,7 +8288,31 @@ $candidate
         capabilitySelection: _activeScenarioCapabilitySelection,
       );
       return client;
-    }();
+    }
+
+    // Claude Code keeps its credential in the external-engine settings. Codex
+    // always uses the selected main model above.
+    if (await _hasConfiguredCliEngineCredential(agentId)) {
+      final client = await _getChatClient();
+      await client.configureForManagement(
+        capabilitySelection: _activeScenarioCapabilitySelection,
+      );
+      return client;
+    }
+
+    throw Exception(missingConfigMessage);
+  }
+
+  Future<bool> _hasConfiguredCliEngineCredential(String agentId) async {
+    final spec = switch (agentId) {
+      'engine.cc' => _CliEngineSpec.cc,
+      _ => null,
+    };
+    if (spec == null) return false;
+    final apiKey = await const FlutterSecureStorage().read(
+      key: spec.apiKeyStorageKey,
+    );
+    return apiKey?.trim().isNotEmpty ?? false;
   }
 
   Future<NapaxiChatClient> _buildScenariosClientFuture() async {
@@ -6459,14 +8344,12 @@ $candidate
     debugPrint(
       '[$logTag] activateRuntime scenario=${runtimeProfile.scenarioId} engine=${runtimeProfile.activeEngineId} agent=${runtimeProfile.agentId} restore=$restoreSessions',
     );
-    for (final run in _sessionRuns.values) {
-      await run.subscription.cancel();
-    }
-    _sessionRuns.clear();
-
     final now = DateTime.now();
     final sessionId = _newSessionId();
     setState(() {
+      _unsavedSessionIds
+        ..clear()
+        ..add(sessionId);
       _activeScenarioId = runtimeProfile.scenarioId;
       _activeDeveloperEngineId = runtimeProfile.activeEngineId;
       _activeAgentId = runtimeProfile.agentId;
@@ -6617,11 +8500,10 @@ $candidate
   Future<void> _selectAgent(String agentId) async {
     if (!_activeRuntimeProfile.supportsAgents) return;
     if (_activeAgentId == agentId) return;
-    for (final run in _sessionRuns.values) {
-      await run.subscription.cancel();
+    if (agentId == 'engine.codex' &&
+        !await _ensureCodexEnvironmentReady(agentId: agentId)) {
+      return;
     }
-    _sessionRuns.clear();
-
     // CLI engines use a different session restoration mechanism
     if (_isCliAgent(agentId)) {
       await _restoreCliEngineSession(agentId);
@@ -6632,6 +8514,9 @@ $candidate
     final now = DateTime.now();
     final sessionId = _newSessionId();
     setState(() {
+      _unsavedSessionIds
+        ..clear()
+        ..add(sessionId);
       _activeAgentId = agentId;
       _activeSessionId = sessionId;
       _channelInputSources = const [];
@@ -6658,9 +8543,9 @@ $candidate
     unawaited(_refreshChannelInputSources());
   }
 
-  Future<void> _selectDeveloperEngine(String engineId) async {
+  Future<void> _selectScenarioEngine(String engineId) async {
     final currentRuntime = _activeRuntimeProfile;
-    if (!currentRuntime.isDeveloper) return;
+    if (currentRuntime.engines.length < 2) return;
     final nextRuntime = _scenarioRuntimeProfileFor(
       currentRuntime.scenarioId,
       developerEngineId: engineId,
@@ -6668,6 +8553,18 @@ $candidate
     if (nextRuntime.activeEngineId == _activeDeveloperEngineId &&
         nextRuntime.agentId == _activeAgentId) {
       return;
+    }
+    if (nextRuntime.agentId == 'engine.codex' &&
+        (Platform.isAndroid ||
+            !_usesInjectedChatClient ||
+            widget.codexModelCatalogFetcher != null)) {
+      final ready = await _ensureCodexEnvironmentReady(
+        agentId: nextRuntime.agentId,
+      );
+      if (!mounted) return;
+      if (!ready) {
+        return;
+      }
     }
     final selection = _scenarioCapabilitySelection(
       nextRuntime.scenarioId,
@@ -6698,56 +8595,27 @@ $candidate
         ? 'napaxiCodexHistory'
         : 'napaxiCCHistory';
     debugPrint(
-      '[$logTag] selectDeveloperEngine from=$_activeDeveloperEngineId/$_activeAgentId to=${nextRuntime.activeEngineId}/${nextRuntime.agentId}',
+      '[$logTag] selectScenarioEngine from=$_activeDeveloperEngineId/$_activeAgentId to=${nextRuntime.activeEngineId}/${nextRuntime.agentId}',
     );
     await _activateRuntimeProfile(nextRuntime);
-  }
-
-  Future<void> _refreshVisibleSessions() async {
-    final logTag = _activeAgentId == 'engine.cc'
-        ? 'napaxiCCHistory'
-        : _activeAgentId == 'engine.codex'
-        ? 'napaxiCodexHistory'
-        : 'napaxiCCHistory';
-    debugPrint(
-      '[$logTag] refreshSessions agent=$_activeAgentId activeSession=$_activeSessionId',
-    );
-    if (_isCliAgent(_activeAgentId)) {
-      await _restoreCliEngineSession(_activeAgentId);
-      return;
-    }
-    await _restoreSdkSessions(_config);
   }
 
   void _startNewSession() {
     final agentId = _activeAgentId;
     final now = DateTime.now();
     final sessionId = _newSessionId();
-
-    if (_isCliAgent(agentId)) {
-      // CLI engines: create a fresh placeholder conversation. The first message
-      // triggers codex's thread/start (or CC's resume-less query), whose real
-      // native id is reported back and used to migrate this placeholder id — so
-      // no native mapping needs clearing up front.
-      setState(() {
-        _activeSessionId = sessionId;
-        _sessions = [
-          ChatSession(
-            id: sessionId,
-            createdAt: now,
-            updatedAt: now,
-            messages: [_welcomeMessage(widget.language, _config)],
-          ),
-          ..._sessions,
-        ];
-        _editingMessageId = null;
-        _inputController.clear();
-      });
-      _dismissKeyboard();
-      return;
-    }
+    final discardedSessionIds = Set<String>.of(_unsavedSessionIds);
+    final discardedProjectKeys = {
+      for (final id in discardedSessionIds) _sessionCacheKey(agentId, id),
+    };
+    final removedProjectAssignment = _projectSessionIds.keys.any(
+      discardedProjectKeys.contains,
+    );
 
     setState(() {
+      _unsavedSessionIds
+        ..clear()
+        ..add(sessionId);
       _activeSessionId = sessionId;
       _sessions = [
         ChatSession(
@@ -6756,18 +8624,50 @@ $candidate
           updatedAt: now,
           messages: [_welcomeMessage(widget.language, _config)],
         ),
-        ..._sessions,
+        for (final session in _sessions)
+          if (!discardedSessionIds.contains(session.id)) session,
       ];
+      if (discardedProjectKeys.isNotEmpty) {
+        _projectSessionIds = Map.unmodifiable({
+          for (final entry in _projectSessionIds.entries)
+            if (!discardedProjectKeys.contains(entry.key))
+              entry.key: entry.value,
+        });
+      }
       _editingMessageId = null;
       _inputController.clear();
     });
+    if (removedProjectAssignment) unawaited(_persistChatProjects());
     _dismissKeyboard();
   }
 
   void _selectSession(String sessionId) {
     if (_activeSessionId == sessionId) return;
     final shouldLoadHistory = !_hasLiveSessionRun(sessionId);
+    final discardedSessionIds = {
+      for (final id in _unsavedSessionIds)
+        if (id != sessionId) id,
+    };
+    final discardedProjectKeys = {
+      for (final id in discardedSessionIds)
+        _sessionCacheKey(_activeAgentId, id),
+    };
+    final removedProjectAssignment = _projectSessionIds.keys.any(
+      discardedProjectKeys.contains,
+    );
     setState(() {
+      _unsavedSessionIds.removeAll(discardedSessionIds);
+      _sessions = [
+        for (final session in _sessions)
+          if (!discardedSessionIds.contains(session.id)) session,
+      ];
+      if (discardedProjectKeys.isNotEmpty) {
+        _projectSessionIds = Map.unmodifiable({
+          for (final entry in _projectSessionIds.entries)
+            if (!discardedProjectKeys.contains(entry.key))
+              entry.key: entry.value,
+        });
+      }
       _activeSessionId = sessionId;
       final run = _sessionRuns[sessionId];
       if (run != null) {
@@ -6777,6 +8677,7 @@ $candidate
       _editingMessageId = null;
       _inputController.clear();
     });
+    if (removedProjectAssignment) unawaited(_persistChatProjects());
     _dismissKeyboard();
     _scrollToBottom(force: true);
     if (shouldLoadHistory) {
@@ -6805,6 +8706,38 @@ $candidate
           .toList();
     });
     unawaited(_persistPinnedSessions());
+  }
+
+  void _handleSessionRenameEditingChanged(bool isEditing) {
+    if (_isRenamingSessionTitle == isEditing) return;
+    setState(() => _isRenamingSessionTitle = isEditing);
+  }
+
+  void _handleSessionHistorySearchModeChanged(bool isSearching) {
+    final epoch = ++_sessionHistoryKeyboardIsolationEpoch;
+    if (isSearching) {
+      if (_isSessionHistorySearching) return;
+      setState(() => _isSessionHistorySearching = true);
+      return;
+    }
+    _dismissKeyboard();
+    unawaited(_releaseSessionHistoryKeyboardIsolation(epoch));
+  }
+
+  Future<void> _releaseSessionHistoryKeyboardIsolation(int epoch) async {
+    final appView = View.of(context);
+    final deadline = DateTime.now().add(const Duration(seconds: 1));
+    while (appView.viewInsets.bottom > 0 &&
+        DateTime.now().isBefore(deadline) &&
+        epoch == _sessionHistoryKeyboardIsolationEpoch) {
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
+    if (!mounted ||
+        epoch != _sessionHistoryKeyboardIsolationEpoch ||
+        !_isSessionHistorySearching) {
+      return;
+    }
+    setState(() => _isSessionHistorySearching = false);
   }
 
   Future<void> _confirmDeleteSession(String sessionId) async {
@@ -6848,7 +8781,10 @@ $candidate
     await _deleteSession(sessionId);
   }
 
-  Future<void> _deleteSession(String sessionId) async {
+  Future<bool> _deleteSession(
+    String sessionId, {
+    bool showFeedback = true,
+  }) async {
     // Terminal sessions: clean up backend, skip SDK operations.
     if (_isTerminalSession(sessionId)) {
       final ts = _terminalSessionMap.remove(sessionId);
@@ -6861,6 +8797,8 @@ $candidate
       final now = DateTime.now();
       final shouldCreate = remainingSessions.isEmpty;
       final replacementId = shouldCreate ? _newSessionId() : null;
+      final renamedKey = _renamedSessionKey(_activeAgentId, sessionId);
+      final projectSessionKey = _sessionCacheKey(_activeAgentId, sessionId);
       final nextSessions = shouldCreate
           ? [
               ChatSession(
@@ -6872,14 +8810,28 @@ $candidate
             ]
           : remainingSessions;
       setState(() {
+        _unsavedSessionIds.remove(sessionId);
+        if (replacementId != null) {
+          _unsavedSessionIds.add(replacementId);
+        }
         _sessions = List.unmodifiable(nextSessions);
         _activeSessionId = _activeSessionId == sessionId
             ? (replacementId ?? nextSessions.first.id)
             : _activeSessionId;
+        _renamedSessionTitles = Map.unmodifiable({
+          for (final entry in _renamedSessionTitles.entries)
+            if (entry.key != renamedKey) entry.key: entry.value,
+        });
+        _projectSessionIds = Map.unmodifiable({
+          for (final entry in _projectSessionIds.entries)
+            if (entry.key != projectSessionKey) entry.key: entry.value,
+        });
         _editingMessageId = null;
         _inputController.clear();
       });
-      return;
+      unawaited(_persistRenamedSessions());
+      unawaited(_persistChatProjects());
+      return true;
     }
 
     final strings = AppStrings.of(context);
@@ -6904,7 +8856,7 @@ $candidate
       if (run != null) {
         unawaited(run.subscription.cancel());
       }
-      if (!mounted || _activeAgentId != agentId) return;
+      if (!mounted || _activeAgentId != agentId) return false;
 
       final remainingSessions = _sessions
           .where((session) => session.id != sessionId)
@@ -6931,7 +8883,12 @@ $candidate
             ]
           : remainingSessions;
       final pinKey = _pinnedSessionKey(agentId, sessionId);
+      final renamedKey = _renamedSessionKey(agentId, sessionId);
       setState(() {
+        _unsavedSessionIds.remove(sessionId);
+        if (replacementSessionId != null) {
+          _unsavedSessionIds.add(replacementSessionId);
+        }
         _sessions = List.unmodifiable(nextSessions);
         _activeSessionId = replacementSessionId ?? nextActiveSessionId!;
         _sessionRuns.remove(sessionId);
@@ -6940,6 +8897,14 @@ $candidate
         _contextStatuses.remove(cacheKey);
         _contextStatusLoading.remove(cacheKey);
         _pinnedSessionIds = {..._pinnedSessionIds}..remove(pinKey);
+        _renamedSessionTitles = Map.unmodifiable({
+          for (final entry in _renamedSessionTitles.entries)
+            if (entry.key != renamedKey) entry.key: entry.value,
+        });
+        _projectSessionIds = Map.unmodifiable({
+          for (final entry in _projectSessionIds.entries)
+            if (entry.key != cacheKey) entry.key: entry.value,
+        });
         if (_browserPanelAgentId == agentId &&
             _browserPanelSessionId == sessionId) {
           _browserPanelVisible = false;
@@ -6953,6 +8918,8 @@ $candidate
       });
       _removeSeenAttachmentsForSession(sessionId);
       unawaited(_persistPinnedSessions());
+      unawaited(_persistRenamedSessions());
+      unawaited(_persistChatProjects());
       unawaited(_markDeletedA2AConversationSession(sessionId));
       unawaited(_persistA2AConversationSessions());
       if (_activeSessionId != sessionId &&
@@ -6960,16 +8927,319 @@ $candidate
           !_hasLiveSessionRun(_activeSessionId)) {
         unawaited(_loadSessionHistory(_activeSessionId));
       }
-      _showChatSnackBar(strings.chatDeleted);
+      if (showFeedback) _showChatSnackBar(strings.chatDeleted);
+      return true;
     } catch (error) {
-      if (!mounted) return;
-      _showChatSnackBar(strings.chatActionFailed(_friendlyDisplayError(error)));
+      if (!mounted) return false;
+      if (showFeedback) {
+        _showChatSnackBar(
+          strings.chatActionFailed(_friendlyDisplayError(error)),
+        );
+      }
+      return false;
     }
+  }
+
+  void _handleDebugHotReloadTarget() {
+    switch (_debugHotReloadTarget.trim().toLowerCase()) {
+      case '':
+      case 'none':
+      case 'off':
+      case 'disabled':
+        return;
+      case 'debug':
+      case 'debug_page':
+      case 'debug_jump':
+      case 'launcher':
+        unawaited(_openDebugJumpPage());
+        return;
+      case 'developer_workbench':
+      case 'dev_workbench':
+      case 'workbench':
+      case 'repo_workbench':
+      case 'repositories':
+        _openDebugDeveloperWorkbenchPage();
+        return;
+      case 'environment':
+      case 'developer_environment':
+        _openDebugSessionHistoryPage(_SessionHistoryView.environment);
+        return;
+      case 'terminal':
+      case 'sandbox_terminal':
+        unawaited(_openSandboxTerminal());
+        return;
+      case 'files':
+        _showFilesFromMenu();
+        return;
+      case 'skills':
+        _showSkillsFromMenu();
+        return;
+      case 'projects':
+        _showProjectsFromMenu();
+        return;
+      case 'scenarios':
+        _openDebugSessionHistoryPage(_SessionHistoryView.scenarios);
+        return;
+      case 'settings':
+        _openDebugSessionHistoryPage(_SessionHistoryView.settings);
+        return;
+      case 'agent':
+      case 'agent_settings':
+        _openDebugSessionHistoryPage(
+          _SessionHistoryView.settings,
+          settingsSection: _SettingsSection.agent,
+        );
+        return;
+      case 'agent_manager':
+      case 'agents':
+        unawaited(_openAgentManager());
+        return;
+      case 'channels':
+      case 'channel_settings':
+        _openDebugSessionHistoryPage(
+          _SessionHistoryView.settings,
+          settingsSection: _SettingsSection.channels,
+        );
+        return;
+      case 'nearby':
+      case 'a2a':
+      case 'nearby_settings':
+        _openDebugSessionHistoryPage(
+          _SessionHistoryView.settings,
+          settingsSection: _SettingsSection.nearby,
+        );
+        return;
+      case 'engines':
+      case 'engine_settings':
+        _openDebugSessionHistoryPage(
+          _SessionHistoryView.settings,
+          settingsSection: _SettingsSection.engines,
+        );
+        return;
+      case 'feedback':
+        _openDebugSessionHistoryPage(_SessionHistoryView.feedback);
+        return;
+      case 'contact':
+        _openDebugSessionHistoryPage(_SessionHistoryView.contact);
+        return;
+      case 'about':
+        _openDebugSessionHistoryPage(
+          _SessionHistoryView.settings,
+          settingsSection: _SettingsSection.about,
+        );
+        return;
+      case 'licenses':
+      case 'oss_licenses':
+        _openDebugSessionHistoryPage(
+          _SessionHistoryView.settings,
+          settingsSection: _SettingsSection.licenses,
+        );
+        return;
+      case 'model':
+      case 'models':
+      case 'model_settings':
+        _openDebugSessionHistoryPage(
+          _SessionHistoryView.settings,
+          settingsSection: _SettingsSection.configuration,
+        );
+        return;
+    }
+  }
+
+  Future<void> _openDebugJumpPage() async {
+    if (_isDebugJumpPageOpen) return;
+    _isDebugJumpPageOpen = true;
+    final destination = await Navigator.of(context).push<_DebugJumpDestination>(
+      MaterialPageRoute(
+        builder: (_) => _DebugJumpPage(
+          destinations: [
+            _DebugJumpDestination(
+              section: '开发工作台',
+              icon: Icons.code_rounded,
+              title: '开发工作台',
+              subtitle: '打开仓库 / Source Control Workbench 页面',
+              onOpen: _openDebugDeveloperWorkbenchPage,
+            ),
+            _DebugJumpDestination(
+              section: '开发工作台',
+              icon: Icons.terminal_rounded,
+              title: '沙箱终端',
+              subtitle: '打开开发场景顶部按钮背后的终端会话',
+              onOpen: () => unawaited(_openSandboxTerminal()),
+            ),
+            _DebugJumpDestination(
+              section: '开发工作台',
+              icon: Icons.construction_rounded,
+              title: '开发环境',
+              subtitle: '打开移动开发环境、技能和构建说明页面',
+              onOpen: () =>
+                  _openDebugSessionHistoryPage(_SessionHistoryView.environment),
+            ),
+            _DebugJumpDestination(
+              section: '常用页面',
+              icon: Icons.folder_open_rounded,
+              title: '文件',
+              subtitle: '打开文件浏览页面',
+              onOpen: _showFilesFromMenu,
+            ),
+            _DebugJumpDestination(
+              section: '常用页面',
+              icon: Icons.extension_rounded,
+              title: '技能',
+              subtitle: '打开技能管理页面',
+              onOpen: _showSkillsFromMenu,
+            ),
+            _DebugJumpDestination(
+              section: '常用页面',
+              icon: Icons.folder_copy_rounded,
+              title: '项目',
+              subtitle: '打开项目列表页面',
+              onOpen: _showProjectsFromMenu,
+            ),
+            _DebugJumpDestination(
+              section: '常用页面',
+              icon: Icons.widgets_rounded,
+              title: '场景',
+              subtitle: '打开场景选择页面',
+              onOpen: () =>
+                  _openDebugSessionHistoryPage(_SessionHistoryView.scenarios),
+            ),
+            _DebugJumpDestination(
+              section: '模型与 Agent',
+              icon: Icons.tune_rounded,
+              title: '模型配置',
+              subtitle: '打开模型和 SDK 配置页面',
+              onOpen: () => _openDebugSessionHistoryPage(
+                _SessionHistoryView.settings,
+                settingsSection: _SettingsSection.configuration,
+              ),
+            ),
+            _DebugJumpDestination(
+              section: '隐藏设置页',
+              icon: Icons.settings_rounded,
+              title: '设置',
+              subtitle: '打开设置菜单',
+              onOpen: () =>
+                  _openDebugSessionHistoryPage(_SessionHistoryView.settings),
+            ),
+            _DebugJumpDestination(
+              section: '模型与 Agent',
+              icon: Icons.smart_toy_outlined,
+              title: 'Agent 设置',
+              subtitle: '打开设置里的默认 Agent / 模型绑定页面',
+              onOpen: () => _openDebugSessionHistoryPage(
+                _SessionHistoryView.settings,
+                settingsSection: _SettingsSection.agent,
+              ),
+            ),
+            _DebugJumpDestination(
+              section: '模型与 Agent',
+              icon: Icons.manage_accounts_outlined,
+              title: 'Agent 管理器',
+              subtitle: '打开顶部 Agent 下拉菜单里的管理页面',
+              onOpen: () => unawaited(_openAgentManager()),
+            ),
+            _DebugJumpDestination(
+              section: '隐藏设置页',
+              icon: Icons.hub_outlined,
+              title: 'Channel 设置',
+              subtitle: '打开 IM / 外设 Channel Provider 配置页',
+              onOpen: () => _openDebugSessionHistoryPage(
+                _SessionHistoryView.settings,
+                settingsSection: _SettingsSection.channels,
+              ),
+            ),
+            _DebugJumpDestination(
+              section: '隐藏设置页',
+              icon: Icons.sensors_rounded,
+              title: '本地 A2A',
+              subtitle: '打开附近 Agent 配对、邀请和诊断页面',
+              onOpen: () => _openDebugSessionHistoryPage(
+                _SessionHistoryView.settings,
+                settingsSection: _SettingsSection.nearby,
+              ),
+            ),
+            _DebugJumpDestination(
+              section: '隐藏设置页',
+              icon: Icons.memory_rounded,
+              title: '引擎设置',
+              subtitle: '打开开发引擎配置页面',
+              onOpen: () => _openDebugSessionHistoryPage(
+                _SessionHistoryView.settings,
+                settingsSection: _SettingsSection.engines,
+              ),
+            ),
+            _DebugJumpDestination(
+              section: '帮助与关于',
+              icon: Icons.rate_review_outlined,
+              title: '反馈',
+              subtitle: '打开独立反馈页',
+              onOpen: () =>
+                  _openDebugSessionHistoryPage(_SessionHistoryView.feedback),
+            ),
+            _DebugJumpDestination(
+              section: '帮助与关于',
+              icon: Icons.contact_support_outlined,
+              title: '联系我们',
+              subtitle: '打开联系方式页面',
+              onOpen: () =>
+                  _openDebugSessionHistoryPage(_SessionHistoryView.contact),
+            ),
+            _DebugJumpDestination(
+              section: '帮助与关于',
+              icon: Icons.info_outline_rounded,
+              title: '关于',
+              subtitle: '打开关于页',
+              onOpen: () => _openDebugSessionHistoryPage(
+                _SessionHistoryView.settings,
+                settingsSection: _SettingsSection.about,
+              ),
+            ),
+            _DebugJumpDestination(
+              section: '帮助与关于',
+              icon: Icons.article_outlined,
+              title: '开源许可证',
+              subtitle: '打开 License 列表页',
+              onOpen: () => _openDebugSessionHistoryPage(
+                _SessionHistoryView.settings,
+                settingsSection: _SettingsSection.licenses,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    _isDebugJumpPageOpen = false;
+    destination?.onOpen();
+  }
+
+  void _openDebugSessionHistoryPage(
+    _SessionHistoryView view, {
+    _SettingsSection settingsSection = _SettingsSection.menu,
+    _SkillsInitialTab skillsTab = _SkillsInitialTab.installed,
+  }) {
+    _dismissKeyboard();
+    _closeWorkbenchDrawer();
+    setState(() {
+      _sessionHistoryKeyboardIsolationEpoch += 1;
+      _isSessionHistorySearching = false;
+      _sessionHistoryInitialView = view;
+      _sessionHistoryInitialSettingsSection = settingsSection;
+      _sessionHistoryInitialSkillsTab = skillsTab;
+    });
+    _sessionMenuController.forward();
+  }
+
+  void _openDebugDeveloperWorkbenchPage() {
+    _openDebugSessionHistoryPage(_SessionHistoryView.repositories);
   }
 
   void _openSessionHistory() {
     _dismissKeyboard();
     setState(() {
+      _sessionHistoryKeyboardIsolationEpoch += 1;
+      _isSessionHistorySearching = false;
       _sessionHistoryInitialView = _SessionHistoryView.menu;
       _sessionHistoryInitialSettingsSection = _SettingsSection.menu;
       _sessionHistoryInitialSkillsTab = _SkillsInitialTab.installed;
@@ -6978,13 +9248,7 @@ $candidate
   }
 
   void _openScenariosFromChat() {
-    _dismissKeyboard();
-    setState(() {
-      _sessionHistoryInitialView = _SessionHistoryView.settings;
-      _sessionHistoryInitialSettingsSection = _SettingsSection.scenarios;
-      _sessionHistoryInitialSkillsTab = _SkillsInitialTab.installed;
-    });
-    _sessionMenuController.forward();
+    unawaited(_showSettingsSheet(_SettingsSection.scenarios));
   }
 
   void _openSkillOrganizeFromChat(ChatMessage message) {
@@ -7061,6 +9325,9 @@ $candidate
   }
 
   void _closeSessionHistory() {
+    if (_isSessionHistorySearching) {
+      _handleSessionHistorySearchModeChanged(false);
+    }
     _sessionMenuController.reverse();
     unawaited(_refreshChannelInputSources());
   }
@@ -7070,7 +9337,7 @@ $candidate
     if (_sessionMenuController.value == 0 && delta <= 0) return;
 
     _dismissKeyboard();
-    final width = MediaQuery.sizeOf(context).width;
+    final width = _sessionDrawerWidth(context);
     _sessionMenuController.value =
         (_sessionMenuController.value + delta / width).clamp(0.0, 1.0);
   }
@@ -7151,8 +9418,12 @@ $candidate
     if (start == null || lastPosition == null) return;
 
     final totalDelta = event.position - start;
+    final isProjectBackGesture =
+        _isActiveProjectChat || _primaryView == _ChatPrimaryView.projectDetail;
+    final horizontalThreshold = isProjectBackGesture ? 56.0 : 8.0;
     final isHorizontalOpenDrag =
-        totalDelta.dx > 8 && totalDelta.dx.abs() > totalDelta.dy.abs() * 1.2;
+        totalDelta.dx > horizontalThreshold &&
+        totalDelta.dx.abs() > totalDelta.dy.abs() * 1.2;
     if (!_isOpeningSessionMenuDrag && !isHorizontalOpenDrag) {
       _chatDragLastPosition = event.position;
       return;
@@ -7160,7 +9431,11 @@ $candidate
 
     _isOpeningSessionMenuDrag = true;
     _dismissKeyboard();
-    final width = MediaQuery.sizeOf(context).width;
+    if (isProjectBackGesture) {
+      _chatDragLastPosition = event.position;
+      return;
+    }
+    final width = _sessionDrawerWidth(context);
     final delta = event.position.dx - lastPosition.dx;
     _sessionMenuController.value =
         (_sessionMenuController.value + delta / width).clamp(0.0, 1.0);
@@ -7169,7 +9444,11 @@ $candidate
 
   void _handleChatPointerEnd(PointerEvent event) {
     if (_isOpeningSessionMenuDrag) {
-      if (_sessionMenuController.value >= 0.25) {
+      if (_isActiveProjectChat) {
+        _returnToActiveProject();
+      } else if (_primaryView == _ChatPrimaryView.projectDetail) {
+        _returnToProjects();
+      } else if (_sessionMenuController.value >= 0.25) {
         _sessionMenuController.forward();
       } else {
         _sessionMenuController.reverse();
@@ -7193,8 +9472,33 @@ $candidate
         final renderObject = element.renderObject;
         if (renderObject is RenderBox && renderObject.hasSize) {
           final localPosition = renderObject.globalToLocal(globalPosition);
-          found = renderObject.size.contains(localPosition);
-          if (found) return;
+          if (renderObject.size.contains(localPosition)) {
+            final scrollableState = element is StatefulElement
+                ? element.state
+                : null;
+            if (scrollableState is! ScrollableState) {
+              found = true;
+              return;
+            }
+
+            var isAssistantMarkdownScrollable = false;
+            element.visitAncestorElements((ancestor) {
+              if (ancestor.widget is AssistantMarkdownHorizontalScrollable) {
+                isAssistantMarkdownScrollable = true;
+                return false;
+              }
+              return true;
+            });
+            if (isAssistantMarkdownScrollable) {
+              found = scrollableState.position.maxScrollExtent > 0.5;
+              if (found) return;
+            }
+
+            // A rightward drag should stay with the child pager while it has a
+            // previous tab. At its leading edge, let the parent open the menu.
+            found = scrollableState.position.extentBefore > 0.5;
+            if (found) return;
+          }
         }
       }
 
@@ -7205,6 +9509,251 @@ $candidate
     return found;
   }
 
+  Map<String, String> _activeProjectSessionMap() {
+    final result = <String, String>{};
+    for (final session in _sessions) {
+      if (_unsavedSessionIds.contains(session.id)) continue;
+      final projectId =
+          _projectSessionIds[_sessionCacheKey(_activeAgentId, session.id)];
+      if (projectId != null) result[session.id] = projectId;
+    }
+    return Map.unmodifiable(result);
+  }
+
+  Widget _buildProjectsPrimarySurface() {
+    final projects = _chatProjects
+        .where((project) => project.agentId == _activeAgentId)
+        .toList(growable: false);
+    final sessionProjectIds = _activeProjectSessionMap();
+    final sessionCounts = <String, int>{};
+    for (final projectId in sessionProjectIds.values) {
+      sessionCounts[projectId] = (sessionCounts[projectId] ?? 0) + 1;
+    }
+
+    Widget page;
+    if (_primaryView == _ChatPrimaryView.projectDetail) {
+      _ChatProject? selectedProject;
+      for (final project in projects) {
+        if (project.id == _selectedChatProjectId) {
+          selectedProject = project;
+          break;
+        }
+      }
+      if (selectedProject != null) {
+        final project = selectedProject;
+        final sessions = _sessions
+            .where((session) => sessionProjectIds[session.id] == project.id)
+            .map(_sessionForHistory)
+            .toList(growable: false);
+        page = _ProjectDetailPage(
+          project: project,
+          sessions: sessions,
+          onBack: _returnToProjects,
+          onSessionTap: _openProjectSession,
+          onSessionPinToggle: _toggleSessionPin,
+          onSessionRename: (session) =>
+              unawaited(_showProjectSessionRename(session)),
+          onSessionRemove: _removeSessionFromProject,
+          onSessionDelete: (sessionId) =>
+              unawaited(_confirmDeleteSession(sessionId)),
+          onStartChat: (message, attachments, pinnedSkillNames) =>
+              _startProjectChat(
+                project.id,
+                message,
+                attachments,
+                pinnedSkillNames,
+              ),
+          chatClient: _chatClient,
+          agentId: _activeAgentId,
+        );
+      } else {
+        page = _ProjectsPage(
+          projects: projects,
+          sessionCounts: sessionCounts,
+          onMenu: _openSessionHistory,
+          onAdd: () => unawaited(_showCreateChatProjectDialog()),
+          onProjectTap: _openChatProject,
+          onProjectPinToggle: _toggleChatProjectPin,
+          onProjectSettings: (project) =>
+              unawaited(_showChatProjectSettings(project)),
+          onProjectDelete: (project) =>
+              unawaited(_confirmDeleteChatProject(project)),
+        );
+      }
+    } else {
+      page = _ProjectsPage(
+        projects: projects,
+        sessionCounts: sessionCounts,
+        onMenu: _openSessionHistory,
+        onAdd: () => unawaited(_showCreateChatProjectDialog()),
+        onProjectTap: _openChatProject,
+        onProjectPinToggle: _toggleChatProjectPin,
+        onProjectSettings: (project) =>
+            unawaited(_showChatProjectSettings(project)),
+        onProjectDelete: (project) =>
+            unawaited(_confirmDeleteChatProject(project)),
+      );
+    }
+
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: _handleChatPointerDown,
+      onPointerMove: _handleChatPointerMove,
+      onPointerUp: _handleChatPointerEnd,
+      onPointerCancel: _handleChatPointerEnd,
+      child: page,
+    );
+  }
+
+  Widget _buildFilesPrimarySurface() {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: _handleChatPointerDown,
+      onPointerMove: _handleChatPointerMove,
+      onPointerUp: _handleChatPointerEnd,
+      onPointerCancel: _handleChatPointerEnd,
+      child: _FilesPage(
+        clientFuture: _primaryFilesClientFuture ??= _buildFilesClientFuture(),
+        agentId: _activeAgentId,
+        onMenu: _openSessionHistory,
+      ),
+    );
+  }
+
+  Widget _buildSkillsPrimarySurface() {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: _handleChatPointerDown,
+      onPointerMove: _handleChatPointerMove,
+      onPointerUp: _handleChatPointerEnd,
+      onPointerCancel: _handleChatPointerEnd,
+      child: _SkillsPage(
+        clientFuture: _primarySkillsClientFuture ??= _buildSkillsClientFuture(),
+        agentId: _activeAgentId,
+        onPendingEvolutionChanged: _refreshPendingEvolutionFromSkills,
+        onMenu: _openSessionHistory,
+      ),
+    );
+  }
+
+  Widget _buildNonChatPrimarySurface() {
+    return switch (_primaryView) {
+      _ChatPrimaryView.files => _buildFilesPrimarySurface(),
+      _ChatPrimaryView.skills => _buildSkillsPrimarySurface(),
+      _ChatPrimaryView.projects ||
+      _ChatPrimaryView.projectDetail => _buildProjectsPrimarySurface(),
+      _ChatPrimaryView.chat => const SizedBox.shrink(),
+    };
+  }
+
+  Widget _buildSessionMenu() {
+    return AnimatedBuilder(
+      animation: _sessionMenuController,
+      builder: (context, _) {
+        if (_sessionMenuController.value == 0) {
+          return const SizedBox.shrink();
+        }
+
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            width: _sessionDrawerWidth(context),
+            height: double.infinity,
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onHorizontalDragUpdate: _handleSessionMenuDragUpdate,
+              onHorizontalDragEnd: _handleSessionMenuDragEnd,
+              child: _SessionHistorySheet(
+                activeAgent: _activeAgent,
+                sessions: _sessions
+                    .where(
+                      (session) =>
+                          !_unsavedSessionIds.contains(session.id) &&
+                          _projectSessionIds[_sessionCacheKey(
+                                _activeAgentId,
+                                session.id,
+                              )] ==
+                              null,
+                    )
+                    .map(_sessionForHistory)
+                    .toList(growable: false),
+                sessionRuns: Map.unmodifiable(_sessionRuns),
+                a2aUnreadSessionIds: Set.unmodifiable(
+                  _a2aUnreadConversationSessionIds,
+                ),
+                activeSessionId: _primaryView == _ChatPrimaryView.chat
+                    ? _activeSessionId
+                    : '',
+                projects: _chatProjects
+                    .where((project) => project.agentId == _activeAgentId)
+                    .toList(growable: false),
+                projectSessionIds: _activeProjectSessionMap(),
+                initialView: _sessionHistoryInitialView,
+                initialSettingsSection: _sessionHistoryInitialSettingsSection,
+                initialSkillsTab: _sessionHistoryInitialSkillsTab,
+                createFilesClientFuture: _buildFilesClientFuture,
+                createSkillsClientFuture: _buildSkillsClientFuture,
+                createScenariosClientFuture: _buildScenariosClientFuture,
+                createNearbyClientFuture: _getChatClient,
+                activeScenarioId: _activeScenarioId,
+                gitSettings: _gitSettings,
+                onScenarioApplied: _handleScenarioApplied,
+                onGitSettingsChanged: _handleGitSettingsChanged,
+                onGitSettingsCleared: _handleGitSettingsCleared,
+                updateService: widget.updateService,
+                feedbackService: widget.feedbackService,
+                config: _config,
+                onConfigChanged: _handleConfigChanged,
+                onLanguageChanged: widget.onLanguageChanged,
+                onEngineConfigChanged: _handleEngineConfigChanged,
+                onCheckForUpdates: () => _checkForUpdates(automatic: false),
+                onNearbyStart: () => _setA2AConnectionAllowedFromSettings(true),
+                onNearbyStop: () => _setA2AConnectionAllowedFromSettings(false),
+                onNearbyInvite: () => _createA2AInvite('/a2a invite'),
+                onNearbyScan: () => _scanA2AInvite('/a2a scan'),
+                onNearbyDeletePeer: _deleteA2APairedPeer,
+                getNearbyPairingDiagnostic: () async =>
+                    _lastA2APairingDiagnostic,
+                onNewSession: () {
+                  _closeSessionHistory();
+                  setState(() => _primaryView = _ChatPrimaryView.chat);
+                  _startNewSession();
+                },
+                onProjectCreated: _createChatProject,
+                onProjectChatStarted: _startProjectChat,
+                onProjectPinToggle: _toggleChatProjectPin,
+                onProjectSettings: (project) =>
+                    unawaited(_showChatProjectSettings(project)),
+                onProjectDelete: (project) =>
+                    unawaited(_confirmDeleteChatProject(project)),
+                onProjectSessionRemove: _removeSessionFromProject,
+                onFilesSelected: _showFilesFromMenu,
+                onSkillsSelected: _showSkillsFromMenu,
+                onProjectsSelected: _showProjectsFromMenu,
+                onSettingsSelected: _showSettingsFromMenu,
+                primaryView: _primaryView,
+                onSessionSelected: (sessionId) {
+                  _closeSessionHistory();
+                  setState(() => _primaryView = _ChatPrimaryView.chat);
+                  _selectSession(sessionId);
+                },
+                onSessionPinToggle: _toggleSessionPin,
+                onSessionRename: _renameSession,
+                onSessionRenameEditingChanged:
+                    _handleSessionRenameEditingChanged,
+                onSearchModeChanged: _handleSessionHistorySearchModeChanged,
+                onSessionDelete: (sessionId) {
+                  unawaited(_confirmDeleteSession(sessionId));
+                },
+                onPendingEvolutionChanged: _refreshPendingEvolutionFromSkills,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _dismissKeyboard() {
     FocusManager.instance.primaryFocus?.unfocus();
   }
@@ -7212,7 +9761,9 @@ $candidate
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
-    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final keyboardVisible =
+        MediaQuery.viewInsetsOf(context).bottom > 0 &&
+        !_isSessionHistorySearching;
     final browserBelongsToActiveSession =
         _browserPanelAgentId == _activeAgentId &&
         _browserPanelSessionId == _activeSessionId;
@@ -7228,359 +9779,364 @@ $candidate
     final compactionNotice = _activeContextCompactionNotice;
     final messageListTopPadding = compactionNotice == null ? 18.0 : 86.0;
     final renderItems = _buildChatRenderItems();
+    final showStarterPrompts =
+        _hasReadyChatModel && renderItems.isEmpty && !_isActiveSessionSending;
     final generatedIdentities = _generatedAttachmentIdentities(_activeSession);
 
     return Scaffold(
-      resizeToAvoidBottomInset: true,
+      key: const Key('chat_root_scaffold'),
+      resizeToAvoidBottomInset:
+          _primaryView == _ChatPrimaryView.chat &&
+          !_isRenamingSessionTitle &&
+          !_isSessionHistorySearching &&
+          _sessionMenuController.isDismissed,
       body: Stack(
         children: [
-          Listener(
-            behavior: HitTestBehavior.translucent,
-            onPointerDown: _handleChatPointerDown,
-            onPointerMove: _handleChatPointerMove,
-            onPointerUp: _handleChatPointerEnd,
-            onPointerCancel: _handleChatPointerEnd,
-            child: SafeArea(
-              child: Column(
-                children: [
-                  _ChatTopBar(
-                    activeAgent: _activeAgent,
-                    agents: _agents,
-                    runtimeProfile: _activeRuntimeProfile,
-                    language: widget.language,
-                    hasAttachments: _activeConversationAttachments.isNotEmpty,
-                    newAttachmentCount: _newAttachmentCountFor(
-                      _activeSessionId,
-                    ),
-                    onAgentSelected: _selectAgent,
-                    onEngineSelected: _selectDeveloperEngine,
-                    onManageAgents: _openAgentManager,
-                    onSessionsTap: _openSessionHistory,
-                    onAttachmentsTap: _openConversationAttachments,
-                    onNewTerminal: _activeRuntimeProfile.isDeveloper
-                        ? _openSandboxTerminal
-                        : null,
-                    onCopyWorkspacePath: _activeRuntimeProfile.isDeveloper
-                        ? _copyWorkspacePath
-                        : null,
-                    onCopyBranchName: _activeRuntimeProfile.isDeveloper
-                        ? _copyBranchName
-                        : null,
-                    onOpenWorkbench: _activeRuntimeProfile.isDeveloper
-                        ? _openWorkbenchDrawer
-                        : null,
-                  ),
-                  const Divider(height: 1),
-                  if (_activeScenarioId != _generalScenarioId)
-                    _ScenarioRuntimeBar(
-                      scenarioId: _activeScenarioId,
-                      onTap: _openScenariosFromChat,
-                    ),
-                  Expanded(
-                    child: _isTerminalSession(_activeSessionId)
-                        ? _buildTerminalView()
-                        : GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: _dismissKeyboard,
-                            child: Stack(
-                              children: [
-                                NotificationListener<
-                                  SizeChangedLayoutNotification
-                                >(
-                                  onNotification: (_) {
-                                    _handleMessageListSizeChanged();
-                                    return false;
-                                  },
-                                  child: SizeChangedLayoutNotifier(
-                                    child: ListView.builder(
-                                      key: const Key('chat_message_list'),
-                                      controller: _scrollController,
-                                      keyboardDismissBehavior:
-                                          ScrollViewKeyboardDismissBehavior
-                                              .onDrag,
-                                      padding: EdgeInsets.fromLTRB(
-                                        16,
-                                        messageListTopPadding,
-                                        16,
-                                        18,
-                                      ),
-                                      itemCount: renderItems.length,
-                                      itemBuilder: (context, index) {
-                                        final item = renderItems[index];
-                                        if (item is _GeneratedAttachmentsItem) {
-                                          return _ConversationGeneratedAttachmentsView(
-                                            key: Key(
-                                              'turn_generated_attachments_'
-                                              '${item.turnUserMessageId ?? 'lead'}'
-                                              '_${item.turnIndex}',
-                                            ),
-                                            attachments: item.attachments,
-                                            accountId: _activeAccountId,
-                                            agentId: _activeAgentId,
-                                            isFavoriteAttachment:
-                                                _isFavoriteAttachment,
-                                            onToggleFavoriteAttachment:
-                                                _toggleFavoriteAttachment,
-                                          );
-                                        }
-                                        final message =
-                                            (item as _MessageItem).message;
-                                        return _ChatBubble(
-                                          message: message,
-                                          accountId: _activeAccountId,
-                                          agentId: _activeAgentId,
-                                          onLoadFullToolCall:
-                                              _loadFullHistoryToolCall,
-                                          onOpenConfiguration: _openConfigPage,
-                                          isFavoriteAttachment:
-                                              _isFavoriteAttachment,
-                                          onToggleFavoriteAttachment:
-                                              _toggleFavoriteAttachment,
-                                          onOpenSkillOrganize:
-                                              _openSkillOrganizeFromChat,
-                                          onCopyUserMessage: (message) {
-                                            unawaited(
-                                              _copyUserMessage(message),
-                                            );
-                                          },
-                                          onEditUserMessage: _editUserMessage,
-                                          onAnswerHumanRequest:
-                                              (requestId, response) {
-                                                _inputController.text =
-                                                    response;
-                                                unawaited(
-                                                  _sendRunningMessage(
-                                                    response,
-                                                    const [],
-                                                  ),
+          _buildSessionMenu(),
+          _SessionMenuPageShift(
+            animation: _sessionMenuController,
+            distance: _sessionDrawerWidth(context),
+            onDismiss: _closeSessionHistory,
+            onHorizontalDragUpdate: _handleSessionMenuDragUpdate,
+            onHorizontalDragEnd: _handleSessionMenuDragEnd,
+            child: _primaryView == _ChatPrimaryView.chat
+                ? _KeyboardInsetIsolation(
+                    enabled:
+                        _isRenamingSessionTitle || _isSessionHistorySearching,
+                    child: Listener(
+                      behavior: HitTestBehavior.translucent,
+                      onPointerDown: _handleChatPointerDown,
+                      onPointerMove: _handleChatPointerMove,
+                      onPointerUp: _handleChatPointerEnd,
+                      onPointerCancel: _handleChatPointerEnd,
+                      child: SafeArea(
+                        child: Column(
+                          children: [
+                            _ChatTopBar(
+                              activeAgent: _activeAgent,
+                              agents: _agents,
+                              runtimeProfile: _activeRuntimeProfile,
+                              language: widget.language,
+                              hasAttachments:
+                                  _activeConversationAttachments.isNotEmpty,
+                              newAttachmentCount: _newAttachmentCountFor(
+                                _activeSessionId,
+                              ),
+                              onAgentSelected: _selectAgent,
+                              onEngineSelected: _selectScenarioEngine,
+                              onManageAgents: _openAgentManager,
+                              showBackButton: _isActiveProjectChat,
+                              onSessionsTap: _isActiveProjectChat
+                                  ? _returnToActiveProject
+                                  : _openSessionHistory,
+                              onAttachmentsTap: _openConversationAttachments,
+                              onNewTerminal: _activeRuntimeProfile.isDeveloper
+                                  ? _openSandboxTerminal
+                                  : null,
+                              onCopyWorkspacePath:
+                                  _activeRuntimeProfile.isDeveloper
+                                  ? _copyWorkspacePath
+                                  : null,
+                              onCopyBranchName:
+                                  _activeRuntimeProfile.isDeveloper
+                                  ? _copyBranchName
+                                  : null,
+                              onOpenWorkbench: _activeRuntimeProfile.isDeveloper
+                                  ? _openWorkbenchDrawer
+                                  : null,
+                            ),
+                            const Divider(height: 1),
+                            if (_activeScenarioId != _generalScenarioId)
+                              _ScenarioRuntimeBar(
+                                scenarioId: _activeScenarioId,
+                                onTap: _openScenariosFromChat,
+                              ),
+                            Expanded(
+                              child: _isTerminalSession(_activeSessionId)
+                                  ? _buildTerminalView()
+                                  : GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: _dismissKeyboard,
+                                      child: Stack(
+                                        children: [
+                                          NotificationListener<Notification>(
+                                            onNotification: (notification) {
+                                              if (notification
+                                                  is ScrollNotification) {
+                                                return _handleChatScrollNotification(
+                                                  notification,
                                                 );
-                                              },
-                                          aggregatedAttachmentIdentities:
-                                              generatedIdentities,
-                                        );
-                                      },
-                                    ),
-                                  ),
-                                ),
-                                Positioned(
-                                  left: 16,
-                                  right: 16,
-                                  top: 12,
-                                  child: AnimatedSwitcher(
-                                    duration: const Duration(milliseconds: 180),
-                                    switchInCurve: Curves.easeOutCubic,
-                                    switchOutCurve: Curves.easeInCubic,
-                                    child: compactionNotice == null
-                                        ? const SizedBox.shrink()
-                                        : _ContextCompactionBanner(
-                                            key: ValueKey(
-                                              compactionNotice
-                                                  .updatedAt
-                                                  .microsecondsSinceEpoch,
-                                            ),
-                                            notice: compactionNotice,
-                                            status: _activeContextStatus,
-                                            onTap: _handleContextStatusTap,
-                                          ),
-                                  ),
-                                ),
-                                Positioned(
-                                  right: 16,
-                                  bottom: 16,
-                                  child: AnimatedSlide(
-                                    duration: const Duration(milliseconds: 180),
-                                    offset: _showJumpToLatest
-                                        ? Offset.zero
-                                        : const Offset(0, 1.4),
-                                    child: AnimatedOpacity(
-                                      duration: const Duration(
-                                        milliseconds: 180,
-                                      ),
-                                      opacity: _showJumpToLatest ? 1 : 0,
-                                      child: IgnorePointer(
-                                        ignoring: !_showJumpToLatest,
-                                        child: Tooltip(
-                                          message: AppStrings.of(
-                                            context,
-                                          ).jumpToLatestMessages,
-                                          key: const Key(
-                                            'jump_to_latest_button',
-                                          ),
-                                          child: Material(
-                                            color: Colors.white,
-                                            elevation: 4,
-                                            shadowColor: Colors.black
-                                                .withValues(alpha: 0.14),
-                                            shape: const CircleBorder(
-                                              side: BorderSide(
-                                                color: Color(0xFFD1D5DB),
+                                              }
+                                              if (notification
+                                                  is SizeChangedLayoutNotification) {
+                                                _handleMessageListSizeChanged();
+                                              }
+                                              return false;
+                                            },
+                                            child: SizeChangedLayoutNotifier(
+                                              child: ListView.builder(
+                                                key: const Key(
+                                                  'chat_message_list',
+                                                ),
+                                                controller: _scrollController,
+                                                keyboardDismissBehavior:
+                                                    ScrollViewKeyboardDismissBehavior
+                                                        .onDrag,
+                                                padding: EdgeInsets.fromLTRB(
+                                                  16,
+                                                  messageListTopPadding,
+                                                  16,
+                                                  18,
+                                                ),
+                                                itemCount: renderItems.length,
+                                                itemBuilder: (context, index) {
+                                                  final item =
+                                                      renderItems[index];
+                                                  if (item
+                                                      is _GeneratedAttachmentsItem) {
+                                                    return _ConversationGeneratedAttachmentsView(
+                                                      key: Key(
+                                                        'turn_generated_attachments_'
+                                                        '${item.turnUserMessageId ?? 'lead'}'
+                                                        '_${item.turnIndex}',
+                                                      ),
+                                                      attachments:
+                                                          item.attachments,
+                                                      accountId:
+                                                          _activeAccountId,
+                                                      agentId: _activeAgentId,
+                                                    );
+                                                  }
+                                                  final message =
+                                                      (item as _MessageItem)
+                                                          .message;
+                                                  return _ChatBubble(
+                                                    message: message,
+                                                    accountId: _activeAccountId,
+                                                    agentId: _activeAgentId,
+                                                    onLoadFullToolCall:
+                                                        _loadFullHistoryToolCall,
+                                                    onOpenConfiguration:
+                                                        _openModelSettingsPage,
+                                                    onOpenSkillOrganize:
+                                                        _openSkillOrganizeFromChat,
+                                                    onCopyUserMessage:
+                                                        (message) {
+                                                          unawaited(
+                                                            _copyUserMessage(
+                                                              message,
+                                                            ),
+                                                          );
+                                                        },
+                                                    onEditUserMessage:
+                                                        _editUserMessage,
+                                                    onAnswerHumanRequest:
+                                                        (requestId, response) {
+                                                          _inputController
+                                                                  .text =
+                                                              response;
+                                                          unawaited(
+                                                            _sendRunningMessage(
+                                                              response,
+                                                              const [],
+                                                            ),
+                                                          );
+                                                        },
+                                                    aggregatedAttachmentIdentities:
+                                                        generatedIdentities,
+                                                  );
+                                                },
                                               ),
                                             ),
-                                            child: InkWell(
-                                              customBorder:
-                                                  const CircleBorder(),
-                                              onTap: () =>
-                                                  _scrollToBottom(force: true),
-                                              child: const SizedBox(
-                                                width: 46,
-                                                height: 46,
-                                                child: Center(
-                                                  child: Icon(
-                                                    Icons
-                                                        .keyboard_arrow_down_rounded,
-                                                    color: Colors.black,
-                                                    size: 26,
+                                          ),
+                                          if (showStarterPrompts)
+                                            Positioned(
+                                              left: 20,
+                                              right: 20,
+                                              bottom: 20,
+                                              child: ValueListenableBuilder<TextEditingValue>(
+                                                valueListenable:
+                                                    _inputController,
+                                                builder:
+                                                    (context, value, child) =>
+                                                        value.text
+                                                            .trim()
+                                                            .isEmpty
+                                                        ? child!
+                                                        : const SizedBox.shrink(),
+                                                child: _EmptyChatStarterPrompts(
+                                                  onDevelopApkTap: () => unawaited(
+                                                    _sendStarterPrompt(
+                                                      AppStrings.of(
+                                                        context,
+                                                      ).starterPromptDevelopApk,
+                                                    ),
+                                                  ),
+                                                  onCompressPhotoTap: () => unawaited(
+                                                    _applyPhotoCompressionStarterPrompt(
+                                                      AppStrings.of(
+                                                        context,
+                                                      ).starterPromptCompressPhoto,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          Positioned(
+                                            left: 16,
+                                            right: 16,
+                                            top: 12,
+                                            child: AnimatedSwitcher(
+                                              duration: const Duration(
+                                                milliseconds: 180,
+                                              ),
+                                              switchInCurve:
+                                                  Curves.easeOutCubic,
+                                              switchOutCurve:
+                                                  Curves.easeInCubic,
+                                              child: compactionNotice == null
+                                                  ? const SizedBox.shrink()
+                                                  : _ContextCompactionBanner(
+                                                      key: ValueKey(
+                                                        compactionNotice
+                                                            .updatedAt
+                                                            .microsecondsSinceEpoch,
+                                                      ),
+                                                      notice: compactionNotice,
+                                                      status:
+                                                          _activeContextStatus,
+                                                      onTap:
+                                                          _handleContextStatusTap,
+                                                    ),
+                                            ),
+                                          ),
+                                          Positioned(
+                                            right: 16,
+                                            bottom: 16,
+                                            child: AnimatedSlide(
+                                              duration: const Duration(
+                                                milliseconds: 180,
+                                              ),
+                                              offset: _showJumpToLatest
+                                                  ? Offset.zero
+                                                  : const Offset(0, 1.4),
+                                              child: AnimatedOpacity(
+                                                duration: const Duration(
+                                                  milliseconds: 180,
+                                                ),
+                                                opacity: _showJumpToLatest
+                                                    ? 1
+                                                    : 0,
+                                                child: IgnorePointer(
+                                                  ignoring: !_showJumpToLatest,
+                                                  child: Tooltip(
+                                                    message: AppStrings.of(
+                                                      context,
+                                                    ).jumpToLatestMessages,
+                                                    key: const Key(
+                                                      'jump_to_latest_button',
+                                                    ),
+                                                    child: Material(
+                                                      color: Colors.white,
+                                                      elevation: 4,
+                                                      shadowColor: Colors.black
+                                                          .withValues(
+                                                            alpha: 0.14,
+                                                          ),
+                                                      shape: const CircleBorder(
+                                                        side: BorderSide(
+                                                          color: Color(
+                                                            0xFFD1D5DB,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                      child: InkWell(
+                                                        customBorder:
+                                                            const CircleBorder(),
+                                                        onTap: () =>
+                                                            _scrollToBottom(
+                                                              force: true,
+                                                            ),
+                                                        child: const SizedBox(
+                                                          width: 46,
+                                                          height: 46,
+                                                          child: Center(
+                                                            child: Icon(
+                                                              Icons
+                                                                  .keyboard_arrow_down_rounded,
+                                                              color:
+                                                                  Colors.black,
+                                                              size: 26,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ),
                                                   ),
                                                 ),
                                               ),
                                             ),
                                           ),
-                                        ),
+                                        ],
                                       ),
                                     ),
-                                  ),
-                                ),
-                              ],
                             ),
-                          ),
-                  ),
-                  if (_activeRun?.pendingInterjections.isNotEmpty ?? false)
-                    _PendingInterjectionQueue(
-                      language: widget.language,
-                      interjections: _activeRun!.pendingInterjections,
-                    ),
-                  if (!_isTerminalSession(_activeSessionId))
-                    _ChatInputShell(
-                      roundedBottom: showMobileBrowserDock,
-                      child: _ChatInputBar(
-                        controller: _inputController,
-                        focusNode: _inputFocusNode,
-                        isSending: _isActiveSessionSending,
-                        isEditing: _editingMessageId != null,
-                        slashCommands: _availableSlashCommands,
-                        contextStatus: _activeContextStatus,
-                        isContextStatusLoading: _isActiveContextStatusLoading,
-                        hasContextSession: _sdkSessions.containsKey(
-                          _activeSessionCacheKey,
-                        ),
-                        onCancelEdit: _cancelUserMessageEdit,
-                        onContextStatusTap: _handleContextStatusTap,
-                        onSend: _sendMessage,
-                        onStop: _stopActiveSend,
-                        channelInputSources: _channelInputSources,
-                        channelInputBusyAccountId: _channelInputBusyAccountId,
-                        channelInputActiveAccountId:
-                            _channelInputActiveAccountId,
-                        onChannelInputSelected: _captureChannelInput,
-                        chatClient: _chatClient,
-                        agentId: _activeAgentId,
-                      ),
-                    ),
-                  if (showMobileBrowserDock)
-                    _BrowserMobileDock(
-                      controller: _browserController,
-                      onExpand: _expandBrowserPanel,
-                      onClose: _closeBrowserSidePanel,
-                    ),
-                ],
-              ),
-            ),
-          ),
-          AnimatedBuilder(
-            animation: _sessionMenuController,
-            builder: (context, _) {
-              if (_sessionMenuController.value == 0) {
-                return const SizedBox.shrink();
-              }
-
-              final progress = Curves.easeOutCubic.transform(
-                _sessionMenuController.value,
-              );
-              final width = MediaQuery.sizeOf(context).width;
-
-              return IgnorePointer(
-                ignoring: _sessionMenuController.value == 0,
-                child: Stack(
-                  children: [
-                    GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: _closeSessionHistory,
-                      child: ColoredBox(
-                        color: Colors.black.withValues(alpha: 0.18 * progress),
-                        child: const SizedBox.expand(),
-                      ),
-                    ),
-                    Transform.translate(
-                      offset: Offset(-width * (1 - progress), 0),
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.translucent,
-                        onHorizontalDragUpdate: _handleSessionMenuDragUpdate,
-                        onHorizontalDragEnd: _handleSessionMenuDragEnd,
-                        child: _SessionHistorySheet(
-                          activeAgent: _activeAgent,
-                          sessions: _sessions,
-                          sessionRuns: Map.unmodifiable(_sessionRuns),
-                          a2aUnreadSessionIds: Set.unmodifiable(
-                            _a2aUnreadConversationSessionIds,
-                          ),
-                          activeSessionId: _activeSessionId,
-                          favoriteAttachments: _activeFavoriteAttachments,
-                          initialView: _sessionHistoryInitialView,
-                          initialSettingsSection:
-                              _sessionHistoryInitialSettingsSection,
-                          initialSkillsTab: _sessionHistoryInitialSkillsTab,
-                          createFilesClientFuture: _buildFilesClientFuture,
-                          createSkillsClientFuture: _buildSkillsClientFuture,
-                          createScenariosClientFuture:
-                              _buildScenariosClientFuture,
-                          createNearbyClientFuture: _getChatClient,
-                          activeScenarioId: _activeScenarioId,
-                          gitSettings: _gitSettings,
-                          onScenarioApplied: _handleScenarioApplied,
-                          onGitSettingsChanged: _handleGitSettingsChanged,
-                          onGitSettingsCleared: _handleGitSettingsCleared,
-                          updateService: widget.updateService,
-                          feedbackService: widget.feedbackService,
-                          config: _config,
-                          onConfigChanged: _handleConfigChanged,
-                          onLanguageChanged: widget.onLanguageChanged,
-                          onFavoriteTap: _openFavoriteAttachment,
-                          onFavoriteRemove: _toggleFavoriteAttachment,
-                          onCheckForUpdates: () =>
-                              _checkForUpdates(automatic: false),
-                          onNearbyStart: () =>
-                              _setA2AConnectionAllowedFromSettings(true),
-                          onNearbyStop: () =>
-                              _setA2AConnectionAllowedFromSettings(false),
-                          onNearbyInvite: () => _createA2AInvite('/a2a invite'),
-                          onNearbyScan: () => _scanA2AInvite('/a2a scan'),
-                          onNearbyDeletePeer: _deleteA2APairedPeer,
-                          getNearbyPairingDiagnostic: () async =>
-                              _lastA2APairingDiagnostic,
-                          onNewSession: () {
-                            _closeSessionHistory();
-                            _startNewSession();
-                          },
-                          onRefreshSessions: _refreshVisibleSessions,
-                          onSessionSelected: (sessionId) {
-                            _closeSessionHistory();
-                            _selectSession(sessionId);
-                          },
-                          onSessionPinToggle: _toggleSessionPin,
-                          onSessionDelete: (sessionId) {
-                            unawaited(_confirmDeleteSession(sessionId));
-                          },
-                          onPendingEvolutionChanged:
-                              _refreshPendingEvolutionFromSkills,
+                            if (_activeRun?.pendingInterjections.isNotEmpty ??
+                                false)
+                              _PendingInterjectionQueue(
+                                language: widget.language,
+                                interjections: _activeRun!.pendingInterjections,
+                              ),
+                            if (!_isTerminalSession(_activeSessionId))
+                              _ChatInputShell(
+                                roundedBottom: showMobileBrowserDock,
+                                child: _ChatInputBar(
+                                  key: _chatInputBarKey,
+                                  controller: _inputController,
+                                  focusNode: _inputFocusNode,
+                                  isSending: _isActiveSessionSending,
+                                  isEditing: _editingMessageId != null,
+                                  slashCommands: _availableSlashCommands,
+                                  contextStatus: _activeContextStatus,
+                                  isContextStatusLoading:
+                                      _isActiveContextStatusLoading,
+                                  hasContextSession: _sdkSessions.containsKey(
+                                    _activeSessionCacheKey,
+                                  ),
+                                  onCancelEdit: _cancelUserMessageEdit,
+                                  onContextStatusTap: _handleContextStatusTap,
+                                  onSend: _sendMessage,
+                                  onStop: _stopActiveSend,
+                                  pendingMessageCount:
+                                      _activeRun?.pendingInterjections.length ??
+                                      0,
+                                  onRetractPending:
+                                      _retractPendingInterjections,
+                                  channelInputSources: _channelInputSources,
+                                  channelInputBusyAccountId:
+                                      _channelInputBusyAccountId,
+                                  channelInputActiveAccountId:
+                                      _channelInputActiveAccountId,
+                                  onChannelInputSelected: _captureChannelInput,
+                                  chatClient: _chatClient,
+                                  agentId: _activeAgentId,
+                                ),
+                              ),
+                            if (showMobileBrowserDock)
+                              _BrowserMobileDock(
+                                controller: _browserController,
+                                onExpand: _expandBrowserPanel,
+                                onClose: _closeBrowserSidePanel,
+                              ),
+                          ],
                         ),
                       ),
                     ),
-                  ],
-                ),
-              );
-            },
+                  )
+                : _buildNonChatPrimarySurface(),
           ),
-          if (_activeRuntimeProfile.isDeveloper)
+          if (_primaryView == _ChatPrimaryView.chat &&
+              _activeRuntimeProfile.isDeveloper)
             AnimatedBuilder(
               animation: _workbenchDrawerController,
               builder: (context, _) {
@@ -7632,7 +10188,8 @@ $candidate
                 );
               },
             ),
-          if (_browserPanelVisible &&
+          if (_primaryView == _ChatPrimaryView.chat &&
+              _browserPanelVisible &&
               browserBelongsToActiveSession &&
               MediaQuery.sizeOf(context).width >= 840)
             Positioned(
@@ -7645,7 +10202,7 @@ $candidate
                 onClose: _closeBrowserSidePanel,
               ),
             ),
-          if (showMobileBrowserOverlay)
+          if (_primaryView == _ChatPrimaryView.chat && showMobileBrowserOverlay)
             Positioned.fill(
               child: _BrowserFullscreenPanel(
                 controller: _browserController,
@@ -8013,6 +10570,139 @@ class _MemoryPendingCard extends StatelessWidget {
       return (actions.first as Map<String, dynamic>?) ?? {};
     }
     return {};
+  }
+}
+
+class _DebugJumpDestination {
+  const _DebugJumpDestination({
+    required this.section,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onOpen,
+  });
+
+  final String section;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onOpen;
+}
+
+class _DebugJumpPage extends StatelessWidget {
+  const _DebugJumpPage({required this.destinations});
+
+  final List<_DebugJumpDestination> destinations;
+
+  @override
+  Widget build(BuildContext context) {
+    final children = <Widget>[const _DebugJumpHintCard()];
+    String? currentSection;
+    for (final destination in destinations) {
+      if (destination.section != currentSection) {
+        currentSection = destination.section;
+        children.add(_DebugJumpSectionHeader(title: currentSection));
+      }
+      children.add(_DebugJumpDestinationCard(destination: destination));
+    }
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Debug 跳转'), centerTitle: false),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: children,
+      ),
+    );
+  }
+}
+
+class _DebugJumpSectionHeader extends StatelessWidget {
+  const _DebugJumpSectionHeader({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 22, 4, 8),
+      child: Text(
+        title,
+        style: const TextStyle(
+          color: Color(0xFF6B7280),
+          fontSize: 13,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _DebugJumpDestinationCard extends StatelessWidget {
+  const _DebugJumpDestinationCard({required this.destination});
+
+  final _DebugJumpDestination destination;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Card(
+        elevation: 0,
+        color: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: const BorderSide(color: Color(0xFFE5E7EB)),
+        ),
+        child: ListTile(
+          key: Key('debug_jump_${destination.title}'),
+          leading: CircleAvatar(
+            backgroundColor: const Color(0xFFEFF6FF),
+            foregroundColor: const Color(0xFF2563EB),
+            child: Icon(destination.icon),
+          ),
+          title: Text(
+            destination.title,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          subtitle: Text(destination.subtitle),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => Navigator.of(context).pop(destination),
+        ),
+      ),
+    );
+  }
+}
+
+class _DebugJumpHintCard extends StatelessWidget {
+  const _DebugJumpHintCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111827),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Hot reload debug launcher',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          SizedBox(height: 8),
+          Text(
+            '运行 flutter run 后按 r，会自动打开这个页面。也可以修改 _debugHotReloadTarget 的 fallback 字符串后再次 hot reload，直接跳到指定页面。',
+            style: TextStyle(color: Color(0xFFD1D5DB), height: 1.45),
+          ),
+        ],
+      ),
+    );
   }
 }
 

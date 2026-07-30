@@ -103,6 +103,14 @@ object LightCatalog {
             .put("required", JSONArray(listOf("pixels")))
             .toString()
 
+    /** Parameter schema for showing one named 20x5 preset on the Yeelight Cube. */
+    fun matrixPresetParamsSchemaJson(): String =
+        MatrixPresetLibrary.paramsSchemaJson()
+
+    /** Parameter schema for playing one named short-loop Yeelight Cube animation. */
+    fun matrixAnimationParamsSchemaJson(): String =
+        MatrixAnimationLibrary.paramsSchemaJson()
+
     private fun stringEnumSchema(values: List<String>): JSONObject =
         JSONObject()
             .put("type", "string")

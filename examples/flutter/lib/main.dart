@@ -7,6 +7,8 @@ import 'dart:ui' as ui;
 import 'package:napaxi/assistant_markdown.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show LicenseRegistry;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -58,6 +60,7 @@ part 'widgets/chat_tool_trace.dart';
 part 'widgets/chat_tool_read_file.dart';
 part 'widgets/chat_tool_write_file.dart';
 part 'panels/skills_panel.dart';
+part 'panels/projects_panel.dart';
 part 'panels/files_panel.dart';
 part 'panels/session_history.dart';
 part 'panels/scenarios_panel.dart';
@@ -132,11 +135,17 @@ Future<sdk.LlmConfig?> _loadBackgroundAutomationConfig() async {
   final selectedId = selection.selectedProfileId;
   if (selectedId != null && selectedId.trim().isNotEmpty) {
     final config = await store.resolveConfig(selectedId);
-    if (config != null) return config;
+    if (config != null) {
+      return selection.contextEngine == null
+          ? config
+          : config.copyWith(contextEngine: selection.contextEngine);
+    }
   }
   final profiles = await store.loadProfiles();
   if (profiles.isEmpty) return null;
-  return store.resolveConfig(profiles.first.id);
+  final config = await store.resolveConfig(profiles.first.id);
+  if (config == null || selection.contextEngine == null) return config;
+  return config.copyWith(contextEngine: selection.contextEngine);
 }
 
 String _automationRunMessage(

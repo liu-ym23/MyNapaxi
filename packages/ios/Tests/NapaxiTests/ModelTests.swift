@@ -2,6 +2,62 @@ import XCTest
 @testable import Napaxi
 
 final class ModelTests: XCTestCase {
+    func testCodexConfigResultDecodesValidationAndWriteStatus() {
+        let result = NapaxiCodexAgentEngineConfigResult(json: [
+            "success": .bool(true),
+            "providerAvailable": .bool(true),
+            "modelUsable": .bool(true),
+            "model": .string("gpt-5"),
+            "configChanged": .bool(true),
+        ])
+        let failure = NapaxiCodexAgentEngineConfigResult(json: [
+            "success": .bool(false),
+            "providerAvailable": .bool(true),
+            "modelUsable": .bool(false),
+            "errorCode": .string("unsupported_provider"),
+            "error": .string("not compatible"),
+        ])
+
+        XCTAssertTrue(result.success)
+        XCTAssertTrue(result.providerAvailable)
+        XCTAssertTrue(result.modelUsable)
+        XCTAssertEqual(result.model, "gpt-5")
+        XCTAssertTrue(result.configChanged)
+        XCTAssertFalse(failure.success)
+        XCTAssertEqual(failure.errorCode, "unsupported_provider")
+        XCTAssertEqual(failure.error, "not compatible")
+    }
+
+    func testCodexNativeHistoryResultDecodesThreadsAndMessages() {
+        let result = NapaxiCodexAgentEngineHistoryResult(json: [
+            "success": .bool(true),
+            "providerAvailable": .bool(true),
+            "nativeThreadId": .string("thread-1"),
+            "threads": .array([
+                .object([
+                    "id": .string("thread-1"),
+                    "name": .string("Greeting"),
+                    "preview": .string("hello"),
+                    "createdAt": .number(1_700_000_000_000),
+                    "updatedAt": .number(1_700_000_001_000),
+                ]),
+            ]),
+            "messages": .array([
+                .object([
+                    "id": .string("message-1"),
+                    "role": .string("user"),
+                    "content": .string("hello"),
+                ]),
+            ]),
+        ])
+
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(result.threads.first?.id, "thread-1")
+        XCTAssertEqual(result.threads.first?.updatedAtMs, 1_700_000_001_000)
+        XCTAssertEqual(result.messages.first?.role, "user")
+        XCTAssertEqual(result.nativeThreadId, "thread-1")
+    }
+
     func testEngineAliasesMirrorFlutterAPISurface() {
         let agentApp: (NapaxiEngine) -> NapaxiAgentAppAPI = { engine in
             engine.agentApp

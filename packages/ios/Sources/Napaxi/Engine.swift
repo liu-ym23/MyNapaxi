@@ -459,6 +459,7 @@ public final class NapaxiEngine: @unchecked Sendable {
                 NapaxiChannelCapability.im,
                 NapaxiChannelCapability.device,
                 resolvedToolExecutor == nil ? nil : "napaxi.tool.custom_host",
+                "napaxi.agent_engine.codex",
                 resolvedAgentAppActionExecutor == nil ? nil : "napaxi.tool.agent_app_action",
                 resolvedBrowserController == nil ? nil : NapaxiBrowserToolProvider.capabilityId,
                 automationEnabled ? "napaxi.service.automation" : nil,
@@ -548,6 +549,106 @@ public final class NapaxiEngine: @unchecked Sendable {
             config = newConfig
         }
         return updated
+    }
+
+    @available(*, deprecated, message: "Use syncCodexAgentEngineModel(_:) or clearCodexAgentEngineModelConfig()")
+    public func configureCodexAgentEngine(
+        configToml: String = "",
+        authJson: String = ""
+    ) throws -> NapaxiCodexAgentEngineConfigResult {
+        try ensureNotDisposed()
+        let request = try [
+            "files_dir": .string(filesDir),
+            "config_toml": .string(configToml),
+            "auth_json": .string(authJson),
+        ].jsonString()
+        let raw = try configureCodexAgentEngineJson(handle: handle, requestJson: request)
+        let object = (try NapaxiRawJSON(jsonString: raw).value.objectValue) ?? [:]
+        return NapaxiCodexAgentEngineConfigResult(json: object)
+    }
+
+    public func syncCodexAgentEngineModel(
+        _ config: NapaxiConfig
+    ) throws -> NapaxiCodexAgentEngineConfigResult {
+        try ensureNotDisposed()
+        let request = try [
+            "llm_config_json": .string(try config.jsonString()),
+        ].jsonString()
+        let raw = try configureCodexAgentEngineJson(handle: handle, requestJson: request)
+        let object = (try NapaxiRawJSON(jsonString: raw).value.objectValue) ?? [:]
+        return NapaxiCodexAgentEngineConfigResult(json: object)
+    }
+
+    public func clearCodexAgentEngineModelConfig() throws -> NapaxiCodexAgentEngineConfigResult {
+        try ensureNotDisposed()
+        let request = try ["clear": NapaxiJSONValue.bool(true)].jsonString()
+        let raw = try configureCodexAgentEngineJson(handle: handle, requestJson: request)
+        let object = (try NapaxiRawJSON(jsonString: raw).value.objectValue) ?? [:]
+        return NapaxiCodexAgentEngineConfigResult(json: object)
+    }
+
+    public func listCodexAgentEngineThreads(
+        accountId: String = "default",
+        agentId: String = "engine.codex"
+    ) throws -> NapaxiCodexAgentEngineHistoryResult {
+        try queryCodexAgentEngineHistory([
+            "operation": .string("history_list_threads"),
+            "account_id": .string(accountId),
+            "agent_id": .string(agentId),
+        ])
+    }
+
+    public func readCodexAgentEngineThread(
+        _ threadId: String,
+        accountId: String = "default",
+        agentId: String = "engine.codex"
+    ) throws -> NapaxiCodexAgentEngineHistoryResult {
+        try queryCodexAgentEngineHistory([
+            "operation": .string("history_read_thread"),
+            "thread_id": .string(threadId),
+            "account_id": .string(accountId),
+            "agent_id": .string(agentId),
+        ])
+    }
+
+    public func bindCodexAgentEngineThread(
+        session: NapaxiSessionKey,
+        nativeThreadId: String,
+        agentId: String = "engine.codex"
+    ) throws -> NapaxiCodexAgentEngineHistoryResult {
+        try queryCodexAgentEngineHistory([
+            "operation": .string("history_bind_thread"),
+            "thread_id": .string(nativeThreadId),
+            "account_id": .string(session.accountId),
+            "agent_id": .string(agentId),
+            "session_key_json": .string(try session.jsonString()),
+        ])
+    }
+
+    public func deleteCodexAgentEngineThread(
+        _ threadId: String,
+        session: NapaxiSessionKey,
+        agentId: String = "engine.codex"
+    ) throws -> NapaxiCodexAgentEngineHistoryResult {
+        try queryCodexAgentEngineHistory([
+            "operation": .string("history_delete_thread"),
+            "thread_id": .string(threadId),
+            "account_id": .string(session.accountId),
+            "agent_id": .string(agentId),
+            "session_key_json": .string(try session.jsonString()),
+        ])
+    }
+
+    private func queryCodexAgentEngineHistory(
+        _ request: [String: NapaxiJSONValue]
+    ) throws -> NapaxiCodexAgentEngineHistoryResult {
+        try ensureNotDisposed()
+        let raw = try configureCodexAgentEngineJson(
+            handle: handle,
+            requestJson: request.jsonString()
+        )
+        let object = (try NapaxiRawJSON(jsonString: raw).value.objectValue) ?? [:]
+        return NapaxiCodexAgentEngineHistoryResult(json: object)
     }
 
     public func ensureAgentReady() throws -> Bool {
@@ -1451,6 +1552,7 @@ public final class NapaxiEngine: @unchecked Sendable {
                 NapaxiChannelCapability.im,
                 NapaxiChannelCapability.device,
                 hasCustomToolExecutor ? "napaxi.tool.custom_host" : nil,
+                "napaxi.agent_engine.codex",
                 hasAgentAppActionExecutor ? "napaxi.tool.agent_app_action" : nil,
                 enablePlatformTools ? "napaxi.platform_tool.*" : nil,
                 hasBrowserController ? "napaxi.tool.browser" : nil,

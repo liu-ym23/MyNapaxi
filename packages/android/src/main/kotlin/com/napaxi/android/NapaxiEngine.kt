@@ -1442,6 +1442,7 @@ public class NapaxiEngine private constructor(
                 NapaxiChannelCapability.IM,
                 NapaxiChannelCapability.DEVICE,
                 "napaxi.tool.custom_host".takeIf { hasCustomToolExecutor },
+                "napaxi.agent_engine.codex",
                 "napaxi.tool.agent_app_action".takeIf { hasAgentAppActionExecutor },
                 "napaxi.platform_tool.*".takeIf { enablePlatformTools },
                 "napaxi.tool.browser".takeIf { hasBrowserController },
@@ -1466,6 +1467,7 @@ public class NapaxiEngine private constructor(
                 NapaxiChannelCapability.IM,
                 NapaxiChannelCapability.DEVICE,
                 "napaxi.tool.custom_host".takeIf { hasCustomToolExecutor },
+                "napaxi.agent_engine.codex",
                 "napaxi.tool.agent_app_action".takeIf { hasAgentAppActionExecutor },
                 "napaxi.tool.browser".takeIf { hasBrowserController },
                 "napaxi.service.automation".takeIf { enableAutomation },
@@ -1477,6 +1479,96 @@ public class NapaxiEngine private constructor(
             ),
         )
     }
+
+
+    @Deprecated(
+        message = "Use syncCodexAgentEngineModel or clearCodexAgentEngineModelConfig",
+    )
+    public fun configureCodexAgentEngine(
+        configToml: String = "",
+        authJson: String = "",
+    ): CodexAgentEngineConfigResult {
+        val requestJson = JSONObject()
+            .put("files_dir", filesDir)
+            .put("config_toml", configToml)
+            .put("auth_json", authJson)
+            .toString()
+        return CodexAgentEngineConfigResult(
+            bridge("agent_engine.configure_codex", JSONObject().put("request_json", requestJson)),
+        )
+    }
+
+    public fun syncCodexAgentEngineModel(config: LlmConfig): CodexAgentEngineConfigResult {
+        val requestJson = JSONObject()
+            .put("llm_config_json", config.toJson())
+            .toString()
+        return CodexAgentEngineConfigResult(
+            bridge("agent_engine.configure_codex", JSONObject().put("request_json", requestJson)),
+        )
+    }
+
+    public fun clearCodexAgentEngineModelConfig(): CodexAgentEngineConfigResult {
+        val requestJson = JSONObject().put("clear", true).toString()
+        return CodexAgentEngineConfigResult(
+            bridge("agent_engine.configure_codex", JSONObject().put("request_json", requestJson)),
+        )
+    }
+
+    public fun listCodexAgentEngineThreads(
+        accountId: String = DEFAULT_ACCOUNT_ID,
+        agentId: String = "engine.codex",
+    ): CodexAgentEngineHistoryResult = queryCodexAgentEngineHistory(
+        JSONObject()
+            .put("operation", "history_list_threads")
+            .put("account_id", accountId)
+            .put("agent_id", agentId),
+    )
+
+    public fun readCodexAgentEngineThread(
+        threadId: String,
+        accountId: String = DEFAULT_ACCOUNT_ID,
+        agentId: String = "engine.codex",
+    ): CodexAgentEngineHistoryResult = queryCodexAgentEngineHistory(
+        JSONObject()
+            .put("operation", "history_read_thread")
+            .put("thread_id", threadId)
+            .put("account_id", accountId)
+            .put("agent_id", agentId),
+    )
+
+    public fun bindCodexAgentEngineThread(
+        session: SessionKey,
+        nativeThreadId: String,
+        agentId: String = "engine.codex",
+    ): CodexAgentEngineHistoryResult = queryCodexAgentEngineHistory(
+        JSONObject()
+            .put("operation", "history_bind_thread")
+            .put("thread_id", nativeThreadId)
+            .put("account_id", session.accountId)
+            .put("agent_id", agentId)
+            .put("session_key_json", session.toJson()),
+    )
+
+    public fun deleteCodexAgentEngineThread(
+        threadId: String,
+        session: SessionKey,
+        agentId: String = "engine.codex",
+    ): CodexAgentEngineHistoryResult = queryCodexAgentEngineHistory(
+        JSONObject()
+            .put("operation", "history_delete_thread")
+            .put("thread_id", threadId)
+            .put("account_id", session.accountId)
+            .put("agent_id", agentId)
+            .put("session_key_json", session.toJson()),
+    )
+
+    private fun queryCodexAgentEngineHistory(request: JSONObject): CodexAgentEngineHistoryResult =
+        CodexAgentEngineHistoryResult(
+            bridge(
+                "agent_engine.configure_codex",
+                JSONObject().put("request_json", request.toString()),
+            ),
+        )
 
     internal fun bridge(method: String, args: JSONObject = JSONObject(), handle: Long = this.handle): String {
         checkNotDisposed()

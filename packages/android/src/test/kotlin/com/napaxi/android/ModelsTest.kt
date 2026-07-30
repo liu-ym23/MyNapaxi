@@ -8,6 +8,44 @@ import org.junit.Test
 
 class ModelsTest {
     @Test
+    fun codexConfigResultDecodesValidationAndWriteStatus() {
+        val result = CodexAgentEngineConfigResult.fromJson(
+            """{"success":true,"providerAvailable":true,"modelUsable":true,"model":"gpt-5","configChanged":true}""",
+        )
+        val failure = CodexAgentEngineConfigResult.fromMap(
+            mapOf(
+                "success" to false,
+                "providerAvailable" to true,
+                "modelUsable" to false,
+                "errorCode" to "unsupported_provider",
+                "error" to "not compatible",
+            ),
+        )
+
+        assertTrue(result.success)
+        assertTrue(result.providerAvailable)
+        assertTrue(result.modelUsable)
+        assertEquals("gpt-5", result.model)
+        assertTrue(result.configChanged)
+        assertFalse(failure.success)
+        assertEquals("unsupported_provider", failure.errorCode)
+        assertEquals("not compatible", failure.error)
+    }
+
+    @Test
+    fun codexNativeHistoryResultDecodesThreadsAndMessages() {
+        val result = CodexAgentEngineHistoryResult.fromJson(
+            """{"success":true,"providerAvailable":true,"nativeThreadId":"thread-1","threads":[{"id":"thread-1","name":"Greeting","preview":"hello","createdAt":1700000000000,"updatedAt":1700000001000}],"messages":[{"id":"message-1","role":"user","content":"hello"}]}""",
+        )
+
+        assertTrue(result.success)
+        assertEquals("thread-1", result.threads.single().id)
+        assertEquals(1700000001000L, result.threads.single().updatedAtMs)
+        assertEquals("user", result.messages.single().role)
+        assertEquals("thread-1", result.nativeThreadId)
+    }
+
+    @Test
     fun llmConfigRoundTripsCoreJsonShape() {
         val config = LlmConfig(
             provider = "openai_compatible",
