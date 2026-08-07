@@ -30,14 +30,15 @@ for contract_file in \
     packages/api_contract/errors.yaml \
     packages/api_contract/methods.yaml \
     packages/api_contract/capability_matrix.yaml \
+    packages/api_contract/project.json \
     packages/api_contract/workspace.json; do
     [ -f "$contract_file" ] || err "Missing SDK adapter contract file: $contract_file"
 done
 
 [ -d packages/api_contract/fixtures/workspace ] || err "Missing workspace API contract fixtures: packages/api_contract/fixtures/workspace"
 
-if git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- packages >/dev/null; then
-    git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- packages >&2
+if git grep -I -n -E '^(<<<<<<<|=======|>>>>>>>)' -- packages >/dev/null; then
+    git grep -I -n -E '^(<<<<<<<|=======|>>>>>>>)' -- packages >&2
     err "Unresolved merge conflict markers found under packages/."
 fi
 

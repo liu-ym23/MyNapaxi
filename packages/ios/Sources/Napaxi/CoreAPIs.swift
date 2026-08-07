@@ -24,8 +24,10 @@ public struct NapaxiToolAPI: NapaxiCoreAPI, Sendable {
     public func startRequestListener() {
         // Swift registers host tool routing during NapaxiEngine.create(...).
     }
-    public func mobilePlatformToolDescriptors() throws -> NapaxiJSONValue { try call("tools", "mobile_platform_tool_descriptors") }
-    public func isMobilePlatformTool(_ name: String) throws -> NapaxiJSONValue { try call("tools", "is_mobile_platform_tool", ["name": .string(name)]) }
+    public func platformToolDescriptors() throws -> NapaxiJSONValue { try call("tools", "platform_tool_descriptors") }
+    public func isPlatformTool(_ name: String) throws -> NapaxiJSONValue { try call("tools", "is_platform_tool", ["name": .string(name)]) }
+    public func mobilePlatformToolDescriptors() throws -> NapaxiJSONValue { try platformToolDescriptors() }
+    public func isMobilePlatformTool(_ name: String) throws -> NapaxiJSONValue { try isPlatformTool(name) }
     public func browserToolDescriptors() throws -> NapaxiJSONValue { try call("tools", "browser_tool_descriptors") }
     public func isBrowserTool(_ name: String) throws -> NapaxiJSONValue { try call("tools", "is_browser_tool", ["name": .string(name)]) }
     public func mobilePlatformToolDefinitions() throws -> [NapaxiCustomToolDefinition] {
@@ -78,9 +80,15 @@ public struct NapaxiChatAPI: Sendable {
     public func send(
         _ message: String,
         attachments: [NapaxiAttachment] = [],
-        maxIterations: Int = NapaxiChatDefaults.maxIterations
+        maxIterations: Int = NapaxiChatDefaults.maxIterations,
+        providerSelection: NapaxiAgentProviderSelection? = nil
     ) throws -> AsyncThrowingStream<NapaxiChatEvent, Error> {
-        try engine.sendStream(message, attachments: attachments, maxIterations: maxIterations)
+        try engine.sendStream(
+            message,
+            attachments: attachments,
+            maxIterations: maxIterations,
+            providerSelection: providerSelection
+        )
     }
 
     public func sendToSession(
@@ -88,14 +96,16 @@ public struct NapaxiChatAPI: Sendable {
         _ message: String,
         attachments: [NapaxiAttachment] = [],
         maxIterations: Int = NapaxiChatDefaults.maxIterations,
-        agentId: String = NapaxiEngine.defaultAgentId
+        agentId: String = NapaxiEngine.defaultAgentId,
+        providerSelection: NapaxiAgentProviderSelection? = nil
     ) throws -> AsyncThrowingStream<NapaxiChatEvent, Error> {
         try engine.sendToSessionStream(
             agentId: agentId,
             sessionKey: sessionKey,
             message: message,
             attachments: attachments,
-            maxIterations: maxIterations
+            maxIterations: maxIterations,
+            providerSelection: providerSelection
         )
     }
 }
@@ -964,6 +974,15 @@ public struct NapaxiAgentAppAPI: NapaxiCoreAPI, Sendable {
     public func deletePackage(_ agentId: String) throws -> Bool { try deletePackage(agentId: agentId) }
     public func deletePackageJSON(agentId: String) throws -> NapaxiJSONValue { try call("agent_app", "delete_package", ["agent_id": .string(agentId)]) }
     public func deletePackageJSON(_ agentId: String) throws -> NapaxiJSONValue { try deletePackageJSON(agentId: agentId) }
+    public func setAutoInvoke(providerId: String, enabled: Bool) throws -> NapaxiAgentAppPackage {
+        try Self.decodePackage(from: setAutoInvokeJSON(providerId: providerId, enabled: enabled))
+    }
+    public func setAutoInvokeJSON(providerId: String, enabled: Bool) throws -> NapaxiJSONValue {
+        try call("agent_app", "set_auto_invoke", [
+            "provider_id": .string(providerId),
+            "enabled": .bool(enabled),
+        ])
+    }
     public func submitActionResult(_ result: NapaxiAgentAppActionResult) throws -> NapaxiAgentAppActionRecord {
         try Self.decodeActionRecord(from: submitActionResultJSON(resultJSON: result.jsonString()))
     }
@@ -1282,6 +1301,100 @@ public struct NapaxiAgentDefinitionAPI: NapaxiCoreAPI, Sendable {
             try validateToolInfoObject(object)
             return NapaxiToolInfo.fromMap(object)
         }
+    }
+}
+
+public struct NapaxiProjectAPI: NapaxiCoreAPI, Sendable {
+    public let rawAPI: NapaxiRawAPI
+
+    public init(rawAPI: NapaxiRawAPI) {
+        self.rawAPI = rawAPI
+    }
+
+    public func register(
+        projectId: String,
+        name: String,
+        accountId: String = NapaxiEngine.defaultAccountId,
+        agentId: String = NapaxiEngine.defaultAgentId
+    ) throws -> NapaxiProject {
+        try call("project", "register", [
+            "project_id": .string(projectId),
+            "account_id": .string(accountId),
+            "agent_id": .string(agentId),
+            "name": .string(name),
+        ]).decodedObject(of: NapaxiProject.self)
+    }
+
+    public func list(
+        accountId: String = NapaxiEngine.defaultAccountId,
+        agentId: String = NapaxiEngine.defaultAgentId
+    ) throws -> [NapaxiProject] {
+        try call("project", "list", [
+            "account_id": .string(accountId),
+            "agent_id": .string(agentId),
+        ]).decodedObjectList(of: NapaxiProject.self)
+    }
+
+    public func archive(
+        _ projectId: String,
+        accountId: String = NapaxiEngine.defaultAccountId,
+        agentId: String = NapaxiEngine.defaultAgentId
+    ) throws -> Bool {
+        try call("project", "archive", [
+            "project_id": .string(projectId),
+            "account_id": .string(accountId),
+            "agent_id": .string(agentId),
+        ]).requiredBool()
+    }
+
+    public func placement(_ sessionKey: NapaxiSessionKey) throws -> NapaxiSessionPlacement {
+        try call("project", "get_session_placement", [
+            "session_key_json": .string(sessionKey.jsonString()),
+        ]).decodedObject(of: NapaxiSessionPlacement.self)
+    }
+
+    public func listPlacements(
+        accountId: String = NapaxiEngine.defaultAccountId,
+        agentId: String = NapaxiEngine.defaultAgentId
+    ) throws -> [NapaxiSessionPlacement] {
+        try call("project", "list_session_placements", [
+            "account_id": .string(accountId),
+            "agent_id": .string(agentId),
+        ]).decodedObjectList(of: NapaxiSessionPlacement.self)
+    }
+
+    public func moveSession(
+        _ sessionKey: NapaxiSessionKey,
+        projectId: String?,
+        workspacePolicy: NapaxiWorkspacePolicy,
+        expectedRevision: Int64? = nil
+    ) throws -> NapaxiSessionPlacement {
+        var payload: [String: NapaxiJSONValue] = [
+            "session_key_json": .string(try sessionKey.jsonString()),
+            "project_id": projectId.map(NapaxiJSONValue.string) ?? .null,
+            "workspace_policy": .string(workspacePolicy.rawValue),
+        ]
+        if let expectedRevision {
+            payload["expected_revision"] = .number(Double(expectedRevision))
+        }
+        return try call("project", "move_session", payload)
+            .decodedObject(of: NapaxiSessionPlacement.self)
+    }
+
+    public func listFiles(
+        projectId: String,
+        accountId: String = NapaxiEngine.defaultAccountId,
+        agentId: String = NapaxiEngine.defaultAgentId,
+        subdir: String? = nil,
+        recursive: Bool = true
+    ) throws -> [NapaxiWorkspaceFileInfo] {
+        try call("project", "list_files", [
+            "project_id": .string(projectId),
+            "account_id": .string(accountId),
+            "agent_id": .string(agentId),
+            "subdir": subdir.map(NapaxiJSONValue.string) ?? .null,
+            "recursive": .bool(recursive),
+        ]).decodedObjectList(of: NapaxiWorkspaceFileInfo.self)
     }
 }
 

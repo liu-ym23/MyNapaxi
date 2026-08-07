@@ -2,6 +2,31 @@ import 'dart:convert';
 
 import 'agent_app.dart';
 
+/// A one-turn, explicit selection of an installed Agent App provider.
+///
+/// The selection is encoded into the SDK request and resolved by core before
+/// model execution and tool assembly. It does not switch Agent identity or
+/// persist beyond the submitted message.
+class AgentProviderSelection {
+  /// Canonical `provider_id` returned by the install handshake.
+  final String providerId;
+
+  /// Creates a selection for exactly one chat submission.
+  const AgentProviderSelection({required this.providerId});
+
+  /// Adds the canonical marker consumed and removed by Napaxi Core.
+  String applyToMessage(String message) {
+    final id = providerId.trim();
+    if (id.isEmpty) {
+      throw ArgumentError.value(providerId, 'providerId', 'must not be empty');
+    }
+    if (id.contains('}')) {
+      throw ArgumentError.value(providerId, 'providerId', 'must not contain }');
+    }
+    return '@{provider:$id} ${message.trimLeft()}';
+  }
+}
+
 /// Describes how to reach a provider app for install/action: its platform,
 /// package/bundle ids, launch activities, signing cert, and deep-link URLs.
 class AgentProviderDescriptor {
@@ -11,6 +36,9 @@ class AgentProviderDescriptor {
   final String activityName;
   final String label;
   final String signingCertSha256;
+  final int packageVersionCode;
+  final int packageLastUpdateTimeMs;
+  final bool trustedRefreshSupported;
   final String installUrl;
   final String actionUrl;
   final String universalLinkDomain;
@@ -24,6 +52,9 @@ class AgentProviderDescriptor {
     required this.activityName,
     this.label = '',
     this.signingCertSha256 = '',
+    this.packageVersionCode = 0,
+    this.packageLastUpdateTimeMs = 0,
+    this.trustedRefreshSupported = false,
     this.installUrl = '',
     this.actionUrl = '',
     this.universalLinkDomain = '',
@@ -35,14 +66,19 @@ class AgentProviderDescriptor {
     return AgentProviderDescriptor(
       platform: map['platform'] as String? ?? 'android',
       packageName: map['packageName'] as String? ?? '',
-      installActivityName: (map['installActivityName'] as String?) ??
+      installActivityName:
+          (map['installActivityName'] as String?) ??
           (map['activityName'] as String?) ??
           '',
-      activityName: (map['activityName'] as String?) ??
+      activityName:
+          (map['activityName'] as String?) ??
           (map['installActivityName'] as String?) ??
           '',
       label: map['label'] as String? ?? '',
       signingCertSha256: map['signingCertSha256'] as String? ?? '',
+      packageVersionCode: _providerInt(map['packageVersionCode']),
+      packageLastUpdateTimeMs: _providerInt(map['packageLastUpdateTimeMs']),
+      trustedRefreshSupported: _providerBool(map['trustedRefreshSupported']),
       installUrl: map['installUrl'] as String? ?? '',
       actionUrl: map['actionUrl'] as String? ?? '',
       universalLinkDomain: map['universalLinkDomain'] as String? ?? '',
@@ -52,19 +88,34 @@ class AgentProviderDescriptor {
   }
 
   Map<String, dynamic> toJson() => {
-        'platform': platform,
-        'packageName': packageName,
-        'installActivityName': installActivityName,
-        'activityName': activityName,
-        'label': label,
-        'signingCertSha256': signingCertSha256,
-        if (installUrl.isNotEmpty) 'installUrl': installUrl,
-        if (actionUrl.isNotEmpty) 'actionUrl': actionUrl,
-        if (universalLinkDomain.isNotEmpty)
-          'universalLinkDomain': universalLinkDomain,
-        if (iosBundleId.isNotEmpty) 'iosBundleId': iosBundleId,
-        if (iosTeamId.isNotEmpty) 'iosTeamId': iosTeamId,
-      };
+    'platform': platform,
+    'packageName': packageName,
+    'installActivityName': installActivityName,
+    'activityName': activityName,
+    'label': label,
+    'signingCertSha256': signingCertSha256,
+    if (packageVersionCode > 0) 'packageVersionCode': packageVersionCode,
+    if (packageLastUpdateTimeMs > 0)
+      'packageLastUpdateTimeMs': packageLastUpdateTimeMs,
+    if (trustedRefreshSupported)
+      'trustedRefreshSupported': trustedRefreshSupported,
+    if (installUrl.isNotEmpty) 'installUrl': installUrl,
+    if (actionUrl.isNotEmpty) 'actionUrl': actionUrl,
+    if (universalLinkDomain.isNotEmpty)
+      'universalLinkDomain': universalLinkDomain,
+    if (iosBundleId.isNotEmpty) 'iosBundleId': iosBundleId,
+    if (iosTeamId.isNotEmpty) 'iosTeamId': iosTeamId,
+  };
+}
+
+int _providerInt(Object? value) {
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+bool _providerBool(Object? value) {
+  if (value is bool) return value;
+  return value?.toString().toLowerCase() == 'true';
 }
 
 /// A host-signed request asking a provider app to install/register itself,
@@ -127,25 +178,25 @@ class AgentInstallRequest {
   }
 
   Map<String, dynamic> toJson() => {
-        'protocol_version': protocolVersion,
-        'request_id': requestId,
-        'nonce': nonce,
-        'host_package_name': hostPackageName,
-        'created_at': createdAt,
-        'expires_at': expiresAt,
-        'host_signing_cert_sha256': hostSigningCertSha256,
-        'host_instance_id': hostInstanceId,
-        'host_shared_secret': hostSharedSecret,
-        if (hostBundleId.isNotEmpty) 'host_bundle_id': hostBundleId,
-        if (hostTeamId.isNotEmpty) 'host_team_id': hostTeamId,
-        if (hostCallbackScheme.isNotEmpty)
-          'host_callback_scheme': hostCallbackScheme,
-        if (callbackUrl.isNotEmpty) 'callback_url': callbackUrl,
-        if (backgroundTriggerSupported)
-          'background_trigger_supported': backgroundTriggerSupported,
-        if (hostBackgroundTriggerService.isNotEmpty)
-          'host_background_trigger_service': hostBackgroundTriggerService,
-      };
+    'protocol_version': protocolVersion,
+    'request_id': requestId,
+    'nonce': nonce,
+    'host_package_name': hostPackageName,
+    'created_at': createdAt,
+    'expires_at': expiresAt,
+    'host_signing_cert_sha256': hostSigningCertSha256,
+    'host_instance_id': hostInstanceId,
+    'host_shared_secret': hostSharedSecret,
+    if (hostBundleId.isNotEmpty) 'host_bundle_id': hostBundleId,
+    if (hostTeamId.isNotEmpty) 'host_team_id': hostTeamId,
+    if (hostCallbackScheme.isNotEmpty)
+      'host_callback_scheme': hostCallbackScheme,
+    if (callbackUrl.isNotEmpty) 'callback_url': callbackUrl,
+    if (backgroundTriggerSupported)
+      'background_trigger_supported': backgroundTriggerSupported,
+    if (hostBackgroundTriggerService.isNotEmpty)
+      'host_background_trigger_service': hostBackgroundTriggerService,
+  };
 
   String toJsonString() => jsonEncode(toJson());
 }
@@ -175,8 +226,9 @@ class AgentInstallResult {
       status: map['status'] as String? ?? '',
       requestId: map['request_id'] as String? ?? '',
       nonce: map['nonce'] as String? ?? '',
-      package:
-          packageValue is Map ? AgentAppPackage.fromMap(packageValue) : null,
+      package: packageValue is Map
+          ? AgentAppPackage.fromMap(packageValue)
+          : null,
       error: _mapValue(map['error']),
       completedAt: map['completed_at'] as String? ?? '',
     );

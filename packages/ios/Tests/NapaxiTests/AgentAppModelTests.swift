@@ -27,6 +27,9 @@ final class AgentAppModelTests: XCTestCase {
         let deletePackageJSON: (NapaxiAgentAppAPI, String) throws -> NapaxiJSONValue = { api, agentId in
             try api.deletePackageJSON(agentId)
         }
+        let setAutoInvoke: (NapaxiAgentAppAPI, String, Bool) throws -> NapaxiAgentAppPackage = { api, providerId, enabled in
+            try api.setAutoInvoke(providerId: providerId, enabled: enabled)
+        }
         let getProposal: (NapaxiAgentAppAPI, String) throws -> NapaxiAgentAppActionRecord? = { api, requestId in
             try api.getProposal(requestId)
         }
@@ -38,6 +41,7 @@ final class AgentAppModelTests: XCTestCase {
         XCTAssertNotNil(getPackageJSON)
         XCTAssertNotNil(deletePackage)
         XCTAssertNotNil(deletePackageJSON)
+        XCTAssertNotNil(setAutoInvoke)
         XCTAssertNotNil(getProposal)
         XCTAssertNotNil(getProposalJSON)
     }
@@ -114,7 +118,10 @@ final class AgentAppModelTests: XCTestCase {
             {
               "action_id": "book",
               "tool_name": "provider.book",
+              "display_name": "Book appointment",
+              "localized_display_names": {"zh-CN": "预约"},
               "description": "Book",
+              "localized_descriptions": {"zh-CN": "在应用中预约时间。"},
               "parameters": {"type": "object"},
               "execution_modes": ["handoff"],
               "timeout_seconds": 30
@@ -127,6 +134,9 @@ final class AgentAppModelTests: XCTestCase {
             "ios_bundle_id": "com.example.provider",
             "host_callback_scheme": "napaxi"
           },
+          "auto_invoke_enabled": true,
+          "last_used_at": "2030-01-02T12:00:00Z",
+          "use_count": 7,
           "unknown_future_field": {"nested": true}
         }
         """
@@ -139,9 +149,15 @@ final class AgentAppModelTests: XCTestCase {
         XCTAssertEqual(package.systemPrompt, "Help")
         XCTAssertEqual(package.actions.first?.actionId, "book")
         XCTAssertEqual(package.actions.first?.toolName, "provider.book")
+        XCTAssertEqual(package.actions.first?.displayName, "Book appointment")
+        XCTAssertEqual(package.actions.first?.localizedDisplayNames["zh-CN"], "预约")
+        XCTAssertEqual(package.actions.first?.localizedDescriptions["zh-CN"], "在应用中预约时间。")
         XCTAssertEqual(package.actions.first?.executionModes, ["handoff"])
         XCTAssertEqual(package.actions.first?.timeoutSeconds, 30)
         XCTAssertEqual(package.installBinding?.platform, "ios")
+        XCTAssertTrue(package.autoInvokeEnabled)
+        XCTAssertEqual(package.lastUsedAt, "2030-01-02T12:00:00Z")
+        XCTAssertEqual(package.useCount, 7)
         XCTAssertEqual(package.installBinding?.protocolVersion, 2)
         XCTAssertEqual(package.installBinding?.iosBundleId, "com.example.provider")
         XCTAssertEqual(package.installBinding?.hostCallbackScheme, "napaxi")
@@ -153,6 +169,9 @@ final class AgentAppModelTests: XCTestCase {
             actionId: "lookup",
             toolName: "provider.lookup",
             description: "Lookup",
+            displayName: "Look up",
+            localizedDisplayNames: ["zh-CN": "查询"],
+            localizedDescriptions: ["zh-CN": "查询应用中的内容。"],
             parameters: ["type": .string("object")]
         )
         let binding = NapaxiAgentAppInstallBinding(
@@ -160,6 +179,9 @@ final class AgentAppModelTests: XCTestCase {
             appPackageName: "",
             activityName: "",
             signingCertSha256: "",
+            appVersionCode: 7,
+            appLastUpdateTimeMs: 123456,
+            trustedRefreshSupported: true,
             installedAt: "now",
             installRequestId: "req",
             protocolVersion: 2,
@@ -185,6 +207,8 @@ final class AgentAppModelTests: XCTestCase {
            case .object(let first)? = actions.first {
             XCTAssertEqual(first["action_id"], .string("lookup"))
             XCTAssertEqual(first["tool_name"], .string("provider.lookup"))
+            XCTAssertEqual(first["display_name"], .string("Look up"))
+            XCTAssertEqual(first["localized_display_names"], .object(["zh-CN": .string("查询")]))
         } else {
             XCTFail("actions should encode as object array")
         }
@@ -192,6 +216,9 @@ final class AgentAppModelTests: XCTestCase {
             XCTAssertEqual(encodedBinding["protocol_version"], .number(2))
             XCTAssertEqual(encodedBinding["ios_bundle_id"], .string("com.example.provider"))
             XCTAssertEqual(encodedBinding["host_bundle_id"], .string("com.example.host"))
+            XCTAssertEqual(encodedBinding["app_version_code"], .number(7))
+            XCTAssertEqual(encodedBinding["app_last_update_time_ms"], .number(123456))
+            XCTAssertEqual(encodedBinding["trusted_refresh_supported"], .bool(true))
         } else {
             XCTFail("install binding should encode as object")
         }
@@ -298,11 +325,23 @@ final class AgentAppModelTests: XCTestCase {
             ]),
             "completed_at": .string("done"),
         ])
+        let bindingFailure = NapaxiAgentAppActionResult.fromMap([
+            "request_id": .string("r-binding"),
+            "status": .string("failed"),
+            "error": .object([
+                "code": .string("host_not_bound"),
+                "message": .string("Binding missing"),
+                "phase": .string("pre_execution"),
+            ]),
+            "completed_at": .string("done"),
+        ])
 
         XCTAssertEqual(result.toJson()["provider_trace_id"], .string("trace"))
         XCTAssertEqual(try NapaxiRawJSON(jsonString: result.toJsonString()).value.objectValue?["status"], .string("success"))
         XCTAssertEqual(failedResult.error, "{message: denied, retry: false}")
         XCTAssertEqual(failedResult.toJson()["error"], .string("{message: denied, retry: false}"))
+        XCTAssertEqual(bindingFailure.errorCode, "host_not_bound")
+        XCTAssertTrue(bindingFailure.isHostBindingMissing)
         XCTAssertNil(NapaxiAgentAppActionResult.fromMap([
             "request_id": .string("r3"),
             "status": .string("failed"),

@@ -6,6 +6,9 @@ class AgentAppActionManifest {
   final String actionId;
   final String toolName;
   final String description;
+  final String displayName;
+  final Map<String, String> localizedDisplayNames;
+  final Map<String, String> localizedDescriptions;
   final Map<String, dynamic> parameters;
   final Map<String, dynamic> resultSchema;
   final String risk;
@@ -17,6 +20,9 @@ class AgentAppActionManifest {
     required this.actionId,
     required this.toolName,
     required this.description,
+    this.displayName = '',
+    this.localizedDisplayNames = const <String, String>{},
+    this.localizedDescriptions = const <String, String>{},
     this.parameters = const <String, dynamic>{
       'type': 'object',
       'properties': <String, dynamic>{},
@@ -33,6 +39,9 @@ class AgentAppActionManifest {
       actionId: map['action_id'] as String? ?? '',
       toolName: map['tool_name'] as String? ?? '',
       description: map['description'] as String? ?? '',
+      displayName: map['display_name'] as String? ?? '',
+      localizedDisplayNames: _stringMap(map['localized_display_names']),
+      localizedDescriptions: _stringMap(map['localized_descriptions']),
       parameters: _mapValue(map['parameters']),
       resultSchema: _mapValue(map['result_schema']),
       risk: map['risk'] as String? ?? 'high',
@@ -44,16 +53,30 @@ class AgentAppActionManifest {
   }
 
   Map<String, dynamic> toJson() => {
-        'action_id': actionId,
-        'tool_name': toolName,
-        'description': description,
-        'parameters': parameters,
-        'result_schema': resultSchema,
-        'risk': risk,
-        'confirmation_policy': confirmationPolicy,
-        'execution_modes': executionModes,
-        'timeout_seconds': timeoutSeconds,
-      };
+    'action_id': actionId,
+    'tool_name': toolName,
+    'description': description,
+    if (displayName.isNotEmpty) 'display_name': displayName,
+    if (localizedDisplayNames.isNotEmpty)
+      'localized_display_names': localizedDisplayNames,
+    if (localizedDescriptions.isNotEmpty)
+      'localized_descriptions': localizedDescriptions,
+    'parameters': parameters,
+    'result_schema': resultSchema,
+    'risk': risk,
+    'confirmation_policy': confirmationPolicy,
+    'execution_modes': executionModes,
+    'timeout_seconds': timeoutSeconds,
+  };
+}
+
+Map<String, String> _stringMap(Object? value) {
+  if (value is! Map) return const <String, String>{};
+  return Map<String, String>.unmodifiable({
+    for (final entry in value.entries)
+      if (entry.key is String && entry.value is String)
+        entry.key as String: entry.value as String,
+  });
 }
 
 /// A registered provider agent app: its identity, system prompt, the set of
@@ -81,6 +104,9 @@ class AgentAppPackage {
     this.handoff = const <String, dynamic>{},
     this.result = const <String, dynamic>{},
     this.installBinding,
+    this.autoInvokeEnabled = false,
+    this.lastUsedAt = '',
+    this.useCount = 0,
     this.createdAt = '',
     this.updatedAt = '',
   });
@@ -101,24 +127,39 @@ class AgentAppPackage {
       installBinding: map['install_binding'] is Map
           ? AgentAppInstallBinding.fromMap(map['install_binding'] as Map)
           : null,
+      autoInvokeEnabled: map['auto_invoke_enabled'] as bool? ?? false,
+      lastUsedAt: map['last_used_at'] as String? ?? '',
+      useCount: (map['use_count'] as num?)?.toInt() ?? 0,
       createdAt: map['created_at'] as String? ?? '',
       updatedAt: map['updated_at'] as String? ?? '',
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'provider_id': providerId,
-        'agent_id': agentId,
-        'display_name': displayName,
-        'description': description,
-        'system_prompt': systemPrompt,
-        'actions': actions.map((action) => action.toJson()).toList(),
-        'handoff': handoff,
-        'result': result,
-        if (installBinding != null) 'install_binding': installBinding!.toJson(),
-        if (createdAt.isNotEmpty) 'created_at': createdAt,
-        if (updatedAt.isNotEmpty) 'updated_at': updatedAt,
-      };
+    'provider_id': providerId,
+    'agent_id': agentId,
+    'display_name': displayName,
+    'description': description,
+    'system_prompt': systemPrompt,
+    'actions': actions.map((action) => action.toJson()).toList(),
+    'handoff': handoff,
+    'result': result,
+    if (installBinding != null) 'install_binding': installBinding!.toJson(),
+    'auto_invoke_enabled': autoInvokeEnabled,
+    if (lastUsedAt.isNotEmpty) 'last_used_at': lastUsedAt,
+    if (useCount > 0) 'use_count': useCount,
+    if (createdAt.isNotEmpty) 'created_at': createdAt,
+    if (updatedAt.isNotEmpty) 'updated_at': updatedAt,
+  };
+
+  /// Whether the host may expose this app's actions without an explicit @.
+  final bool autoInvokeEnabled;
+
+  /// Host-recorded timestamp of the most recent explicit or actual use.
+  final String lastUsedAt;
+
+  /// Host-recorded number of explicit selections and actual invocations.
+  final int useCount;
 
   String toJsonString() => jsonEncode(toJson());
 }
@@ -131,6 +172,9 @@ class AgentAppInstallBinding {
   final String appPackageName;
   final String activityName;
   final String signingCertSha256;
+  final int appVersionCode;
+  final int appLastUpdateTimeMs;
+  final bool trustedRefreshSupported;
   final String installedAt;
   final String installRequestId;
   final int protocolVersion;
@@ -154,6 +198,9 @@ class AgentAppInstallBinding {
     required this.appPackageName,
     required this.activityName,
     required this.signingCertSha256,
+    this.appVersionCode = 0,
+    this.appLastUpdateTimeMs = 0,
+    this.trustedRefreshSupported = false,
     required this.installedAt,
     required this.installRequestId,
     required this.protocolVersion,
@@ -179,6 +226,9 @@ class AgentAppInstallBinding {
       appPackageName: map['app_package_name'] as String? ?? '',
       activityName: map['activity_name'] as String? ?? '',
       signingCertSha256: map['signing_cert_sha256'] as String? ?? '',
+      appVersionCode: _agentAppInt(map['app_version_code']),
+      appLastUpdateTimeMs: _agentAppInt(map['app_last_update_time_ms']),
+      trustedRefreshSupported: _agentAppBool(map['trusted_refresh_supported']),
       installedAt: map['installed_at'] as String? ?? '',
       installRequestId: map['install_request_id'] as String? ?? '',
       protocolVersion: (map['protocol_version'] as num?)?.toInt() ?? 1,
@@ -202,33 +252,47 @@ class AgentAppInstallBinding {
   }
 
   Map<String, dynamic> toJson() => {
-        'platform': platform,
-        'app_package_name': appPackageName,
-        'activity_name': activityName,
-        'signing_cert_sha256': signingCertSha256,
-        'installed_at': installedAt,
-        'install_request_id': installRequestId,
-        'protocol_version': protocolVersion,
-        if (hostPackageName.isNotEmpty) 'host_package_name': hostPackageName,
-        if (hostSigningCertSha256.isNotEmpty)
-          'host_signing_cert_sha256': hostSigningCertSha256,
-        if (hostInstanceId.isNotEmpty) 'host_instance_id': hostInstanceId,
-        if (hostSharedSecret.isNotEmpty) 'host_shared_secret': hostSharedSecret,
-        if (iosBundleId.isNotEmpty) 'ios_bundle_id': iosBundleId,
-        if (iosTeamId.isNotEmpty) 'ios_team_id': iosTeamId,
-        if (installUrl.isNotEmpty) 'install_url': installUrl,
-        if (actionUrl.isNotEmpty) 'action_url': actionUrl,
-        if (universalLinkDomain.isNotEmpty)
-          'universal_link_domain': universalLinkDomain,
-        if (hostBundleId.isNotEmpty) 'host_bundle_id': hostBundleId,
-        if (hostTeamId.isNotEmpty) 'host_team_id': hostTeamId,
-        if (hostCallbackScheme.isNotEmpty)
-          'host_callback_scheme': hostCallbackScheme,
-        if (backgroundTriggerSupported)
-          'background_trigger_supported': backgroundTriggerSupported,
-        if (hostBackgroundTriggerService.isNotEmpty)
-          'host_background_trigger_service': hostBackgroundTriggerService,
-      };
+    'platform': platform,
+    'app_package_name': appPackageName,
+    'activity_name': activityName,
+    'signing_cert_sha256': signingCertSha256,
+    if (appVersionCode > 0) 'app_version_code': appVersionCode,
+    if (appLastUpdateTimeMs > 0) 'app_last_update_time_ms': appLastUpdateTimeMs,
+    if (trustedRefreshSupported)
+      'trusted_refresh_supported': trustedRefreshSupported,
+    'installed_at': installedAt,
+    'install_request_id': installRequestId,
+    'protocol_version': protocolVersion,
+    if (hostPackageName.isNotEmpty) 'host_package_name': hostPackageName,
+    if (hostSigningCertSha256.isNotEmpty)
+      'host_signing_cert_sha256': hostSigningCertSha256,
+    if (hostInstanceId.isNotEmpty) 'host_instance_id': hostInstanceId,
+    if (hostSharedSecret.isNotEmpty) 'host_shared_secret': hostSharedSecret,
+    if (iosBundleId.isNotEmpty) 'ios_bundle_id': iosBundleId,
+    if (iosTeamId.isNotEmpty) 'ios_team_id': iosTeamId,
+    if (installUrl.isNotEmpty) 'install_url': installUrl,
+    if (actionUrl.isNotEmpty) 'action_url': actionUrl,
+    if (universalLinkDomain.isNotEmpty)
+      'universal_link_domain': universalLinkDomain,
+    if (hostBundleId.isNotEmpty) 'host_bundle_id': hostBundleId,
+    if (hostTeamId.isNotEmpty) 'host_team_id': hostTeamId,
+    if (hostCallbackScheme.isNotEmpty)
+      'host_callback_scheme': hostCallbackScheme,
+    if (backgroundTriggerSupported)
+      'background_trigger_supported': backgroundTriggerSupported,
+    if (hostBackgroundTriggerService.isNotEmpty)
+      'host_background_trigger_service': hostBackgroundTriggerService,
+  };
+}
+
+int _agentAppInt(Object? value) {
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+bool _agentAppBool(Object? value) {
+  if (value is bool) return value;
+  return value?.toString().toLowerCase() == 'true';
 }
 
 /// A pending proposal to run a provider action, awaiting host approval.
@@ -297,25 +361,25 @@ class AgentAppActionProposal {
   }
 
   Map<String, dynamic> toJson() => {
-        'request_id': requestId,
-        'provider_id': providerId,
-        'agent_id': agentId,
-        'action_id': actionId,
-        'tool_name': toolName,
-        'arguments': arguments,
-        'user_intent_summary': userIntentSummary,
-        'created_at': createdAt,
-        'expires_at': expiresAt,
-        'nonce': nonce,
-        'idempotency_key': idempotencyKey,
-        'callback': callback,
-        'risk': risk,
-        'confirmation_policy': confirmationPolicy,
-        if (hostInstanceId.isNotEmpty) 'host_instance_id': hostInstanceId,
-        if (signatureAlgorithm.isNotEmpty)
-          'signature_algorithm': signatureAlgorithm,
-        if (signature != null) 'signature': signature,
-      };
+    'request_id': requestId,
+    'provider_id': providerId,
+    'agent_id': agentId,
+    'action_id': actionId,
+    'tool_name': toolName,
+    'arguments': arguments,
+    'user_intent_summary': userIntentSummary,
+    'created_at': createdAt,
+    'expires_at': expiresAt,
+    'nonce': nonce,
+    'idempotency_key': idempotencyKey,
+    'callback': callback,
+    'risk': risk,
+    'confirmation_policy': confirmationPolicy,
+    if (hostInstanceId.isNotEmpty) 'host_instance_id': hostInstanceId,
+    if (signatureAlgorithm.isNotEmpty)
+      'signature_algorithm': signatureAlgorithm,
+    if (signature != null) 'signature': signature,
+  };
 }
 
 /// The outcome of an executed provider action: terminal status, result payload
@@ -339,14 +403,39 @@ class AgentAppActionResult {
     this.signature,
   });
 
+  /// Stable provider error code when the result uses either the v3 structured
+  /// error shape or the legacy `code: message` string shape.
+  String? get errorCode {
+    final value = error?.trim();
+    if (value == null || value.isEmpty) return null;
+    final separator = value.indexOf(':');
+    final candidate = (separator < 0 ? value : value.substring(0, separator))
+        .trim();
+    if (candidate.isEmpty ||
+        !RegExp(r'^[a-z][a-z0-9_]*$').hasMatch(candidate)) {
+      return null;
+    }
+    return candidate;
+  }
+
+  /// True only for the trusted-validation failure emitted before provider
+  /// business logic starts, so restoring the binding and retrying is safe.
+  bool get isHostBindingMissing =>
+      status == 'failed' && errorCode == 'host_not_bound';
+
+  /// True when trusted Provider state can be safely restored and the same
+  /// proposal retried. Both failures happen before business logic or replay
+  /// consumption, so a single trusted refresh cannot duplicate side effects.
+  bool get isTrustedBindingRejected =>
+      status == 'failed' &&
+      (errorCode == 'host_not_bound' || errorCode == 'signature_invalid');
+
   factory AgentAppActionResult.fromMap(Map<dynamic, dynamic> map) {
     return AgentAppActionResult(
       requestId: map['request_id'] as String? ?? '',
       status: map['status'] as String? ?? '',
       result: _mapValue(map['result']),
-      error: map['error'] is String
-          ? map['error'] as String
-          : map['error']?.toString(),
+      error: _actionErrorString(map['error']),
       providerTraceId: map['provider_trace_id'] as String?,
       completedAt: map['completed_at'] as String? ?? '',
       signature: map['signature'] as String?,
@@ -354,16 +443,29 @@ class AgentAppActionResult {
   }
 
   Map<String, dynamic> toJson() => {
-        'request_id': requestId,
-        'status': status,
-        'result': result,
-        if (error != null) 'error': error,
-        if (providerTraceId != null) 'provider_trace_id': providerTraceId,
-        'completed_at': completedAt,
-        if (signature != null) 'signature': signature,
-      };
+    'request_id': requestId,
+    'status': status,
+    'result': result,
+    if (error != null) 'error': error,
+    if (providerTraceId != null) 'provider_trace_id': providerTraceId,
+    'completed_at': completedAt,
+    if (signature != null) 'signature': signature,
+  };
 
   String toJsonString() => jsonEncode(toJson());
+}
+
+String? _actionErrorString(Object? value) {
+  if (value == null) return null;
+  if (value is String) return value;
+  if (value is Map) {
+    final code = value['code']?.toString().trim() ?? '';
+    final message = value['message']?.toString().trim() ?? '';
+    if (code.isNotEmpty && message.isNotEmpty) return '$code: $message';
+    if (code.isNotEmpty) return code;
+    if (message.isNotEmpty) return message;
+  }
+  return value.toString();
 }
 
 /// A stored ledger entry pairing an [AgentAppActionProposal] with its current

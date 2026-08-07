@@ -107,20 +107,97 @@ check_android_runtime_assets() {
     done
 }
 
+
+check_ios_rootfs_asset() {
+    local rootfs_path="$1"
+    local label="$2"
+
+    [ -f "$rootfs_path" ] || err "Missing $label iOS QEMU rootfs asset: $rootfs_path"
+    [ ! -L "$rootfs_path" ] || err "$label iOS rootfs asset must be a packaged file, not a symlink: $rootfs_path"
+    if head -n 1 "$rootfs_path" | grep -qx 'version https://git-lfs.github.com/spec/v1'; then
+        err "$label iOS rootfs asset is a Git LFS pointer, not a baked rootfs: $rootfs_path"
+    fi
+    gzip -t "$rootfs_path" >/dev/null 2>&1 || err "$label iOS rootfs asset is not a valid gzip archive: $rootfs_path"
+
+    for expected in \
+        ./usr/bin/python3 \
+        ./usr/bin/node \
+        ./usr/bin/npm \
+        ./usr/bin/curl \
+        ./usr/bin/wget \
+        ./bin/bash \
+        ./usr/bin/zip \
+        ./usr/bin/unzip \
+        ./usr/bin/git; do
+        tar -tzf "$rootfs_path" "$expected" >/dev/null 2>&1 || \
+            err "$label iOS rootfs is missing expected lightweight tool: $expected"
+    done
+
+    for forbidden in \
+        ./usr/bin/codex \
+        ./usr/lib/node_modules/@openai/codex \
+        ./usr/bin/java \
+        ./usr/bin/javac \
+        ./usr/bin/keytool \
+        ./usr/bin/qemu-x86_64 \
+        ./usr/lib/jvm \
+        ./opt/android \
+        ./opt/x86root; do
+        if tar -tzf "$rootfs_path" | grep -F -x "$forbidden" >/dev/null || \
+           tar -tzf "$rootfs_path" | grep -F "${forbidden%/}/" >/dev/null; then
+            err "$label iOS rootfs contains Android/Codex-only path: $forbidden"
+        fi
+    done
+}
+
 check_ios_native_assets() {
     local ios_dir="$ROOT_DIR/packages/ios"
-    local vendor_dir="$ios_dir/Vendor/iSHCore"
+    local flutter_ios_dir="$SDK_DIR/ios"
     local resource_dir="$ios_dir/Sources/Napaxi/Resources"
+    local flutter_resource_dir="$flutter_ios_dir/Resources"
+    local qemu_dir="$ios_dir/Vendor/IosQemu"
+    local flutter_qemu_dir="$flutter_ios_dir/Vendor/IosQemu"
+    local qemu_source_dir="$qemu_dir/Sources/QEMU"
+    local flutter_qemu_source_dir="$flutter_qemu_dir/Sources/QEMU"
+    local qemu_lib_dir="$qemu_dir/Vendor/QEMU/lib/iphoneos"
+    local flutter_qemu_lib_dir="$flutter_qemu_dir/Vendor/QEMU/lib/iphoneos"
 
     [ -f "$ios_dir/Package.swift" ] || err "Missing native iOS Swift package: $ios_dir/Package.swift"
-    [ -f "$ios_dir/Sources/NapaxiIsh/ish_bridge.c" ] || err "Missing native iOS iSH bridge source: $ios_dir/Sources/NapaxiIsh/ish_bridge.c"
-    [ -f "$ios_dir/Sources/NapaxiIsh/include/ish_bridge.h" ] || err "Missing native iOS iSH bridge header: $ios_dir/Sources/NapaxiIsh/include/ish_bridge.h"
-    [ -f "$resource_dir/alpine-rootfs.tar.gz" ] || err "Missing native iOS iSH rootfs: $resource_dir/alpine-rootfs.tar.gz. Run: ./tools/scripts/prepare_ios_ish_spm.sh"
-    [ -d "$vendor_dir/include" ] || err "Missing native iOS iSH headers: $vendor_dir/include. Run: ./tools/scripts/prepare_ios_ish_spm.sh"
+    [ -f "$ios_dir/Sources/Napaxi/NapaxiIosQemuSandboxSupport.swift" ] || err "Missing native iOS QEMU sandbox support: $ios_dir/Sources/Napaxi/NapaxiIosQemuSandboxSupport.swift"
+    check_ios_rootfs_asset "$resource_dir/alpine-rootfs.bin" "Native"
+    check_ios_rootfs_asset "$flutter_resource_dir/alpine-rootfs.bin" "Flutter"
 
-    for runtime_lib in libish.a libish_emu.a libfakefs.a libfakefsify.a libarchive.a; do
-        [ -f "$vendor_dir/lib/$runtime_lib" ] || err "Missing native iOS iSH runtime: $vendor_dir/lib/$runtime_lib. Run: ./tools/scripts/prepare_ios_ish_spm.sh"
+    for bridge_source in qemu_bridge.c qemu_bridge.h qemu_runner.c qemu_runner.h; do
+        [ -f "$qemu_source_dir/$bridge_source" ] || err "Missing native iOS QEMU bridge source: $qemu_source_dir/$bridge_source"
+        [ -f "$flutter_qemu_source_dir/$bridge_source" ] || err "Missing Flutter iOS QEMU bridge source: $flutter_qemu_source_dir/$bridge_source"
     done
+
+    for qemu_lib in \
+        libqemu-aarch64-linux-user.a \
+        libqemuutil.a \
+        libhwcore.a \
+        libqom.a \
+        libevent-loop-base.a \
+        libglib-2.0.a \
+        libpcre2-8.a \
+        libintl.a \
+        libffi.a; do
+        [ -f "$qemu_lib_dir/$qemu_lib" ] || err "Missing native iOS QEMU static library: $qemu_lib_dir/$qemu_lib"
+        [ -f "$flutter_qemu_lib_dir/$qemu_lib" ] || err "Missing Flutter iOS QEMU static library: $flutter_qemu_lib_dir/$qemu_lib"
+    done
+}
+
+check_ios_app_qemu_artifacts() {
+    local app_path="$1"
+    local rootfs_path="$app_path/Napaxi_Napaxi.bundle/Resources/alpine-rootfs.bin"
+    local binary_path="$app_path/NapaxiIOSIntegrationApp.debug.dylib"
+
+    check_ios_rootfs_asset "$rootfs_path" "Packaged app"
+
+    [ -f "$binary_path" ] || err "iOS app is missing debug dylib for QEMU symbol verification: $binary_path"
+    if ! nm -gU "$binary_path" | grep -E '(_qemu_sandbox_init|_napaxi_api_ios_qemu_is_ready)' >/dev/null; then
+        err "iOS app binary does not contain the required Napaxi iOS QEMU symbols."
+    fi
 }
 
 ensure_ios_artifacts() {
@@ -335,8 +412,76 @@ wake_android_device() {
     local serial="$2"
     "$adb" -s "$serial" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
     "$adb" -s "$serial" shell wm dismiss-keyguard >/dev/null 2>&1 || true
-    "$adb" -s "$serial" shell input keyevent 82 >/dev/null 2>&1 || true
     "$adb" -s "$serial" shell cmd statusbar collapse >/dev/null 2>&1 || true
+}
+
+
+run_android_codex_probe() {
+    local adb="$1"
+    local serial="$2"
+    local package="$3"
+    local activity="$4"
+    local dump coords probe_dump attempt
+
+    info "Running optional Android Codex Engine Probe on $serial"
+    wake_android_device "$adb" "$serial"
+    dump="$(
+        "$adb" -s "$serial" shell timeout 5 uiautomator dump /sdcard/napaxi_android_integration.xml >/dev/null 2>&1 &&
+            "$adb" -s "$serial" shell cat /sdcard/napaxi_android_integration.xml 2>/dev/null
+    )" || dump=""
+    coords="$(printf '%s' "$dump" | python3 -c '
+import re, sys, xml.etree.ElementTree as ET
+raw = sys.stdin.read()
+try:
+    root = ET.fromstring(raw)
+except Exception:
+    sys.exit(1)
+for node in root.iter("node"):
+    if node.attrib.get("text") == "Codex Engine Probe":
+        m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.attrib.get("bounds", ""))
+        if m:
+            l,t,r,b = map(int, m.groups())
+            print((l + r) // 2, (t + b) // 2)
+            sys.exit(0)
+sys.exit(1)
+' 2>/dev/null)" || coords=""
+    [ -n "$coords" ] || {
+        printf '%s\n' "$dump" >&2
+        err "Codex Engine Probe button was not found in Android integration UI."
+    }
+    # shellcheck disable=SC2086
+    "$adb" -s "$serial" shell input tap $coords >/dev/null 2>&1 || true
+
+    for attempt in $(seq 1 90); do
+        wake_android_device "$adb" "$serial"
+        probe_dump="$(
+            "$adb" -s "$serial" shell timeout 5 uiautomator dump /sdcard/napaxi_android_integration.xml >/dev/null 2>&1 &&
+                "$adb" -s "$serial" shell cat /sdcard/napaxi_android_integration.xml 2>/dev/null
+        )" || probe_dump=""
+        if printf '%s\n' "$probe_dump" | grep -q "Codex Engine Probe failed:"; then
+            printf '%s\n' "$probe_dump" >&2
+            err "Codex Engine Probe action failed before producing diagnostics."
+        fi
+        if printf '%s\n' "$probe_dump" | grep -q "codexConfigSuccess=" &&
+            printf '%s\n' "$probe_dump" | grep -q "hostApiNetwork=" &&
+            printf '%s\n' "$probe_dump" | grep -q "codexNetworkEnv=" &&
+            printf '%s\n' "$probe_dump" | grep -q "chatTimedOut="; then
+            if [ "${NAPAXI_ANDROID_INTEGRATION_EXPECT_CODEX_LIVE:-}" = "1" ]; then
+                printf '%s\n' "$probe_dump" | grep -q "codexConfigSuccess=true" || err "Codex config did not succeed."
+                printf '%s\n' "$probe_dump" | grep -q "chatTimedOut=false" || err "Codex live turn timed out."
+                printf '%s\n' "$probe_dump" | grep -q "errors=none" || err "Codex live turn reported errors."
+                printf '%s\n' "$probe_dump" | grep -q "responseChecks=fileSentinel=true, imageSentinel=true" || err "Codex live turn did not prove text-file and image attachment handling."
+                printf '%s\n' "$probe_dump" | grep -q "android_integration_ping:result" || err "Codex live turn did not return the custom dynamic tool result."
+                printf '%s\n' "$probe_dump" | grep -q "get_device_info:result" || err "Codex live turn did not return the platform device-info tool result."
+            fi
+            info "Android Codex Engine Probe produced diagnostics on $serial"
+            return
+        fi
+        sleep 1
+    done
+
+    printf '%s\n' "$probe_dump" >&2
+    err "Codex Engine Probe did not report diagnostics on device."
 }
 
 check_android_integration_device() {
@@ -378,10 +523,35 @@ check_android_integration_device() {
     "$adb" -s "$serial" shell appops set "$package" POST_NOTIFICATION allow >/dev/null 2>&1 || true
     wake_android_device "$adb" "$serial"
 
+    local start_args=(
+        -W -n "$activity"
+        --ez run_smoke true
+        --ez install_first_provider true
+    )
+    if [ -n "${NAPAXI_ANDROID_INTEGRATION_API_KEY:-}" ]; then
+        start_args+=(--es napaxi_api_key "$NAPAXI_ANDROID_INTEGRATION_API_KEY")
+    fi
+    if [ -n "${NAPAXI_ANDROID_INTEGRATION_BASE_URL:-}" ]; then
+        start_args+=(--es napaxi_base_url "$NAPAXI_ANDROID_INTEGRATION_BASE_URL")
+    fi
+    if [ -n "${NAPAXI_ANDROID_INTEGRATION_MODEL:-}" ]; then
+        start_args+=(--es napaxi_model "$NAPAXI_ANDROID_INTEGRATION_MODEL")
+    fi
+    if [ -n "${NAPAXI_ANDROID_INTEGRATION_HTTPS_PROXY:-}" ]; then
+        start_args+=(--es napaxi_https_proxy "$NAPAXI_ANDROID_INTEGRATION_HTTPS_PROXY")
+    fi
+    if [ -n "${NAPAXI_ANDROID_INTEGRATION_HTTP_PROXY:-}" ]; then
+        start_args+=(--es napaxi_http_proxy "$NAPAXI_ANDROID_INTEGRATION_HTTP_PROXY")
+    fi
+    if [ -n "${NAPAXI_ANDROID_INTEGRATION_ALL_PROXY:-}" ]; then
+        start_args+=(--es napaxi_all_proxy "$NAPAXI_ANDROID_INTEGRATION_ALL_PROXY")
+    fi
+    if [ -n "${NAPAXI_ANDROID_INTEGRATION_NO_PROXY:-}" ]; then
+        start_args+=(--es napaxi_no_proxy "$NAPAXI_ANDROID_INTEGRATION_NO_PROXY")
+    fi
+
     info "Starting Android integration app on device $serial"
-    start_output="$("$adb" -s "$serial" shell am start -W -n "$activity" \
-        --ez run_smoke true \
-        --ez install_first_provider true 2>&1)"
+    start_output="$("$adb" -s "$serial" shell am start "${start_args[@]}" 2>&1)"
     printf '%s\n' "$start_output" | grep -Eq "Status: ok|Complete" || {
         printf '%s\n' "$start_output" >&2
         err "Android integration Activity did not start cleanly."
@@ -408,6 +578,9 @@ check_android_integration_device() {
         fi
         if printf '%s\n' "$smoke_dump" | grep -Eq 'package="com\.(google\.)?android\.permissioncontroller"|text="允许"|text="Allow"'; then
             "$adb" -s "$serial" shell input tap 900 1700 >/dev/null 2>&1 || true
+        elif ! printf '%s\n' "$smoke_dump" | grep -q "package=\"$package\""; then
+            "$adb" -s "$serial" shell am start -n "$activity" >/dev/null 2>&1 || true
+            sleep 1
         fi
         if printf '%s\n' "$smoke_dump" | grep -q "tools=" &&
             printf '%s\n' "$smoke_dump" | grep -q "providers=" &&
@@ -425,6 +598,9 @@ check_android_integration_device() {
                     ;;
             esac
             info "Android integration smoke completed on $serial (pid=$pid)"
+            if [ "${NAPAXI_ANDROID_INTEGRATION_RUN_CODEX_PROBE:-}" = "1" ]; then
+                run_android_codex_probe "$adb" "$serial" "$package" "$activity"
+            fi
             return
         fi
         sleep 1
@@ -490,6 +666,7 @@ check_ios_app_integration() {
     ensure_ios_artifacts
     require_command xcodebuild
     require_command grep
+    require_command nm
     check_ios_app_smoke_report_validator
 
     cd "$ROOT_DIR/examples/integration/ios/app"
@@ -504,6 +681,8 @@ check_ios_app_integration() {
         ARCHS=arm64 \
         ONLY_ACTIVE_ARCH=YES \
         build
+
+    check_ios_app_qemu_artifacts "$ROOT_DIR/examples/integration/ios/app/DerivedData/Build/Products/Debug-iphoneos/NapaxiIOSIntegrationApp.app"
 }
 
 ios_device_id() {
@@ -655,6 +834,22 @@ check_ios_app_smoke_report() {
         sed 's/^/[SMOKE] /' "$report_path" >&2
         err "iOS integration app did not report bundled rootfs availability."
     fi
+    if ! grep -q '^rootfsRegistered=true$' "$report_path"; then
+        sed 's/^/[SMOKE] /' "$report_path" >&2
+        err "iOS integration app did not register the bundled rootfs with the QEMU backend."
+    fi
+    if ! grep -q '^qemuRuntime=true$' "$report_path"; then
+        sed 's/^/[SMOKE] /' "$report_path" >&2
+        err "iOS integration app did not report the QEMU runtime as linked."
+    fi
+    if ! grep -q '^qemuReady=true$' "$report_path"; then
+        sed 's/^/[SMOKE] /' "$report_path" >&2
+        err "iOS integration app did not initialize the QEMU sandbox."
+    fi
+    if ! grep -q '^qemuShell=isError=false; output=napaxi-ios-qemu-smoke' "$report_path"; then
+        sed 's/^/[SMOKE] /' "$report_path" >&2
+        err "iOS integration app did not execute the shell tool through the QEMU sandbox."
+    fi
 }
 
 check_ios_app_smoke_report_validator() {
@@ -670,8 +865,12 @@ check_ios_app_smoke_report_validator() {
         "token=$token" \
         "engineHandle=42" \
         "filesDir=/tmp/napaxi-ios-app-integration" \
-        "enabled=napaxi.tool.custom_host,napaxi.platform_tool.open_url" \
-        "rootfs=true" > "$good_report"
+        "enabled=napaxi.tool.custom_host,napaxi.tool.shell,napaxi.agent_engine.codex,napaxi.platform.ios_qemu,napaxi.platform_tool.open_url" \
+        "rootfs=true" \
+        "rootfsRegistered=true" \
+        "qemuRuntime=true" \
+        "qemuReady=true" \
+        "qemuShell=isError=false; output=napaxi-ios-qemu-smoke" > "$good_report"
     check_ios_app_smoke_report "$good_report" "$token"
 
     printf '%s\n' \
@@ -712,13 +911,14 @@ check_ios_app_device_smoke() {
     require_command xcodebuild
     require_command xcrun
     require_command grep
+    require_command nm
 
-    local bundle_id="dev.napaxi.integration.iosapp"
+    local bundle_id="${IOS_BUNDLE_IDENTIFIER:-dev.napaxi.integration.iosapp}"
     local device_id
     device_id="$(ios_device_id)"
 
-    if [ -z "${IOS_DEVELOPMENT_TEAM:-}" ]; then
-        err "IOS_DEVELOPMENT_TEAM is required for the signed iOS app device smoke. Set IOS_DEVELOPMENT_TEAM, and set IOS_ALLOW_PROVISIONING_UPDATES=1 if Xcode should create/update profiles."
+    if [ -z "${IOS_DEVELOPMENT_TEAM:-}" ] && [ -z "${IOS_PROVISIONING_PROFILE_SPECIFIER:-}" ] && [ -z "${IOS_PROVISIONING_PROFILE_UUID:-}" ]; then
+        err "Signed iOS app device smoke requires signing inputs. Set IOS_DEVELOPMENT_TEAM for automatic signing, or set IOS_PROVISIONING_PROFILE_SPECIFIER/IOS_PROVISIONING_PROFILE_UUID for an existing development profile."
     fi
 
     check_ios_device_signing_ready
@@ -740,9 +940,23 @@ check_ios_app_device_smoke() {
         CODE_SIGNING_REQUIRED=YES
         ARCHS=arm64
         ONLY_ACTIVE_ARCH=YES
+        PRODUCT_BUNDLE_IDENTIFIER="$bundle_id"
     )
 
-    signing_args+=(DEVELOPMENT_TEAM="$IOS_DEVELOPMENT_TEAM")
+    if [ -n "${IOS_DEVELOPMENT_TEAM:-}" ]; then
+        signing_args+=(DEVELOPMENT_TEAM="$IOS_DEVELOPMENT_TEAM")
+    fi
+    if [ -n "${IOS_PROVISIONING_PROFILE_SPECIFIER:-}" ]; then
+        signing_args+=(CODE_SIGN_STYLE=Manual)
+        signing_args+=(PROVISIONING_PROFILE_SPECIFIER="$IOS_PROVISIONING_PROFILE_SPECIFIER")
+    fi
+    if [ -n "${IOS_PROVISIONING_PROFILE_UUID:-}" ]; then
+        signing_args+=(CODE_SIGN_STYLE=Manual)
+        signing_args+=(PROVISIONING_PROFILE="$IOS_PROVISIONING_PROFILE_UUID")
+    fi
+    if [ -n "${IOS_CODE_SIGN_IDENTITY:-}" ]; then
+        signing_args+=(CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY")
+    fi
 
     if [ "${IOS_ALLOW_PROVISIONING_UPDATES:-0}" = "1" ]; then
         xcodebuild_args+=(-allowProvisioningUpdates)
@@ -753,10 +967,11 @@ check_ios_app_device_smoke() {
         "${xcodebuild_args[@]}" \
         "${signing_args[@]}" \
         build; then
-        err "Signed iOS app build failed. Set IOS_DEVELOPMENT_TEAM, and IOS_ALLOW_PROVISIONING_UPDATES=1 if Xcode should create/update profiles."
+        err "Signed iOS app build failed. Set IOS_DEVELOPMENT_TEAM for automatic signing, or IOS_PROVISIONING_PROFILE_SPECIFIER/IOS_PROVISIONING_PROFILE_UUID plus optional IOS_CODE_SIGN_IDENTITY for manual signing. Optionally set IOS_BUNDLE_IDENTIFIER, and IOS_ALLOW_PROVISIONING_UPDATES=1 if Xcode should create/update profiles."
     fi
 
     [ -d "$app_path" ] || err "Signed iOS app build did not produce $app_path"
+    check_ios_app_qemu_artifacts "$app_path"
 
     local smoke_dir token install_json launch_json copy_json report_path
     mkdir -p "$ROOT_DIR/target"
@@ -780,6 +995,7 @@ check_ios_app_device_smoke() {
         --terminate-existing \
         --timeout 60 \
         --json-output "$launch_json" \
+        --environment-variables "{\"NAPAXI_SMOKE_TOKEN\":\"$token\"}" \
         "$bundle_id" \
         --napaxi-smoke-token "$token"
 
@@ -794,7 +1010,9 @@ check_ios_app_device_smoke() {
             --timeout 30 \
             --json-output "$copy_json" \
             --quiet; then
-            [ -f "$report_path" ] && break
+            if [ -f "$report_path" ] && grep -q "^token=$token$" "$report_path"; then
+                break
+            fi
         fi
         sleep 1
     done
@@ -826,7 +1044,7 @@ check_core_api_boundary() {
     require_command rg
     cd "$ROOT_DIR"
 
-    if rg -n "napaxi_core::(mobile_|android_assets|android_linux_env|ios_ish_env)" packages \
+    if rg -n "napaxi_core::(mobile_|android_assets|android_linux_env|ios_qemu_env)" packages \
         --glob '!packages/flutter/lib/generated/**' \
         --glob '!packages/api_bridge/generated/frb_generated.rs' \
         --glob '!**/build/**' \
@@ -956,6 +1174,7 @@ check_source_file_size() {
     local offenders=""
     local file lines
     while IFS= read -r file; do
+        [ -f "$file" ] || continue
         lines=$(wc -l < "$file" | tr -d ' ')
         if [ "$lines" -gt "$max_lines" ]; then
             offenders="${offenders}  ${lines}\t${file}\n"
@@ -975,6 +1194,7 @@ check_source_file_size() {
     info "Checking non-Rust SDK source file size advisory"
     local non_rs_offenders=""
     while IFS= read -r file; do
+        [ -f "$file" ] || continue
         lines=$(wc -l < "$file" | tr -d ' ')
         if [ "$lines" -gt "$max_lines" ]; then
             non_rs_offenders="${non_rs_offenders}  ${lines}\t${file}\n"

@@ -10,6 +10,16 @@ import java.time.Instant
 
 class AgentProviderHostProtocolTest {
     @Test
+    fun providerSelectionEncodesOneTurnCanonicalMarker() {
+        val selection = AgentProviderSelection(providerId = "demo.notes")
+
+        assertEquals(
+            "@{provider:demo.notes} create a note",
+            selection.applyToMessage("  create a note"),
+        )
+    }
+
+    @Test
     fun providerProtocolAliasesExposeSdkModelsFromAndroidPackage() {
         val action = AgentAction(
             actionId = "pay",
@@ -126,6 +136,9 @@ class AgentProviderHostProtocolTest {
             installActivityName = "provider.app.InstallActivity",
             displayName = "Provider",
             signingCertSha256 = "abc",
+            packageVersionCode = 7,
+            packageLastUpdateTimeMs = 123456L,
+            trustedRefreshSupported = true,
             installUrl = "napaxi-provider://install",
             actionUrl = "napaxi-provider://action",
             universalLinkDomain = "example.test",
@@ -156,12 +169,17 @@ class AgentProviderHostProtocolTest {
         assertEquals("provider.app.InstallActivity", stableJson.getString("installActivityName"))
         assertEquals("provider.app.ActionActivity", stableJson.getString("activityName"))
         assertEquals("Provider", stableJson.getString("label"))
+        assertEquals(7L, stableJson.getLong("packageVersionCode"))
+        assertEquals(123456L, stableJson.getLong("packageLastUpdateTimeMs"))
+        assertEquals(true, stableJson.getBoolean("trustedRefreshSupported"))
         assertEquals(false, stableJson.has("package_name"))
         assertEquals(false, stableJson.has("display_name"))
         assertEquals("provider.app", aliasedJson.getString("package_name"))
         assertEquals("Provider", aliasedJson.getString("display_name"))
         assertEquals("ios", fromCamel.platform)
         assertEquals("napaxi-provider://action", fromCamel.actionUrl)
+        assertEquals(7L, fromCamel.packageVersionCode)
+        assertEquals(true, fromCamel.trustedRefreshSupported)
         assertEquals("provider.app.InstallActivity", fromSnake.installActivityName)
         assertEquals("Provider", fromSnake.displayName)
         assertEquals("provider.map", fromMap.packageName)

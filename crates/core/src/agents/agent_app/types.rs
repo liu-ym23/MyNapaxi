@@ -5,8 +5,9 @@
 //! internal `*Record` types that the persistence layer round-trips.
 
 use chrono::{SecondsFormat, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 use super::{DEFAULT_CONFIRMATION_POLICY, DEFAULT_RISK, DEFAULT_TIMEOUT_SECONDS};
 
@@ -27,6 +28,15 @@ pub struct AgentAppPackage {
     pub result: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_binding: Option<AgentAppInstallBinding>,
+    /// Host-owned preference. Provider manifests cannot enable this field.
+    #[serde(default)]
+    pub auto_invoke_enabled: bool,
+    /// Host-owned usage timestamp used to rank explicit provider suggestions.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_used_at: String,
+    /// Host-owned usage count for explicit selections and actual invocations.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub use_count: u64,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -39,6 +49,15 @@ pub struct AgentAppInstallBinding {
     pub app_package_name: String,
     pub activity_name: String,
     pub signing_cert_sha256: String,
+    /// Android package version observed during the trusted handshake.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub app_version_code: u64,
+    /// Android package update timestamp observed during the trusted handshake.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub app_last_update_time_ms: u64,
+    /// Whether this provider explicitly allows a same-identity silent refresh.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub trusted_refresh_supported: bool,
     pub installed_at: String,
     pub install_request_id: String,
     pub protocol_version: u32,
@@ -77,6 +96,12 @@ pub struct AgentAppActionManifest {
     pub action_id: String,
     pub tool_name: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub localized_display_names: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub localized_descriptions: BTreeMap<String, String>,
     #[serde(default = "default_parameters")]
     pub parameters: Value,
     #[serde(default = "default_result_schema")]
@@ -123,13 +148,47 @@ pub struct ActionResult {
     pub status: String,
     #[serde(default)]
     pub result: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_action_error"
+    )]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_trace_id: Option<String>,
     pub completed_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+}
+
+fn deserialize_optional_action_error<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(Value::Null) => None,
+        Some(Value::String(message)) => Some(message),
+        Some(Value::Object(error)) => {
+            let code = error
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            Some(match (code.is_empty(), message.is_empty()) {
+                (false, false) => format!("{code}: {message}"),
+                (false, true) => code.to_string(),
+                (true, false) => message.to_string(),
+                (true, true) => Value::Object(error).to_string(),
+            })
+        }
+        Some(other) => Some(other.to_string()),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -202,6 +261,10 @@ fn default_timeout_seconds() -> u64 {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 pub(super) fn now() -> String {

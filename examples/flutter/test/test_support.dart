@@ -62,6 +62,9 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
     this.scenarioStatuses = const [],
     this.scenarioResolution,
     this.agents = const [],
+    this.discoveredAgentProviders = const [],
+    List<sdk.AgentAppPackage> connectedApps = const [],
+    Map<String, sdk.AgentAppDiagnosticsSnapshot> agentAppDiagnostics = const {},
     this.skills = const [],
     this.skillStatusReport,
     this.skillUsage = const [],
@@ -73,7 +76,14 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
     this.supportsBackgroundExecution = true,
     this.backgroundPermissionGranted = true,
     this.codexSyncResult,
-  }) : pendingEvolution = List<Map<String, dynamic>>.from(pendingEvolution);
+    this.answerHumanRequestResult,
+    Set<String> inactiveSessionThreadIds = const {},
+  }) : connectedApps = List<sdk.AgentAppPackage>.from(connectedApps),
+       agentAppDiagnostics = Map<String, sdk.AgentAppDiagnosticsSnapshot>.from(
+         agentAppDiagnostics,
+       ),
+       pendingEvolution = List<Map<String, dynamic>>.from(pendingEvolution),
+       inactiveSessionThreadIds = Set<String>.from(inactiveSessionThreadIds);
 
   final List<sdk.ChatEvent>? events;
   final Stream<sdk.ChatEvent>? eventStream;
@@ -101,6 +111,9 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
   final List<sdk.NapaxiScenarioStatus> scenarioStatuses;
   final sdk.NapaxiScenarioResolution? scenarioResolution;
   final List<DemoAgent> agents;
+  final List<sdk.AgentProviderDescriptor> discoveredAgentProviders;
+  final List<sdk.AgentAppPackage> connectedApps;
+  final Map<String, sdk.AgentAppDiagnosticsSnapshot> agentAppDiagnostics;
   List<sdk.SkillInfo> skills;
   final sdk.SkillStatusReport? skillStatusReport;
   final List<sdk.SkillUsageRecord> skillUsage;
@@ -113,11 +126,14 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
   final bool supportsBackgroundExecution;
   bool backgroundPermissionGranted;
   final sdk.CodexAgentEngineConfigResult? codexSyncResult;
+  final Future<bool>? answerHumanRequestResult;
+  final Set<String> inactiveSessionThreadIds;
   LlmModelProfile? configuredProfile;
   String configuredResponseLanguage = 'en';
   sdk.NapaxiCapabilitySelection? configuredCapabilitySelection;
   sdk.NapaxiCapabilitySelection? appliedCapabilitySelection;
   sdk.SessionKey? canceledSession;
+  final List<sdk.SessionKey> sentSessions = [];
   String? canceledAgentId;
   sdk.SessionKey? deletedSession;
   String? deletedAgentId;
@@ -303,7 +319,96 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
 
   @override
   Future<List<sdk.AgentProviderDescriptor>> discoverAgentProviders() async {
-    return const [];
+    return discoveredAgentProviders;
+  }
+
+  @override
+  Future<List<sdk.AgentAppPackage>> listConnectedApps() async {
+    return List.unmodifiable(connectedApps);
+  }
+
+  @override
+  Future<sdk.AgentAppPackage> enableAgentProvider(
+    sdk.AgentProviderDescriptor provider,
+  ) async {
+    final package = sdk.AgentAppPackage(
+      providerId: provider.packageName,
+      agentId: provider.packageName,
+      displayName: provider.label.isEmpty
+          ? provider.packageName
+          : provider.label,
+      installBinding: sdk.AgentAppInstallBinding(
+        platform: provider.platform,
+        appPackageName: provider.packageName,
+        activityName: provider.activityName,
+        signingCertSha256: provider.signingCertSha256,
+        installedAt: DateTime.now().toUtc().toIso8601String(),
+        installRequestId: 'fake-install',
+        protocolVersion: 2,
+      ),
+    );
+    connectedApps
+      ..removeWhere((item) => item.providerId == package.providerId)
+      ..add(package);
+    return package;
+  }
+
+  @override
+  Future<bool> disableConnectedApp(String providerId) async {
+    final before = connectedApps.length;
+    connectedApps.removeWhere((item) => item.providerId == providerId);
+    return connectedApps.length != before;
+  }
+
+  @override
+  Future<sdk.AgentAppPackage> repairConnectedApp(String providerId) async {
+    return connectedApps.firstWhere(
+      (package) => package.providerId == providerId,
+      orElse: () => throw StateError('Agent App not found: $providerId'),
+    );
+  }
+
+  @override
+  Future<sdk.AgentAppPackage> setConnectedAppAutoInvoke(
+    String providerId,
+    bool enabled,
+  ) async {
+    final index = connectedApps.indexWhere(
+      (package) => package.providerId == providerId,
+    );
+    if (index < 0) throw StateError('Agent App not found: $providerId');
+    final updated = sdk.AgentAppPackage.fromMap({
+      ...connectedApps[index].toJson(),
+      'auto_invoke_enabled': enabled,
+    });
+    connectedApps[index] = updated;
+    return updated;
+  }
+
+  @override
+  Future<sdk.AgentAppDiagnosticsSnapshot> listConnectedAppDiagnostics(
+    String providerId,
+  ) async {
+    return agentAppDiagnostics[providerId] ??
+        const sdk.AgentAppDiagnosticsSnapshot(supported: false);
+  }
+
+  @override
+  Future<sdk.AgentAppDiagnosticsSnapshot> setConnectedAppDetailedDiagnostics(
+    String providerId,
+    bool enabled,
+  ) async {
+    final current = await listConnectedAppDiagnostics(providerId);
+    if (!current.supported) return current;
+    final updated = sdk.AgentAppDiagnosticsSnapshot(
+      supported: true,
+      reports: current.reports,
+      logs: current.logs,
+      detailedLoggingEnabled: enabled,
+      error: current.error,
+    );
+    agentAppDiagnostics[providerId] = updated;
+    return updated;
   }
 
   @override
@@ -535,6 +640,56 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
   }
 
   @override
+  Future<sdk.NapaxiProject> registerProject({
+    required String projectId,
+    required String agentId,
+    required String name,
+  }) async {
+    final now = DateTime.now();
+    return sdk.NapaxiProject(
+      id: projectId,
+      accountId: 'test_user',
+      agentId: agentId,
+      name: name,
+      defaultWorkspaceId: 'workspace-$projectId',
+      state: 'active',
+      createdAt: now,
+      updatedAt: now,
+    );
+  }
+
+  @override
+  Future<bool> archiveProject(
+    String projectId, {
+    required String agentId,
+  }) async => true;
+
+  @override
+  Future<List<sdk.NapaxiSessionPlacement>> listSessionPlacements({
+    required String agentId,
+  }) async => const [];
+
+  @override
+  Future<sdk.NapaxiSessionPlacement> moveSessionToProject(
+    sdk.SessionKey session, {
+    required String? projectId,
+    required sdk.NapaxiWorkspacePolicy workspacePolicy,
+    int? expectedRevision,
+  }) async {
+    return sdk.NapaxiSessionPlacement(
+      threadId: session.threadId,
+      projectId: projectId,
+      runtimeWorkspaceId: projectId == null
+          ? 'workspace-personal'
+          : 'workspace-$projectId',
+      workingDirectory: null,
+      revision: (expectedRevision ?? 0) + 1,
+      projectEnteredAt: projectId == null ? null : DateTime.now(),
+      workspaceUpdatedAt: DateTime.now(),
+    );
+  }
+
+  @override
   Stream<sdk.ChatEvent> sendToSession(
     sdk.SessionKey session,
     String message, {
@@ -544,6 +699,7 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
     void Function(String nativeThreadId)? onNativeThreadId,
   }) {
     lastMaxIterations = maxIterations;
+    sentSessions.add(session);
     sentThreadIds.add(session.threadId);
     sentMessages.add(message);
     final threadStream = eventStreamsByThreadId[session.threadId];
@@ -563,6 +719,11 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
         content: 'Fake SDK reply from ${configuredProfile?.model}: $message',
       ),
     );
+  }
+
+  @override
+  bool hasActiveSessionRun(sdk.SessionKey session, {required String agentId}) {
+    return !inactiveSessionThreadIds.contains(session.threadId);
   }
 
   Future<String?> importAttachmentToWorkspace(
@@ -623,7 +784,7 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
   Future<bool> answerHumanRequest(String requestId, String response) async {
     answeredHumanRequestId = requestId;
     answeredHumanResponse = response;
-    return true;
+    return await (answerHumanRequestResult ?? Future<bool>.value(true));
   }
 
   @override
@@ -824,6 +985,7 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
   @override
   Future<List<sdk.WorkspaceFileInfo>> listSandboxWorkspaceFiles({
     required String agentId,
+    String? projectId,
     String? subdir,
     bool recursive = true,
   }) async {

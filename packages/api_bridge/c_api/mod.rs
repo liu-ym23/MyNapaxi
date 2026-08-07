@@ -291,17 +291,17 @@ pub extern "C" fn napaxi_api_clear_tool_request_callback() {
 
 #[unsafe(no_mangle)]
 #[cfg(target_os = "ios")]
-pub extern "C" fn napaxi_api_ios_ish_register_rootfs_archive_path(path: *const c_char) {
+pub extern "C" fn napaxi_api_ios_qemu_register_rootfs_archive_path(path: *const c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        napaxi_core::api::platform::register_ios_ish_rootfs_archive_path(&cstr(path));
+        napaxi_core::api::platform::register_ios_qemu_rootfs_archive_path(&cstr(path));
     }));
 }
 
 #[unsafe(no_mangle)]
 #[cfg(target_os = "ios")]
-pub extern "C" fn napaxi_api_ios_ish_is_ready(files_dir: *const c_char) -> bool {
+pub extern "C" fn napaxi_api_ios_qemu_is_ready(files_dir: *const c_char) -> bool {
     catch_unwind(AssertUnwindSafe(|| {
-        napaxi_core::api::platform::ios_ish_is_ready(&cstr(files_dir))
+        napaxi_core::api::platform::ios_qemu_is_ready(&cstr(files_dir))
     }))
     .unwrap_or(false)
 }
@@ -473,6 +473,7 @@ fn android_bridge_alias<'a>(namespace: &'a str, method: &'a str) -> (&'a str, &'
         ("agent_app", "list") => ("agent_app", "list_packages"),
         ("agent_app", "get") => ("agent_app", "get_package"),
         ("agent_app", "delete") => ("agent_app", "delete_package"),
+        ("agent_app", "set_auto_invoke") => ("agent_app", "set_auto_invoke"),
         ("agent_app", "submit_result") => ("agent_app", "submit_action_result"),
         ("a2a", "agent_card") => ("a2a", "agent_card"),
         ("a2a", "create_peer_invite") => ("a2a", "create_peer_invite"),
@@ -525,10 +526,12 @@ fn android_bridge_alias<'a>(namespace: &'a str, method: &'a str) -> (&'a str, &'
 }
 
 mod a2a_dispatch;
+mod agent_engine_dispatch;
 mod channel_agent_dispatch;
 mod channel_dispatch;
 mod channel_qqbot_dispatch;
 mod dispatch;
+mod project_dispatch;
 mod tools_dispatch;
 use dispatch::dispatch;
 
@@ -767,13 +770,13 @@ mod tests {
         ));
     }
 
-    // The `napaxi_api_ios_ish_*` FFI entrypoints are `#[cfg(target_os = "ios")]`
+    // The `napaxi_api_ios_qemu_*` FFI entrypoints are `#[cfg(target_os = "ios")]`
     // only, so this test can only compile and run on an iOS target.
     #[test]
     #[cfg(target_os = "ios")]
-    fn ios_ish_readiness_is_false_without_ios_runtime() {
-        napaxi_api_ios_ish_register_rootfs_archive_path(std::ptr::null());
-        assert!(!napaxi_api_ios_ish_is_ready(std::ptr::null()));
+    fn ios_qemu_readiness_is_false_without_registered_rootfs() {
+        napaxi_api_ios_qemu_register_rootfs_archive_path(std::ptr::null());
+        assert!(!napaxi_api_ios_qemu_is_ready(std::ptr::null()));
     }
 
     // ------------------------------------------------------------------
@@ -923,6 +926,35 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["ok"], true);
         assert!(parsed["value"].is_array());
+    }
+
+    #[test]
+    fn call_json_accepts_mobile_platform_tool_aliases() {
+        let namespace = CString::new("tools").unwrap();
+        let descriptors = CString::new(concat!("mobile_", "platform_tool_descriptors")).unwrap();
+        let payload = CString::new("{}").unwrap();
+        let ptr = napaxi_api_call_json(
+            0,
+            namespace.as_ptr(),
+            descriptors.as_ptr(),
+            payload.as_ptr(),
+        );
+        let out = roundtrip_owned(ptr);
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["ok"], true);
+        assert!(
+            parsed["value"]
+                .as_array()
+                .is_some_and(|value| { value.iter().any(|tool| tool["name"] == "open_url") })
+        );
+
+        let is_tool = CString::new(concat!("is_", "mobile_", "platform_tool")).unwrap();
+        let payload = CString::new(r#"{"name":"open_url"}"#).unwrap();
+        let ptr = napaxi_api_call_json(0, namespace.as_ptr(), is_tool.as_ptr(), payload.as_ptr());
+        let out = roundtrip_owned(ptr);
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["value"], true);
     }
 
     #[test]

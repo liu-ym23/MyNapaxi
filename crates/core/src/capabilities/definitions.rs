@@ -32,8 +32,23 @@ pub fn definitions() -> Vec<CapabilityDefinition> {
             CapabilityRisk::High,
             CapabilityActivation::Host,
             false,
-            &["android_linux_sandbox_pty", "codex_app_server"],
+            &["android_linux_sandbox_pty_or_ios_qemu", "codex_app_server"],
         ),
+        CapabilityDefinition {
+            id: "napaxi.platform.ios_qemu".to_string(),
+            kind: CapabilityKind::Service,
+            version: VERSION_1.to_string(),
+            platforms: vec!["ios".to_string()],
+            config_schema: empty_schema(),
+            risk: CapabilityRisk::Critical,
+            requirements: vec![
+                "ios_qemu_runtime".to_string(),
+                "alpine-rootfs.bin".to_string(),
+                "sandbox_policy_gate".to_string(),
+            ],
+            default_enabled: false,
+            activation: CapabilityActivation::Host,
+        },
         llm_provider_definition(
             "napaxi.llm.openai",
             "openai",
@@ -259,6 +274,18 @@ pub fn definitions() -> Vec<CapabilityDefinition> {
             &["capability_resolver", "scenario_pack_registry"],
         ),
         tool_definition(
+            "napaxi.workspace.project",
+            CapabilityKind::Service,
+            CapabilityRisk::Medium,
+            CapabilityActivation::Always,
+            true,
+            &[
+                "libsql_session_placement",
+                "turn_workspace_snapshot",
+                "project_file_listing",
+            ],
+        ),
+        tool_definition(
             "napaxi.service.developer_workbench",
             CapabilityKind::Service,
             CapabilityRisk::High,
@@ -453,6 +480,7 @@ fn platform_tool_definitions() -> Vec<CapabilityDefinition> {
 }
 
 pub(crate) fn platform_tool_capability_id(tool_name: &str) -> String {
+    let tool_name = crate::platform_capabilities::normalize_platform_tool_name(tool_name);
     format!("napaxi.platform_tool.{tool_name}")
 }
 

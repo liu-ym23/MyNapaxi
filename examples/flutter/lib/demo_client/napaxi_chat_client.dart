@@ -730,6 +730,30 @@ abstract class NapaxiChatClient {
 
   Future<List<sdk.AgentProviderDescriptor>> discoverAgentProviders();
 
+  Future<List<sdk.AgentAppPackage>> listConnectedApps();
+
+  Future<sdk.AgentAppPackage> enableAgentProvider(
+    sdk.AgentProviderDescriptor provider,
+  );
+
+  Future<bool> disableConnectedApp(String providerId);
+
+  Future<sdk.AgentAppPackage> repairConnectedApp(String providerId);
+
+  Future<sdk.AgentAppPackage> setConnectedAppAutoInvoke(
+    String providerId,
+    bool enabled,
+  );
+
+  Future<sdk.AgentAppDiagnosticsSnapshot> listConnectedAppDiagnostics(
+    String providerId,
+  );
+
+  Future<sdk.AgentAppDiagnosticsSnapshot> setConnectedAppDetailedDiagnostics(
+    String providerId,
+    bool enabled,
+  );
+
   Future<DemoAgent> installAgentProvider(sdk.AgentProviderDescriptor provider);
 
   Future<DemoAgent?> installPendingAgentProvider();
@@ -793,6 +817,26 @@ abstract class NapaxiChatClient {
     required String agentId,
   });
 
+  Future<sdk.NapaxiProject> registerProject({
+    required String projectId,
+    required String agentId,
+    required String name,
+  }) => throw UnsupportedError('Project placement is unavailable');
+
+  Future<bool> archiveProject(String projectId, {required String agentId}) =>
+      Future.value(false);
+
+  Future<List<sdk.NapaxiSessionPlacement>> listSessionPlacements({
+    required String agentId,
+  }) => Future.value(const []);
+
+  Future<sdk.NapaxiSessionPlacement> moveSessionToProject(
+    sdk.SessionKey session, {
+    required String? projectId,
+    required sdk.NapaxiWorkspacePolicy workspacePolicy,
+    int? expectedRevision,
+  }) => throw UnsupportedError('Project placement is unavailable');
+
   Stream<sdk.ChatEvent> sendToSession(
     sdk.SessionKey session,
     String message, {
@@ -801,6 +845,13 @@ abstract class NapaxiChatClient {
     int maxIterations = 0,
     void Function(String nativeThreadId)? onNativeThreadId,
   });
+
+  /// Whether the SDK still owns a non-terminal run for this session.
+  ///
+  /// The chat UI uses this after returning from external Android surfaces such
+  /// as the package installer so a missed local stream terminal event cannot
+  /// leave the composer stuck in its running state forever.
+  bool hasActiveSessionRun(sdk.SessionKey session, {required String agentId});
 
   Future<bool> cancelSession(sdk.SessionKey session, {required String agentId});
 
@@ -897,6 +948,7 @@ abstract class NapaxiChatClient {
 
   Future<List<sdk.WorkspaceFileInfo>> listSandboxWorkspaceFiles({
     required String agentId,
+    String? projectId,
     String? subdir,
     bool recursive = true,
   });
@@ -1230,8 +1282,10 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
   NapaxiSdkChatClient();
 
   static final sdk.A2AApi _a2aStatelessHelper = sdk.A2AApi(() => 0);
+  static const _legacyMockAgentAppProviderId = 'demo_provider';
 
   sdk.NapaxiEngine? _engine;
+  Future<List<sdk.AgentAppPackage>>? _connectedAppReconcileFuture;
   sdk.NapaxiCapabilitySelection _activeCapabilitySelection =
       _withDemoBaselineCapabilities(const sdk.NapaxiCapabilitySelection());
   Future<sdk.NapaxiCapabilityProfile>? _demoCapabilityProfileFuture;
@@ -1253,7 +1307,6 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
   }
 
   final Set<String> _memorySeededAgents = {};
-  bool _mockAgentAppRegistered = false;
   final Map<String, sdk.QqBotChannelProvider> _demoQqChannelProviders = {};
   final Map<String, sdk.NapaxiChannelAgentBridge> _demoQqChannelBridges = {};
   final Map<String, StreamSubscription<DemoChannelBridgeEvent>>
@@ -1507,7 +1560,7 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
         owner: this,
       );
       await _ensureRuntimeAgent(engine);
-      _registerMockAgentApp(engine);
+      engine.agentApp.deletePackage(_legacyMockAgentAppProviderId);
       _syncScenarioTools(engine);
       if (autoConnectChannels) {
         unawaited(_autoConnectConfiguredDemoQqChannel(engine));
@@ -1526,10 +1579,18 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
       ),
       agentAppActionExecutor: _DemoAgentAppActionExecutor(
         androidExecutor: Platform.isAndroid
-            ? sdk.AndroidAgentProviderActionExecutor()
+            ? sdk.AndroidAgentProviderActionExecutor(
+                repairBinding: _DemoAgentProviderBindingRepair(
+                  _restoreAgentProviderBinding,
+                ),
+              )
             : null,
         iosExecutor: Platform.isIOS
-            ? sdk.IosAgentProviderActionExecutor()
+            ? sdk.IosAgentProviderActionExecutor(
+                repairBinding: _DemoAgentProviderBindingRepair(
+                  _restoreAgentProviderBinding,
+                ),
+              )
             : null,
       ),
       browserController: browserController,
@@ -1545,7 +1606,7 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
       owner: this,
     );
     await _ensureRuntimeAgent(createdEngine);
-    _registerMockAgentApp(createdEngine);
+    createdEngine.agentApp.deletePackage(_legacyMockAgentAppProviderId);
     createdEngine.startToolRequestListener();
     _syncScenarioTools(createdEngine);
     _engine = createdEngine;
@@ -1645,61 +1706,171 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     }
   }
 
-  void _registerMockAgentApp(sdk.NapaxiEngine engine) {
-    if (_mockAgentAppRegistered) return;
-    engine.agentApp.registerPackage(
-      const sdk.AgentAppPackage(
-        providerId: 'demo_provider',
-        agentId: 'demo.agent_app',
-        displayName: 'Demo Agent App',
-        description: 'Mock provider-backed Agent for validating action flow.',
-        systemPrompt:
-            'You are a demo provider-backed Agent. Use app_action_demo_order_create when the user asks to create or confirm an order.',
-        actions: [
-          sdk.AgentAppActionManifest(
-            actionId: 'demo.order.create',
-            toolName: 'app_action_demo_order_create',
-            description: 'Create a mock order proposal in the demo provider.',
-            parameters: {
-              'type': 'object',
-              'properties': {
-                'item': {'type': 'string'},
-                'amount': {'type': 'number'},
-              },
-              'required': ['item'],
-            },
-            resultSchema: {'type': 'object'},
-            risk: 'high',
-            confirmationPolicy: 'provider_required',
-            executionModes: ['app_handoff'],
-            timeoutSeconds: 600,
-          ),
-        ],
-        handoff: {'mode': 'app_handoff', 'demo': true},
-        result: {'mode': 'immediate_mock'},
-      ),
-    );
-    _mockAgentAppRegistered = true;
+  @override
+  Future<List<sdk.AgentProviderDescriptor>> discoverAgentProviders() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return const [];
+    await _ensureManagementEngine();
+    return _agentProviderInstallApi().discoverProviders();
   }
 
   @override
-  Future<List<sdk.AgentProviderDescriptor>> discoverAgentProviders() {
-    if (!Platform.isAndroid) return Future.value(const []);
-    return _agentProviderInstallApi().discoverProviders();
+  Future<List<sdk.AgentAppPackage>> listConnectedApps() async {
+    final engine = await _ensureManagementEngine();
+    final active = _connectedAppReconcileFuture;
+    if (active != null) return active;
+    final reconcile = _reconcileConnectedApps(engine);
+    _connectedAppReconcileFuture = reconcile;
+    try {
+      return await reconcile;
+    } finally {
+      if (identical(_connectedAppReconcileFuture, reconcile)) {
+        _connectedAppReconcileFuture = null;
+      }
+    }
+  }
+
+  Future<List<sdk.AgentAppPackage>> _reconcileConnectedApps(
+    sdk.NapaxiEngine engine,
+  ) async {
+    final installed = engine.agentApp.listPackages();
+    if (!Platform.isAndroid) return installed;
+
+    final discovered = await _agentProviderInstallApi().discoverProviders();
+    final providersByPackage = <String, sdk.AgentProviderDescriptor>{
+      for (final provider in discovered)
+        if (provider.packageName.isNotEmpty) provider.packageName: provider,
+    };
+    final visible = <sdk.AgentAppPackage>[];
+    for (final package in installed) {
+      final binding = package.installBinding;
+      if (binding == null || binding.platform != 'android') {
+        visible.add(package);
+        continue;
+      }
+      final provider = providersByPackage[binding.appPackageName];
+      if (provider == null) {
+        _disableUnavailableConnectedApp(engine, package, 'not installed');
+        continue;
+      }
+      if (provider.signingCertSha256.isEmpty ||
+          provider.signingCertSha256.toLowerCase() !=
+              binding.signingCertSha256.toLowerCase()) {
+        _disableUnavailableConnectedApp(engine, package, 'signature changed');
+        continue;
+      }
+      if (_needsTrustedProviderRefresh(binding, provider)) {
+        try {
+          visible.add(await _agentProviderInstallApi().refreshBinding(package));
+          continue;
+        } catch (error) {
+          debugPrint(
+            '[agentProvider] trusted refresh failed '
+            '${binding.appPackageName}: $error',
+          );
+        }
+      }
+      visible.add(package);
+    }
+    return visible;
+  }
+
+  bool _needsTrustedProviderRefresh(
+    sdk.AgentAppInstallBinding binding,
+    sdk.AgentProviderDescriptor provider,
+  ) {
+    if (!provider.trustedRefreshSupported) {
+      return false;
+    }
+    return binding.appVersionCode != provider.packageVersionCode ||
+        binding.appLastUpdateTimeMs != provider.packageLastUpdateTimeMs;
+  }
+
+  void _disableUnavailableConnectedApp(
+    sdk.NapaxiEngine engine,
+    sdk.AgentAppPackage package,
+    String reason,
+  ) {
+    if (package.autoInvokeEnabled) {
+      engine.agentApp.setAutoInvoke(package.providerId, false);
+    }
+    debugPrint(
+      '[agentProvider] hiding unavailable provider '
+      '${package.providerId}: $reason',
+    );
+  }
+
+  @override
+  Future<sdk.AgentAppPackage> enableAgentProvider(
+    sdk.AgentProviderDescriptor provider,
+  ) async {
+    if (!Platform.isAndroid && provider.platform != 'ios') {
+      throw UnsupportedError('Connected App enable is not supported');
+    }
+    await _ensureManagementEngine();
+    return _agentProviderInstallApi().requestInstall(provider);
+  }
+
+  @override
+  Future<bool> disableConnectedApp(String providerId) async {
+    final engine = await _ensureManagementEngine();
+    return engine.agentApp.deletePackage(providerId);
+  }
+
+  @override
+  Future<sdk.AgentAppPackage> repairConnectedApp(String providerId) async {
+    final engine = await _ensureManagementEngine();
+    final installed = engine.agentApp.getPackage(providerId);
+    if (installed == null) {
+      throw StateError('Connected Agent App not found: $providerId');
+    }
+    return _agentProviderInstallApi().refreshBinding(installed);
+  }
+
+  @override
+  Future<sdk.AgentAppPackage> setConnectedAppAutoInvoke(
+    String providerId,
+    bool enabled,
+  ) async {
+    final engine = await _ensureManagementEngine();
+    return engine.agentApp.setAutoInvoke(providerId, enabled);
+  }
+
+  @override
+  Future<sdk.AgentAppDiagnosticsSnapshot> listConnectedAppDiagnostics(
+    String providerId,
+  ) async {
+    final engine = await _ensureManagementEngine();
+    final installed = engine.agentApp.getPackage(providerId);
+    if (installed == null) {
+      throw StateError('Connected Agent App not found: $providerId');
+    }
+    return _agentProviderInstallApi().listDiagnostics(installed);
+  }
+
+  @override
+  Future<sdk.AgentAppDiagnosticsSnapshot> setConnectedAppDetailedDiagnostics(
+    String providerId,
+    bool enabled,
+  ) async {
+    final engine = await _ensureManagementEngine();
+    final installed = engine.agentApp.getPackage(providerId);
+    if (installed == null) {
+      throw StateError('Connected Agent App not found: $providerId');
+    }
+    return _agentProviderInstallApi().setDetailedDiagnostics(
+      installed,
+      enabled,
+    );
   }
 
   @override
   Future<DemoAgent?> installPendingAgentProvider() async {
     final package = await _agentProviderInstallApi().installFromLaunchIntent();
     if (package == null) return null;
-    await _reloadProviderAgent(package.agentId);
-    final engine = await _ensureManagementEngine();
-    final definition = await engine.getAgentDefinition(package.agentId);
-    if (definition != null) return DemoAgent.fromDefinition(definition);
     return DemoAgent(
-      id: package.agentId,
+      id: package.providerId,
       name: package.displayName.trim().isEmpty
-          ? package.agentId
+          ? package.providerId
           : package.displayName,
       icon: Icons.sensors_rounded,
       systemPrompt: package.systemPrompt,
@@ -3813,19 +3984,11 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
   Future<DemoAgent> installAgentProvider(
     sdk.AgentProviderDescriptor provider,
   ) async {
-    if (!Platform.isAndroid && provider.platform != 'ios') {
-      throw UnsupportedError('Provider Agent install is not supported');
-    }
-    final package = await _agentProviderInstallApi().requestInstall(provider);
-    await _reloadProviderAgent(package.agentId);
-    final definition = await _requireEngine().getAgentDefinition(
-      package.agentId,
-    );
-    if (definition != null) return DemoAgent.fromDefinition(definition);
+    final package = await enableAgentProvider(provider);
     return DemoAgent(
-      id: package.agentId,
+      id: package.providerId,
       name: package.displayName.trim().isEmpty
-          ? package.agentId
+          ? package.providerId
           : package.displayName,
       icon: Icons.sensors_rounded,
       systemPrompt: package.systemPrompt,
@@ -3837,6 +4000,18 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     return sdk.AgentProviderInstallApi(
       registerPackage: engine.agentApp.registerPackage,
     );
+  }
+
+  Future<bool> _restoreAgentProviderBinding(
+    sdk.AgentAppActionRequest request,
+  ) async {
+    final engine = _requireEngine();
+    final installed =
+        engine.agentApp.getPackage(request.proposal.providerId) ??
+        engine.agentApp.getPackage(request.proposal.agentId);
+    if (installed == null) return false;
+    await _agentProviderInstallApi().refreshBinding(installed);
+    return true;
   }
 
   @override
@@ -3961,6 +4136,54 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
   }
 
   @override
+  Future<sdk.NapaxiProject> registerProject({
+    required String projectId,
+    required String agentId,
+    required String name,
+  }) {
+    return _requireEngine().projects.register(
+      projectId: projectId,
+      accountId: _activeAccountId,
+      agentId: agentId,
+      name: name,
+    );
+  }
+
+  @override
+  Future<bool> archiveProject(String projectId, {required String agentId}) {
+    return _requireEngine().projects.archive(
+      projectId,
+      accountId: _activeAccountId,
+      agentId: agentId,
+    );
+  }
+
+  @override
+  Future<List<sdk.NapaxiSessionPlacement>> listSessionPlacements({
+    required String agentId,
+  }) {
+    return _requireEngine().projects.listPlacements(
+      accountId: _activeAccountId,
+      agentId: agentId,
+    );
+  }
+
+  @override
+  Future<sdk.NapaxiSessionPlacement> moveSessionToProject(
+    sdk.SessionKey session, {
+    required String? projectId,
+    required sdk.NapaxiWorkspacePolicy workspacePolicy,
+    int? expectedRevision,
+  }) {
+    return _requireEngine().projects.moveSession(
+      session,
+      projectId: projectId,
+      workspacePolicy: workspacePolicy,
+      expectedRevision: expectedRevision,
+    );
+  }
+
+  @override
   Stream<sdk.ChatEvent> sendToSession(
     sdk.SessionKey session,
     String message, {
@@ -3970,7 +4193,12 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     void Function(String nativeThreadId)? onNativeThreadId,
   }) {
     if (agentId == 'engine.cc') {
-      return _sendToCliBridge('cc', session.threadId, message);
+      return _sendToCliBridge(
+        'cc',
+        session.threadId,
+        message,
+        session: session,
+      );
     }
     // Codex is routed through the core-owned `napaxi.agent_engine.codex`
     // runner. Flutter no longer hosts the Codex app-server PTY.
@@ -3984,20 +4212,38 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     );
   }
 
+  @override
+  bool hasActiveSessionRun(sdk.SessionKey session, {required String agentId}) {
+    // The legacy CC bridge does not participate in the SDK session-run
+    // registry. Keep its UI run untouched rather than treating it as stale.
+    if (agentId == 'engine.cc') return true;
+    return _requireEngine().hasActiveSessionRun(session, agentId: agentId);
+  }
+
   Stream<sdk.ChatEvent> _sendToCliBridge(
     String engineId,
     String threadId,
     String message, {
     void Function(String nativeThreadId)? onNativeThreadId,
+    sdk.SessionKey? session,
   }) {
     final controller = StreamController<sdk.ChatEvent>();
     () async {
       try {
         final bridge = _getOrCreateBridge(engineId);
+        String? workingDirectory;
+        if (engineId == 'cc' && session != null) {
+          final placement = await _requireEngine().projects.placement(session);
+          final workspaceId = placement.runtimeWorkspaceId;
+          workingDirectory = workspaceId.startsWith('project-')
+              ? '/workspace/projects/$workspaceId/linux-env/workspace'
+              : _CliEngineSpec.cc.workspacePath;
+        }
         await for (final event in bridge.send(
           threadId,
           message,
           onNativeThreadId: onNativeThreadId,
+          workingDirectory: workingDirectory,
         )) {
           if (controller.isClosed) break;
           controller.add(event);
@@ -4133,10 +4379,11 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
   }
 
   @override
-  Future<bool> answerHumanRequest(String requestId, String response) {
-    final ccBridge = _ccBridge;
-    if (ccBridge != null) {
-      return ccBridge.answerHumanRequest(requestId, response);
+  Future<bool> answerHumanRequest(String requestId, String response) async {
+    final bridge = _ccBridge;
+    if (bridge != null &&
+        await bridge.answerHumanRequest(requestId, response)) {
+      return true;
     }
     return _requireEngine().answerHumanRequest(requestId, response);
   }
@@ -4457,9 +4704,19 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
   @override
   Future<List<sdk.WorkspaceFileInfo>> listSandboxWorkspaceFiles({
     required String agentId,
+    String? projectId,
     String? subdir,
     bool recursive = true,
   }) async {
+    if (projectId != null && projectId.trim().isNotEmpty) {
+      return _requireEngine().projects.listFiles(
+        projectId,
+        accountId: _activeAccountId,
+        agentId: agentId,
+        subdir: subdir,
+        recursive: recursive,
+      );
+    }
     if (!sdk.NapaxiFileBridge.isInitialized) {
       throw StateError('napaxi file bridge has not been initialized');
     }
@@ -6630,9 +6887,11 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     var changed = false;
     for (final preset in presetSkills) {
       final name = preset.name.trim().toLowerCase();
-      if (name.isEmpty || installed.contains(name)) continue;
+      if (name.isEmpty) continue;
+      if (installed.contains(name) && preset.supportFiles.isEmpty) continue;
+      if (preset.skillContent.trim().isEmpty) continue;
       final result = await engine.installSkill(
-        preset.skillContent,
+        preset.installPayload,
         agentId: runtimeProfile.agentId,
       );
       if (result.success) {
@@ -6656,21 +6915,6 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
           .toList(growable: false);
     }
     return const [];
-  }
-
-  Future<void> _reloadProviderAgent(String agentId) async {
-    final engine = await _ensureManagementEngine();
-    if (agentId == sdk.NapaxiEngine.defaultAgentId) {
-      engine.ensureAgent();
-      return;
-    }
-    engine.deleteAgent(agentId);
-    final definition = await engine.getAgentDefinition(agentId);
-    if (definition != null) {
-      final created = await engine.createAgentFromDefinition(agentId);
-      if (created) return;
-    }
-    await engine.getOrCreateAgent(agentId);
   }
 }
 
@@ -11315,4 +11559,14 @@ class _DemoAgentAppActionExecutor extends sdk.AgentAppActionExecutor {
       completedAt: DateTime.now().toUtc().toIso8601String(),
     );
   }
+}
+
+class _DemoAgentProviderBindingRepair
+    implements sdk.AgentProviderBindingRepair {
+  _DemoAgentProviderBindingRepair(this._repair);
+
+  final Future<bool> Function(sdk.AgentAppActionRequest request) _repair;
+
+  @override
+  Future<bool> repair(sdk.AgentAppActionRequest request) => _repair(request);
 }

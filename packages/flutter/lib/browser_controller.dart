@@ -58,11 +58,11 @@ class BrowserBackendCapabilities {
 
   /// Serializes the capability flags to a JSON map.
   Map<String, dynamic> toJson() => {
-        'supports_screenshot': supportsScreenshot,
-        'supports_coordinate_click': supportsCoordinateClick,
-        'supports_early_script_injection': supportsEarlyScriptInjection,
-        'supports_cdp_selector_map': supportsCdpSelectorMap,
-      };
+    'supports_screenshot': supportsScreenshot,
+    'supports_coordinate_click': supportsCoordinateClick,
+    'supports_early_script_injection': supportsEarlyScriptInjection,
+    'supports_cdp_selector_map': supportsCdpSelectorMap,
+  };
 }
 
 /// Metadata for a screenshot captured from the browser, stored in the sandbox.
@@ -89,11 +89,11 @@ class NapaxiBrowserScreenshot {
 
   /// Serializes the screenshot metadata to a JSON map.
   Map<String, dynamic> toJson() => {
-        'sandbox_path': sandboxPath,
-        'mime_type': mimeType,
-        'width': width,
-        'height': height,
-      };
+    'sandbox_path': sandboxPath,
+    'mime_type': mimeType,
+    'width': width,
+    'height': height,
+  };
 }
 
 /// Desktop user agent string applied when running in desktop viewport mode.
@@ -162,21 +162,21 @@ class NapaxiBrowserSnapshot {
 
   /// Serializes the snapshot to the JSON map returned to tool callers.
   Map<String, dynamic> toJson() => {
-        'url': url,
-        'title': title,
-        'loading': loading,
-        'browser_mode': browserMode.name,
-        if (userAgent != null) 'user_agent': userAgent,
-        'text': text,
-        'elements': elements,
-        'page_state': pageState,
-        'viewport_map': viewportMap,
-        'page_change_token': pageChangeToken,
-        'backend_capabilities': backendCapabilities.toJson(),
-        'screenshot_available': screenshot != null,
-        if (screenshot != null) 'screenshot': screenshot!.toJson(),
-        if (lastActionEffect != null) 'last_action_effect': lastActionEffect,
-      };
+    'url': url,
+    'title': title,
+    'loading': loading,
+    'browser_mode': browserMode.name,
+    if (userAgent != null) 'user_agent': userAgent,
+    'text': text,
+    'elements': elements,
+    'page_state': pageState,
+    'viewport_map': viewportMap,
+    'page_change_token': pageChangeToken,
+    'backend_capabilities': backendCapabilities.toJson(),
+    'screenshot_available': screenshot != null,
+    if (screenshot != null) 'screenshot': screenshot!.toJson(),
+    if (lastActionEffect != null) 'last_action_effect': lastActionEffect,
+  };
 }
 
 /// Abstract embedded-browser backend the controller drives.
@@ -209,8 +209,7 @@ abstract class NapaxiBrowserBackend {
   /// Captures a screenshot per [mode], or null if unsupported.
   Future<NapaxiBrowserScreenshot?> captureScreenshot(
     BrowserScreenshotMode mode,
-  ) async =>
-      null;
+  ) async => null;
 
   /// Reloads the current page.
   Future<void> reload();
@@ -245,7 +244,7 @@ abstract class NapaxiBrowserBackend {
 class NapaxiBrowserController extends ChangeNotifier {
   /// Creates a controller that drives the given [backend].
   NapaxiBrowserController({required NapaxiBrowserBackend backend})
-      : _backend = backend;
+    : _backend = backend;
 
   final NapaxiBrowserBackend _backend;
   Future<void> _queue = Future<void>.value();
@@ -314,9 +313,10 @@ class NapaxiBrowserController extends ChangeNotifier {
         final result = switch (toolName) {
           'browser_open' => await _open(params),
           'browser_snapshot' => await _snapshotResult(
-              'snapshot',
-              params: params,
-            ),
+            'snapshot',
+            params: params,
+          ),
+          'browser_get_text' => await _getText(params),
           'browser_click' => await _click(params),
           'browser_type' => await _type(params),
           'browser_scroll' => await _scroll(params),
@@ -336,44 +336,44 @@ class NapaxiBrowserController extends ChangeNotifier {
 
   /// Reloads the current page, if one is open.
   Future<void> reload() => _enqueueVoid(() async {
-        if (!_hasPage) return;
-        await _backend.reload();
-        await _settle();
-      });
+    if (!_hasPage) return;
+    await _backend.reload();
+    await _settle();
+  });
 
   /// Navigates back one history entry, if possible.
   Future<void> goBack() => _enqueueVoid(() async {
-        if (!await _backend.canGoBack()) return;
-        await _backend.goBack();
-        await _settle();
-      });
+    if (!await _backend.canGoBack()) return;
+    await _backend.goBack();
+    await _settle();
+  });
 
   /// Clears cache and local storage, blanks the page, and resets all state.
   Future<void> clearSession() => _enqueueVoid(() async {
-        await _backend.clearCache();
-        await _backend.clearLocalStorage();
-        await _backend.loadUrl('about:blank');
-        _latestSnapshot = null;
-        _latestElementById = {};
-        _url = null;
-        _title = null;
-        _blockedNavigation = null;
-        _lastActionEffect = null;
-        _lastPageChangeToken = null;
-        _hasPage = false;
-        _loading = false;
-        _progress = 0;
-        notifyListeners();
-      });
+    await _backend.clearCache();
+    await _backend.clearLocalStorage();
+    await _backend.loadUrl('about:blank');
+    _latestSnapshot = null;
+    _latestElementById = {};
+    _url = null;
+    _title = null;
+    _blockedNavigation = null;
+    _lastActionEffect = null;
+    _lastPageChangeToken = null;
+    _hasPage = false;
+    _loading = false;
+    _progress = 0;
+    notifyListeners();
+  });
 
   /// Toggles the visual highlight overlay on detected interactive elements.
   Future<void> setDebugHighlightEnabled(bool enabled) => _enqueueVoid(() async {
-        _debugHighlightEnabled = enabled;
-        if (_hasPage) {
-          await _safeJs(_debugHighlightScript(enabled));
-        }
-        notifyListeners();
-      });
+    _debugHighlightEnabled = enabled;
+    if (_hasPage) {
+      await _safeJs(_debugHighlightScript(enabled));
+    }
+    notifyListeners();
+  });
 
   Future<T> _enqueue<T>(Future<T> Function() task) {
     final completer = Completer<T>();
@@ -482,34 +482,29 @@ class NapaxiBrowserController extends ChangeNotifier {
     if (!_effectHasMeaningfulChange(effect)) {
       final siteSignal = effect['site_signal'];
       if (siteSignal is String && siteSignal.isNotEmpty) {
-        return _mergeResult(
-          'click',
-          {
-            'success': false,
-            'failure_code': siteSignal,
-            'error':
-                'click did not change the page and the page indicates $siteSignal',
-            'target': result['target'],
-            'hit_test': result['hit_test'],
-            'last_action_effect': effect,
-          },
-        );
+        return _mergeResult('click', {
+          'success': false,
+          'failure_code': siteSignal,
+          'error':
+              'click did not change the page and the page indicates $siteSignal',
+          'target': result['target'],
+          'hit_test': result['hit_test'],
+          'last_action_effect': effect,
+        });
       }
       final recovery = await _recoverClick(resolvedParams, beforeToken);
       if (recovery != null && recovery['success'] == true) {
         return _snapshotResult('click');
       }
       if (recovery != null) {
-        return _mergeResult(
-          'click',
-          {
-            ...recovery,
-            'failure_code': recovery['failure_code'] ?? 'no_effect_after_click',
-            'error': recovery['error'] ??
-                'click completed but did not produce a detectable page change',
-            'last_action_effect': _lastActionEffect,
-          },
-        );
+        return _mergeResult('click', {
+          ...recovery,
+          'failure_code': recovery['failure_code'] ?? 'no_effect_after_click',
+          'error':
+              recovery['error'] ??
+              'click completed but did not produce a detectable page change',
+          'last_action_effect': _lastActionEffect,
+        });
       }
     }
     return _snapshotResult('click');
@@ -557,7 +552,9 @@ class NapaxiBrowserController extends ChangeNotifier {
   Future<Map<String, dynamic>> _wait(Map<String, dynamic> params) async {
     final text = (params['text'] as String? ?? '').trim();
     final milliseconds = math.min(
-        math.max((params['milliseconds'] as num?)?.toInt() ?? 1000, 0), 30000);
+      math.max((params['milliseconds'] as num?)?.toInt() ?? 1000, 0),
+      30000,
+    );
     if (text.isEmpty) {
       await Future<void>.delayed(Duration(milliseconds: milliseconds));
     } else {
@@ -567,6 +564,24 @@ class NapaxiBrowserController extends ChangeNotifier {
       }
     }
     return _snapshotResult('wait');
+  }
+
+  Future<Map<String, dynamic>> _getText(Map<String, dynamic> params) async {
+    if (!_hasPage) return _error('get_text', 'browser session is not open');
+    final selector = (params['selector'] as String?)?.trim();
+    final result = _jsonFromJs(await _safeJs(_getTextScript(selector)));
+    if (result['success'] == false) return _mergeResult('get_text', result);
+    _url = (result['url'] as String?) ?? await _backend.currentUrl() ?? _url;
+    _title = (result['title'] as String?) ?? await _backend.title() ?? _title;
+    return {
+      'success': true,
+      'action': 'get_text',
+      ...result,
+      'browser_mode': _browserMode.name,
+      if (_userAgentForMode(_browserMode) != null)
+        'user_agent': _userAgentForMode(_browserMode),
+      'loading': _loading,
+    };
   }
 
   Future<Map<String, dynamic>> _findText(Map<String, dynamic> params) async {
@@ -593,8 +608,10 @@ class NapaxiBrowserController extends ChangeNotifier {
 
   Future<Map<String, dynamic>> _back() async {
     if (!await _backend.canGoBack()) {
-      return _mergeResult(
-          'back', {'success': false, 'error': 'no back history'});
+      return _mergeResult('back', {
+        'success': false,
+        'error': 'no back history',
+      });
     }
     await _backend.goBack();
     await _settle();
@@ -647,11 +664,13 @@ class NapaxiBrowserController extends ChangeNotifier {
     }
     final map = raw == null ? <String, dynamic>{} : _jsonFromJs(raw);
     final pageState = _pageStateFromSnapshotMap(map);
-    final viewportMap = _mapFrom(pageState['viewport_map']) ??
+    final viewportMap =
+        _mapFrom(pageState['viewport_map']) ??
         _mapFrom(map['viewport_map']) ??
         <String, dynamic>{};
     final elements = _elementList(pageState['elements']);
-    final observedUserAgent = (map['user_agent'] as String?) ??
+    final observedUserAgent =
+        (map['user_agent'] as String?) ??
         (pageState['user_agent'] as String?) ??
         _userAgentForMode(_browserMode);
     final pageChangeToken = _pageChangeTokenFrom(pageState, map);
@@ -691,7 +710,9 @@ class NapaxiBrowserController extends ChangeNotifier {
   }
 
   Map<String, dynamic> _mergeResult(
-      String action, Map<String, dynamic> result) {
+    String action,
+    Map<String, dynamic> result,
+  ) {
     return {
       'success': result['success'] == true,
       'action': action,
@@ -720,20 +741,19 @@ class NapaxiBrowserController extends ChangeNotifier {
     String action,
     String message, {
     String? failureCode,
-  }) =>
-      {
-        'success': false,
-        'action': action,
-        if (failureCode != null) 'failure_code': failureCode,
-        'blocked_or_approval_reason': message,
-        'error': message,
-        'browser_mode': _browserMode.name,
-        if (_userAgentForMode(_browserMode) != null)
-          'user_agent': _userAgentForMode(_browserMode),
-        if (_url != null) 'url': _url,
-        if (_title != null) 'title': _title,
-        'loading': _loading,
-      };
+  }) => {
+    'success': false,
+    'action': action,
+    if (failureCode != null) 'failure_code': failureCode,
+    'blocked_or_approval_reason': message,
+    'error': message,
+    'browser_mode': _browserMode.name,
+    if (_userAgentForMode(_browserMode) != null)
+      'user_agent': _userAgentForMode(_browserMode),
+    if (_url != null) 'url': _url,
+    if (_title != null) 'title': _title,
+    'loading': _loading,
+  };
 
   Future<Map<String, dynamic>> _rawObservationMap() async {
     if (!_hasPage) return <String, dynamic>{};
@@ -814,7 +834,8 @@ class NapaxiBrowserController extends ChangeNotifier {
       'after_token': afterToken,
       'url_changed':
           beforeUrl != null && afterUrl != null && beforeUrl != afterUrl,
-      'title_changed': beforeTitle != null &&
+      'title_changed':
+          beforeTitle != null &&
           afterTitle != null &&
           beforeTitle != afterTitle,
       if (restriction != null) 'site_signal': restriction,
@@ -927,7 +948,8 @@ class NapaxiBrowserController extends ChangeNotifier {
     pageState['title'] ??= map['title'] ?? _title ?? '';
     pageState['text'] = _truncate((pageState['text'] as String?) ?? '', 6000);
     pageState['elements'] = _elementList(pageState['elements']);
-    pageState['viewport_map'] = _mapFrom(pageState['viewport_map']) ??
+    pageState['viewport_map'] =
+        _mapFrom(pageState['viewport_map']) ??
         _mapFrom(map['viewport_map']) ??
         <String, dynamic>{};
     pageState['page_change_token'] ??= map['page_change_token'];
@@ -1001,13 +1023,15 @@ class NapaxiBrowserController extends ChangeNotifier {
       'text': _truncate((pageState['text'] as String?) ?? '', 1200),
       'elements': elements
           .take(40)
-          .map((element) => [
-                element['element_id'],
-                element['text'],
-                element['label'],
-                element['action_hint'],
-                element['bbox'],
-              ])
+          .map(
+            (element) => [
+              element['element_id'],
+              element['text'],
+              element['label'],
+              element['action_hint'],
+              element['bbox'],
+            ],
+          )
           .toList(growable: false),
     };
     return _stableHash(jsonEncode(summary));
@@ -1113,12 +1137,71 @@ String _targetedScript(
   const submit = ${jsonEncode(submit)};
   const clearFirst = ${jsonEncode(clearFirst)};
   $_browserRuntimeScript
-  return JSON.stringify(window.__napaxiBrowser.runTarget(params, action, {text, submit, clearFirst}));
+  return JSON.stringify(window.__napaxiBrowser.runTarget(params, action, {text, submit, clearFirst, submitSelector: params.submit_selector || ''}));
 })()
 ''';
 }
 
-String _findTextScript(String text) => '''
+String _getTextScript(String? selector) =>
+    '''
+(function() {
+  const __napaxiGetText = true;
+  const selector = ${jsonEncode(selector)};
+  try {
+    let target = document.body;
+    if (selector && String(selector).trim()) {
+      target = document.querySelector(selector);
+      if (!target) {
+        return JSON.stringify({success:false,error:'Element not found: ' + selector,failure_code:'element_not_found',url:location.href,title:document.title});
+      }
+    }
+    const inner = target ? (target.innerText || '') : '';
+    const textContent = target ? (target.textContent || '') : '';
+    const text = inner || textContent || '';
+    const body = document.body || document.documentElement;
+    const allEls = body ? body.querySelectorAll('*') : [];
+    let visibleSample = 0;
+    let hiddenSample = 0;
+    for (let i = 0; i < Math.min(allEls.length, 500); i++) {
+      const style = window.getComputedStyle(allEls[i]);
+      if (style.display === 'none' || style.visibility === 'hidden') hiddenSample++;
+      else visibleSample++;
+    }
+    const max = 10000;
+    return JSON.stringify({
+      success: true,
+      text: text.substring(0, max),
+      length: text.length,
+      truncated: text.length > max,
+      url: location.href,
+      title: document.title,
+      debug: {
+        selector: selector || null,
+        tag: target ? target.tagName : null,
+        id: target ? (target.id || null) : null,
+        className: target && target.className ? String(target.className).split(' ').slice(0, 3).join(' ') : null,
+        readyState: document.readyState,
+        innerTextLength: inner.length,
+        textContentLength: textContent.length,
+        innerTextPreview: inner.substring(0, 200),
+        textContentPreview: textContent.replace(/\s+/g, ' ').trim().substring(0, 200),
+        bodyInnerTextLength: (document.body && document.body.innerText || '').length,
+        bodyTextContentLength: (document.body && document.body.textContent || '').length,
+        scrollHeight: document.documentElement ? document.documentElement.scrollHeight : (document.body ? document.body.scrollHeight : 0),
+        viewportHeight: window.innerHeight,
+        domElementCount: allEls.length,
+        visibleSample: visibleSample,
+        hiddenSample: hiddenSample
+      }
+    });
+  } catch (error) {
+    return JSON.stringify({success:false,error:String(error),failure_code:'javascript_error',url:location.href,title:document.title});
+  }
+})()
+''';
+
+String _findTextScript(String text) =>
+    '''
 (function() {
   const text = ${jsonEncode(text)};
   $_browserRuntimeScript
@@ -1126,7 +1209,8 @@ String _findTextScript(String text) => '''
 })()
 ''';
 
-String _keysScript(String keys) => '''
+String _keysScript(String keys) =>
+    '''
 (function() {
   const keys = ${jsonEncode(keys)};
   $_browserRuntimeScript
@@ -1134,7 +1218,8 @@ String _keysScript(String keys) => '''
 })()
 ''';
 
-String _debugHighlightScript(bool enabled) => '''
+String _debugHighlightScript(bool enabled) =>
+    '''
 (function() {
   const enabled = ${jsonEncode(enabled)};
   const styleId = 'napaxi-browser-debug-highlight-style';
@@ -1163,7 +1248,8 @@ String _debugHighlightScript(bool enabled) => '''
 })()
 ''';
 
-String _snapshotScript(BrowserViewportMode mode) => '''
+String _snapshotScript(BrowserViewportMode mode) =>
+    '''
 (function() {
   const browserMode = ${jsonEncode(mode.name)};
   const configuredUserAgent = ${jsonEncode(mode == BrowserViewportMode.desktop ? napaxiDesktopUserAgent : null)};
@@ -1709,6 +1795,7 @@ const String _browserRuntimeScript = r'''
       name: fingerprint.name,
       label: fingerprint.label,
       text: fingerprint.text,
+      href: fingerprint.tag === 'a' ? (el.href || el.getAttribute('href') || '') : '',
       value_hint: sensitive ? '[redacted sensitive field]' : (('value' in el) ? compact(el.value).slice(0, 120) : ''),
       enabled: !(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       visible: visible(el),
@@ -1737,9 +1824,202 @@ const String _browserRuntimeScript = r'''
       .sort((a, b) => clickabilityInfo(b).score - clickabilityInfo(a).score)
       .slice(0, 160);
   }
+  function searchResultRecords() {
+    const results = [];
+    const seenUrls = new Set();
+    function isBingSearchPage() {
+      try {
+        const url = new URL(location.href);
+        const host = url.host.toLowerCase();
+        return (host === 'bing.com' || host.endsWith('.bing.com') || host === 'bing.net' || host.endsWith('.bing.net')) && url.pathname.toLowerCase().startsWith('/search');
+      } catch (_) {
+        return false;
+      }
+    }
+    if (!isBingSearchPage()) return results;
+    function urlParts(href) {
+      try {
+        const url = new URL(href, location.href);
+        return {href: url.href, host: url.host.replace(/^www\./, ''), path: url.pathname};
+      } catch (_) {
+        return {href, host: '', path: ''};
+      }
+    }
+    function isSearchInternalUrl(href) {
+      try {
+        const url = new URL(href, location.href);
+        const host = url.host.toLowerCase();
+        const path = url.pathname.toLowerCase();
+        const value = url.href.toLowerCase();
+        return host === 'bing.com' ||
+          host.endsWith('.bing.com') ||
+          host === 'bing.net' ||
+          host.endsWith('.bing.net') ||
+          host.endsWith('microsoft.com') ||
+          value.includes('/search?') ||
+          path.includes('/images/search') ||
+          path.includes('/videos/search') ||
+          path.includes('/maps') ||
+          path.includes('/ck/a');
+      } catch (_) {
+        return false;
+      }
+    }
+    function hostLabels(href) {
+      const parts = urlParts(href);
+      const labels = [];
+      if (parts.host) {
+        const host = parts.host.toLowerCase();
+        labels.push(host);
+        labels.push(host.replace(/\.[^.]+$/, '').toLowerCase());
+        const segments = host.split('.').filter(Boolean);
+        if (segments.length > 2) {
+          const rootDomain = segments.slice(-2).join('.');
+          labels.push(rootDomain);
+          labels.push(rootDomain.replace(/\.[^.]+$/, '').toLowerCase());
+        }
+      }
+      return labels.filter(Boolean);
+    }
+    function rawTextLines(text) {
+      return String(text || '')
+        .split(/[\n\r]+|\s{2,}/)
+        .map(compact)
+        .filter(Boolean);
+    }
+    function firstHttpUrl(text) {
+      const match = String(text || '').match(/https?:\/\/[^\s›>，,；;。]+/i);
+      return match ? match[0].replace(/\/$/, '') : '';
+    }
+    function looksLikeDomain(value) {
+      const token = compact(value).replace(/\/$/, '').toLowerCase();
+      return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(token) && !token.includes('/');
+    }
+    function visibleTextResultUrl(text) {
+      const direct = firstHttpUrl(text);
+      if (direct) return direct;
+      const token = compact(text).split(/\s+/)[0] || '';
+      if (looksLikeDomain(token)) return `https://${token.replace(/\/$/, '')}`;
+      return '';
+    }
+    function isRepeatedGenericLabel(text) {
+      const parts = compact(text).split(/\s+/).filter(Boolean);
+      if (parts.length === 2 && parts[0] === parts[1]) return true;
+      if (parts.length > 2 && parts.length % 2 === 0) {
+        const half = parts.length / 2;
+        if (parts.slice(0, half).join(' ') === parts.slice(half).join(' ')) return true;
+      }
+      return false;
+    }
+    function isBreadcrumbText(text, href) {
+      const value = compact(text);
+      if (!value) return true;
+      const lower = value.toLowerCase();
+      const parts = urlParts(href);
+      const host = parts.host.toLowerCase();
+      if (lower.startsWith('http://') || lower.startsWith('https://')) return true;
+      if (visibleTextResultUrl(value)) return true;
+      if (isRepeatedGenericLabel(value)) return true;
+      if (host && lower === host) return true;
+      if (host && lower.includes(host) && (lower.includes('›') || lower.includes('>'))) return true;
+      if (/^(网页|图片|视频|资讯|地图|Web|国内版|国际版)$/i.test(value)) return true;
+      return false;
+    }
+    function cleanResultTitle(text, href) {
+      let candidate = compact(text);
+      candidate = candidate.replace(/^(网页|Web)\s+/i, '').trim();
+      candidate = candidate.replace(/\s+https?:\/\/.*$/i, '').trim();
+      candidate = candidate.replace(/\s+[\w.-]+\.[a-z]{2,}\s*[›>].*$/i, '').trim();
+      if (candidate.length >= 2 && !isBreadcrumbText(candidate, href)) return candidate;
+      return '';
+    }
+    function candidateAnchors(root) {
+      const anchors = [];
+      const preferred = [
+        'h1 a[href]', 'h2 a[href]', 'h3 a[href]', 'h4 a[href]',
+        '[role="heading"] a[href]',
+        'a[href] h1', 'a[href] h2', 'a[href] h3', 'a[href] h4'
+      ].join(',');
+      try {
+        for (const node of Array.from(root.querySelectorAll(preferred))) {
+          const anchor = node.tagName && node.tagName.toLowerCase() === 'a' ? node : node.closest('a[href]');
+          if (anchor && !anchors.includes(anchor)) anchors.push(anchor);
+        }
+      } catch (_) {}
+      try {
+        for (const anchor of Array.from(root.querySelectorAll('a[href]'))) {
+          if (!anchors.includes(anchor)) anchors.push(anchor);
+        }
+      } catch (_) {}
+      return anchors;
+    }
+    function resultHref(root) {
+      for (const anchor of candidateAnchors(root)) {
+        const href = anchor.href || anchor.getAttribute('href') || '';
+        if (/^https?:\/\//i.test(href) && !isSearchInternalUrl(href)) return href;
+      }
+      return '';
+    }
+    function visibleTitleFor(root, href) {
+      const lines = rawTextLines(root.innerText || root.textContent || '');
+      const urlLineIndex = lines.findIndex((line) => visibleTextResultUrl(line));
+      const start = urlLineIndex >= 0 ? urlLineIndex + 1 : 0;
+      for (let i = start; i < Math.min(lines.length, start + 8); i++) {
+        const cleaned = cleanResultTitle(lines[i], href);
+        if (cleaned) return cleaned;
+      }
+      try {
+        const heading = root.querySelector('h1,h2,h3,h4,[role="heading"]');
+        const cleaned = heading ? cleanResultTitle(heading.innerText || heading.textContent || '', href) : '';
+        if (cleaned) return cleaned;
+      } catch (_) {}
+      return '';
+    }
+    function visibleSnippetFor(root, title, href) {
+      const lines = rawTextLines(root.innerText || root.textContent || '');
+      const titleIndex = lines.findIndex((line) => compact(line) === compact(title));
+      const start = titleIndex >= 0 ? titleIndex + 1 : 0;
+      for (let i = start; i < Math.min(lines.length, start + 6); i++) {
+        const line = lines[i];
+        if (!line || line === title || isBreadcrumbText(line, href)) continue;
+        if (line.length >= 8) return line.length > 420 ? line.slice(0, 420).trim() : line;
+      }
+      return '';
+    }
+    function pushRoot(root) {
+      if (!root || root.closest('header,nav,footer') || !visible(root)) return false;
+      const href = resultHref(root);
+      if (!href || seenUrls.has(href)) return false;
+      const title = visibleTitleFor(root, href);
+      const snippet = visibleSnippetFor(root, title, href);
+      if (!title && !snippet) return false;
+      seenUrls.add(href);
+      results.push({
+        index: results.length,
+        title: title.slice(0, 240),
+        url: href,
+        snippet,
+        source: 'bing_visible_result_text',
+        container_tag: root.tagName ? root.tagName.toLowerCase() : ''
+      });
+      return true;
+    }
+    const scope = document.querySelector('#b_results') || document.querySelector('main') || document.body;
+    const resultRoots = Array.from(scope.querySelectorAll('li.b_algo,.b_algo,li[class*="b_algo"]'));
+    for (const root of resultRoots) {
+      pushRoot(root);
+      if (results.length >= 80) break;
+    }
+    return results;
+  }
   function snapshot() {
     const elements = interactiveElements().map(elementRecord);
+    const links = allElements()
+      .filter((el) => el.tagName && el.tagName.toLowerCase() === 'a' && (el.href || el.getAttribute('href')))
+      .slice(0, 240)
+      .map((el, index) => elementRecord(el, index));
     const pageText = compact(document.body ? document.body.innerText : '').slice(0, 10000);
+    const searchResults = searchResultRecords();
     const viewportMap = viewportObservation(elements);
     const pageChangeToken = hash(JSON.stringify({
       url: location.href,
@@ -1772,6 +2052,8 @@ const String _browserRuntimeScript = r'''
       },
       text: pageText,
       elements,
+      links,
+      search_results: searchResults,
       viewport_map: viewportMap,
       page_change_token: pageChangeToken
     };
@@ -1780,6 +2062,8 @@ const String _browserRuntimeScript = r'''
       title: pageState.title,
       text: pageText,
       elements,
+      links,
+      search_results: searchResults,
       viewport_map: viewportMap,
       page_change_token: pageChangeToken,
       page_state: pageState
@@ -1958,7 +2242,20 @@ const String _browserRuntimeScript = r'''
     }
     return fallback;
   }
-  function findTarget(params) {
+  function editableForTyping(el) {
+    return !!el && (('value' in el) || el.isContentEditable);
+  }
+  function editableDescendantForTyping(el) {
+    if (!el) return null;
+    if (editableForTyping(el)) return el;
+    try {
+      return Array.from(el.querySelectorAll('input,textarea,[contenteditable=""],[contenteditable="true"]'))
+        .find((item) => editableForTyping(item) && (visible(item) || item.offsetParent !== null)) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+  function findTarget(params, action) {
     let el = null;
     if (params.click_point) {
       const point = params.click_point;
@@ -1981,13 +2278,20 @@ const String _browserRuntimeScript = r'''
       try {
         el = queryFirst(params.selector);
       } catch (_) {}
-      if (el && visible(el)) return {el, method: 'selector'};
+      if (el) {
+        if (action === 'type') {
+          const editable = editableDescendantForTyping(el);
+          if (editable) return {el: editable, method: editable === el ? (visible(el) ? 'selector' : 'selector_hidden_editable') : 'selector_editable_descendant'};
+        } else if (visible(el)) {
+          return {el, method: 'selector'};
+        }
+      }
     }
     const candidates = interactiveElements();
     if (Number.isInteger(params.index) && candidates[params.index]) {
       return {el: candidates[params.index], method: 'index'};
     }
-    if (params.text) {
+    if (action !== 'type' && params.text) {
       const wanted = norm(params.text);
       el = candidates.find((item) => norm(item.innerText || item.textContent || item.value).includes(wanted));
       if (el) return {el, method: 'text'};
@@ -1999,7 +2303,12 @@ const String _browserRuntimeScript = r'''
         if (el && visible(el)) return {el, method: 'text_ancestor'};
       }
     }
-    if (params.label) {
+    if (action === 'type' && params.label) {
+      const wantedLabel = norm(params.label);
+      el = allElements().find((item) => editableForTyping(item) && norm(explicitLabel(item)).includes(wantedLabel));
+      if (el) return {el, method: visible(el) ? 'label' : 'label_hidden_editable'};
+    }
+    if (action !== 'type' && params.label) {
       const wanted = norm(params.label);
       el = candidates.find((item) => norm(explicitLabel(item)).includes(wanted));
       if (el) return {el, method: 'label'};
@@ -2124,12 +2433,64 @@ const String _browserRuntimeScript = r'''
       return {success: false, failure_code: 'not_editable', error: 'target element is not editable'};
     }
     if (options.submit) {
-      sendKeys('Enter');
+      submitEditable(el, options);
     }
     return {success: true};
   }
+  function submitEditable(el, options) {
+    const before = location.href;
+    sendKeys('Enter');
+    const explicitSelector = options.submitSelector || '';
+    let form = null;
+    let submitter = null;
+    if (explicitSelector) {
+      try {
+        const explicit = queryFirst(explicitSelector);
+        if (explicit && explicit.tagName && explicit.tagName.toLowerCase() === 'form') {
+          form = explicit;
+        } else if (explicit && typeof explicit.click === 'function') {
+          explicit.click();
+          return;
+        }
+      } catch (_) {}
+    }
+    form = form || el.form || (el.closest ? el.closest('form') : null);
+    if (form) {
+      try {
+        submitter = form.querySelector('input[type="submit"],button[type="submit"],button:not([type]),label[for="sb_form_go"],#search_icon');
+        if (submitter && typeof submitter.click === 'function') {
+          submitter.click();
+        }
+      } catch (_) {}
+      try {
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit(submitter && submitter.tagName && submitter.tagName.toLowerCase() !== 'label' ? submitter : undefined);
+        }
+      } catch (_) {}
+      try {
+        if (typeof form.submit === 'function') {
+          HTMLFormElement.prototype.submit.call(form);
+        }
+      } catch (_) {}
+      setTimeout(() => {
+        try {
+          if (location.href !== before) return;
+          const method = (form.getAttribute('method') || 'get').toLowerCase();
+          const action = form.getAttribute('action') || location.href;
+          if (method !== 'get') return;
+          const target = new URL(action, location.href);
+          const data = new FormData(form);
+          if (el.name && ('value' in el)) data.set(el.name, el.value);
+          for (const [key, value] of data.entries()) {
+            if (typeof value === 'string') target.searchParams.set(key, value);
+          }
+          location.assign(target.toString());
+        } catch (_) {}
+      }, 250);
+    }
+  }
   function runTarget(params, action, options) {
-    const found = findTarget(params || {});
+    const found = findTarget(params || {}, action);
     if (!found.el) {
       const textCandidates = textActionCandidates((params && (params.text || params.label)) || '');
       return {

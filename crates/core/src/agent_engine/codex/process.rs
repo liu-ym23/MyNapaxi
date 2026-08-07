@@ -1,246 +1,52 @@
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use serde_json::json;
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use crate::agent_engine::AgentEngineTurnRequest;
+
+use crate::agent_engine::CodexTurnPlan;
+#[cfg(target_os = "android")]
+use crate::android_linux_env as linux_env;
+#[cfg(target_os = "ios")]
+use crate::ios_qemu_env as linux_env;
 use crate::types::ChatEvent;
 
-#[cfg(test)]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use super::config;
-#[cfg(target_os = "android")]
-use super::config::{self, CodexConfigError, PreparedCodexConfig};
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use super::configure::{clear_config_and_sessions, sync_prepared_config};
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use super::dynamic_tools::handle_server_tool_call;
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use super::events::map_app_server_message;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use super::protocol::{
-    JsonRpcClient, extract_thread_id, initialize_request, initialized_notification,
-    parse_json_lines, response_error, response_id, skill_roots_then_turn_lines,
-    skills_extra_roots_set_request, skills_list_request, thread_open_request, thread_start_request,
+    JsonRpcClient, app_server_request_auto_response, dynamic_tools_fingerprint, extract_thread_id,
+    initialize_request, initialized_notification, parse_json_lines, response_error, response_id,
+    server_request_id, skill_roots_then_turn_lines, skills_extra_roots_set_request,
+    skills_list_request, thread_open_request, thread_start_request,
 };
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use super::state::{
-    PendingCodexHumanRequest, active_sessions, clear_state, invalidate_sessions_for_config,
-    load_state, native_library_dir_for, pending_human_requests, save_state, session_key,
-    set_current_config_fingerprint,
+    PendingCodexHumanRequest, active_sessions, clear_state, load_state, native_library_dir_for,
+    pending_human_requests, save_state, session_key,
 };
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const CODEX_UNSUPPORTED: &str = "napaxi.agent_engine.codex is unsupported on this platform";
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 const CODEX_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 const CODEX_TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-#[derive(Debug, Deserialize)]
-struct ConfigureCodexRequest {
-    #[serde(default)]
-    files_dir: String,
-    #[serde(default)]
-    config_toml: String,
-    #[serde(default)]
-    auth_json: String,
-    #[serde(default)]
-    llm_config_json: String,
-    #[serde(default)]
-    clear: bool,
-}
-
-pub(crate) fn configure_codex_agent_engine_json(_handle: i64, request_json: &str) -> String {
-    if super::history::is_history_request(request_json) {
-        return super::history::handle_request_json(_handle, request_json);
-    }
-    let mut request = match serde_json::from_str::<ConfigureCodexRequest>(request_json) {
-        Ok(request) => request,
-        Err(error) => {
-            return config_result_json(
-                false,
-                false,
-                false,
-                Some("model_check_failed"),
-                Some(format!("Invalid Codex config request JSON: {error}")),
-                "",
-                false,
-            );
-        }
-    };
-    if let Some(files_dir) = crate::runtime::files_dir_from_handle(_handle) {
-        request.files_dir = files_dir;
-    }
-    if request.files_dir.trim().is_empty() {
-        return json!({
-            "success": false,
-            "providerAvailable": false,
-            "modelUsable": false,
-            "errorCode": "unsupported_platform",
-            "error": "invalid engine handle or missing files_dir",
-            "model": model_from_config_json(&request.llm_config_json),
-            "configChanged": false,
-        })
-        .to_string();
-    }
-    configure_codex_agent_engine(request)
-}
-
-#[cfg(not(target_os = "android"))]
-fn configure_codex_agent_engine(request: ConfigureCodexRequest) -> String {
-    let model = model_from_config_json(&request.llm_config_json);
-    json!({
-        "success": false,
-        "providerAvailable": false,
-        "modelUsable": false,
-        "errorCode": "unsupported_platform",
-        "error": CODEX_UNSUPPORTED,
-        "model": model,
-        "configChanged": false,
-    })
-    .to_string()
-}
-
-#[cfg(target_os = "android")]
-fn configure_codex_agent_engine(request: ConfigureCodexRequest) -> String {
-    if request.clear {
-        return match config::clear(&request.files_dir) {
-            Ok(result) => {
-                set_current_config_fingerprint(&request.files_dir, None);
-                invalidate_sessions_for_config(&request.files_dir, None);
-                config_result_json(true, true, false, None, None, "", result.changed)
-            }
-            Err(error) => config_error_json(error, true),
-        };
-    }
-    if !request.llm_config_json.trim().is_empty() {
-        let prepared = match config::prepare_from_json(&request.llm_config_json) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                if let Err(clear_error) = clear_config_and_sessions(&request.files_dir) {
-                    return config_error_json(clear_error, true);
-                }
-                return config_error_json(error, true);
-            }
-        };
-        return match sync_prepared_config(&request.files_dir, &prepared) {
-            Ok(changed) => {
-                config_result_json(true, true, true, None, None, &prepared.model, changed)
-            }
-            Err(error) => config_error_json(error, true),
-        };
-    }
-
-    configure_legacy_raw(&request)
-}
-
-#[cfg(target_os = "android")]
-fn configure_legacy_raw(request: &ConfigureCodexRequest) -> String {
-    let codex_dir = config::config_dir(&request.files_dir);
-    let before_config = std::fs::read_to_string(codex_dir.join("config.toml")).ok();
-    let before_auth = std::fs::read_to_string(codex_dir.join("auth.json")).ok();
-    let result = (|| -> anyhow::Result<()> {
-        std::fs::create_dir_all(&codex_dir)?;
-        if !request.config_toml.is_empty() {
-            std::fs::write(codex_dir.join("config.toml"), &request.config_toml)?;
-        }
-        if !request.auth_json.is_empty() {
-            std::fs::write(codex_dir.join("auth.json"), &request.auth_json)?;
-        }
-        Ok(())
-    })();
-    match result {
-        Ok(()) => {
-            let changed = (!request.config_toml.is_empty()
-                && before_config.as_deref() != Some(request.config_toml.as_str()))
-                || (!request.auth_json.is_empty()
-                    && before_auth.as_deref() != Some(request.auth_json.as_str()));
-            set_current_config_fingerprint(&request.files_dir, None);
-            if changed {
-                invalidate_sessions_for_config(&request.files_dir, None);
-            }
-            config_result_json(true, true, true, None, None, "", changed)
-        }
-        Err(error) => config_result_json(
-            false,
-            true,
-            false,
-            Some("config_write_failed"),
-            Some(error.to_string()),
-            "",
-            false,
-        ),
-    }
-}
-
-#[cfg(target_os = "android")]
-fn sync_prepared_config(
-    files_dir: &str,
-    prepared: &PreparedCodexConfig,
-) -> Result<bool, CodexConfigError> {
-    let result = config::write_prepared(files_dir, prepared)?;
-    set_current_config_fingerprint(files_dir, Some(&prepared.fingerprint));
-    invalidate_sessions_for_config(files_dir, Some(&prepared.fingerprint));
-    Ok(result.changed)
-}
-
-#[cfg(target_os = "android")]
-fn clear_config_and_sessions(files_dir: &str) -> Result<bool, CodexConfigError> {
-    let result = config::clear(files_dir)?;
-    set_current_config_fingerprint(files_dir, None);
-    invalidate_sessions_for_config(files_dir, None);
-    Ok(result.changed)
-}
-
-#[cfg(target_os = "android")]
-fn config_error_json(error: CodexConfigError, provider_available: bool) -> String {
-    config_result_json(
-        false,
-        provider_available,
-        false,
-        Some(error.code),
-        Some(error.message),
-        &error.model,
-        false,
-    )
-}
-
-fn config_result_json(
-    success: bool,
-    provider_available: bool,
-    model_usable: bool,
-    error_code: Option<&str>,
-    error: Option<String>,
-    model: &str,
-    config_changed: bool,
-) -> String {
-    json!({
-        "success": success,
-        "providerAvailable": provider_available,
-        "modelUsable": model_usable,
-        "errorCode": error_code,
-        "error": error,
-        "model": model,
-        "configChanged": config_changed,
-    })
-    .to_string()
-}
-
-fn model_from_config_json(raw: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("model")
-                .and_then(|model| model.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or_default()
-}
-
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) async fn run_codex_turn<F, C>(
-    request: AgentEngineTurnRequest,
+    plan: CodexTurnPlan,
     mut emit: F,
     _is_cancelled: C,
 ) -> Vec<ChatEvent>
@@ -252,13 +58,13 @@ where
         message: CODEX_UNSUPPORTED.to_string(),
     };
     emit(event.clone());
-    let _ = request;
+    let _ = plan;
     vec![event]
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) async fn run_codex_turn<F, C>(
-    request: AgentEngineTurnRequest,
+    plan: CodexTurnPlan,
     mut emit: F,
     mut is_cancelled: C,
 ) -> Vec<ChatEvent>
@@ -269,6 +75,13 @@ where
     if is_cancelled() {
         return vec![ChatEvent::Interrupted];
     }
+
+    let CodexTurnPlan {
+        request,
+        tools,
+        internal_tool_handler,
+        tool_descriptors,
+    } = plan;
 
     let prepared_config = match config::prepare_from_json(&request.config_json) {
         Ok(prepared) => prepared,
@@ -306,6 +119,7 @@ where
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
         .or_else(|| native_library_dir_for(&request.files_dir));
+    #[cfg(target_os = "android")]
     let Some(native_library_dir) = native_library_dir else {
         let event = ChatEvent::Error {
             message: "missing native_library_dir for Android Codex agent engine".to_string(),
@@ -313,12 +127,20 @@ where
         emit(event.clone());
         return vec![event];
     };
+    #[cfg(target_os = "ios")]
+    let native_library_dir = native_library_dir.unwrap_or_default();
 
     let key = session_key(&request);
     let mut state = load_state(&request.files_dir, &key);
-    if state.config_fingerprint != prepared_config.fingerprint {
+    let runtime_fingerprint =
+        super::env::runtime_fingerprint(&prepared_config.fingerprint, &request.engine_config);
+    let dynamic_tools_fingerprint = dynamic_tools_fingerprint(&tool_descriptors);
+    if state.config_fingerprint != runtime_fingerprint
+        || state.dynamic_tools_fingerprint != dynamic_tools_fingerprint
+    {
         state.native_thread_id = None;
-        state.config_fingerprint = prepared_config.fingerprint.clone();
+        state.config_fingerprint = runtime_fingerprint.clone();
+        state.dynamic_tools_fingerprint = dynamic_tools_fingerprint.clone();
         save_state(&request.files_dir, &key, &state);
     }
     let (pty, start_action) = match acquire_session_process(
@@ -326,7 +148,9 @@ where
         &native_library_dir,
         &key,
         &state,
-        &prepared_config.fingerprint,
+        &runtime_fingerprint,
+        &dynamic_tools_fingerprint,
+        &tool_descriptors,
     ) {
         Ok(value) => value,
         Err(error) => {
@@ -424,11 +248,11 @@ where
             emit(event.clone());
             events.push(event);
         }
-        match crate::android_linux_env::pty::drain_pty_events(pty) {
+        match linux_env::pty::drain_pty_events(pty) {
             Ok(drained) => {
                 for event in drained {
                     match event.kind {
-                        crate::android_linux_env::pty::PtyEventKind::Output => {
+                        linux_env::pty::PtyEventKind::Output => {
                             let messages = {
                                 let sessions = active_sessions();
                                 let mut guard = sessions.lock().map_err(|e| e.to_string()).ok();
@@ -444,7 +268,9 @@ where
                             for message in messages {
                                 log_codex_runtime_message(&message);
                                 if let Some(pending) = pending_initialize.take() {
-                                    if response_id(&message) == Some(pending.initialize_id) {
+                                    if is_rpc_response(&message)
+                                        && response_id(&message) == Some(pending.initialize_id)
+                                    {
                                         if let Some(error) = response_error(&message) {
                                             let event = ChatEvent::Error {
                                                 message: format!("initialize failed: {error}"),
@@ -475,11 +301,17 @@ where
                                     pending_initialize = Some(pending);
                                 }
                                 if let Some((open_id, is_resume)) = pending_thread_open {
-                                    if response_id(&message) == Some(open_id) {
+                                    if is_rpc_response(&message)
+                                        && response_id(&message) == Some(open_id)
+                                    {
                                         if let Some(error) = response_error(&message) {
                                             if is_resume {
                                                 let start_line = with_active_rpc(&key, |rpc| {
-                                                    let (id, line) = thread_start_request(rpc);
+                                                    let (id, line) = thread_start_request(
+                                                        rpc,
+                                                        Some(&request),
+                                                        &tool_descriptors,
+                                                    );
                                                     pending_thread_open = Some((id, false));
                                                     line
                                                 });
@@ -560,8 +392,37 @@ where
                                         continue;
                                     }
                                 }
+                                if let Some(rpc_request_id) = server_request_id(&message) {
+                                    if let Some(response_line) = handle_server_tool_call(
+                                        rpc_request_id.clone(),
+                                        &message,
+                                        &request,
+                                        tools.as_ref(),
+                                        internal_tool_handler.as_ref(),
+                                        &tool_descriptors,
+                                        &mut is_cancelled,
+                                        &mut emit,
+                                        &mut events,
+                                    )
+                                    .await
+                                    .or_else(|| {
+                                        app_server_request_auto_response(&message, rpc_request_id)
+                                    }) {
+                                        if let Err(error) = write_line(pty, &response_line) {
+                                            let event = ChatEvent::Error {
+                                                message: error.to_string(),
+                                            };
+                                            emit(event.clone());
+                                            events.push(event);
+                                            saw_completion = true;
+                                            should_close = true;
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                }
                                 let mapped = map_app_server_message(&message);
-                                #[cfg(target_os = "android")]
+                                #[cfg(any(target_os = "android", target_os = "ios"))]
                                 if let Some(human_request) = mapped.human_request.as_ref() {
                                     register_human_request(
                                         &key,
@@ -587,8 +448,8 @@ where
                                 }
                             }
                         }
-                        crate::android_linux_env::pty::PtyEventKind::Exit
-                        | crate::android_linux_env::pty::PtyEventKind::Closed => {
+                        linux_env::pty::PtyEventKind::Exit
+                        | linux_env::pty::PtyEventKind::Closed => {
                             if !saw_completion {
                                 let event = ChatEvent::Error {
                                     message: "Codex app-server exited before the turn completed"
@@ -600,7 +461,7 @@ where
                             saw_completion = true;
                             should_close = true;
                         }
-                        crate::android_linux_env::pty::PtyEventKind::Log => {}
+                        linux_env::pty::PtyEventKind::Log => {}
                     }
                 }
             }
@@ -639,7 +500,7 @@ where
     events
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 enum StartAction {
     InitializeThenOpen {
         initialize_id: u64,
@@ -659,7 +520,7 @@ enum StartAction {
     },
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 struct InitializePendingOpen {
     initialize_id: u64,
     initialized_line: String,
@@ -668,28 +529,48 @@ struct InitializePendingOpen {
     is_resume: bool,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn acquire_session_process(
     request: &AgentEngineTurnRequest,
     native_library_dir: &str,
     key: &str,
     state: &super::state::CodexSessionState,
     config_fingerprint: &str,
+    dynamic_tools_fingerprint: &str,
+    dynamic_tools: &[crate::tool_registry::ToolDescriptor],
 ) -> anyhow::Result<(u64, StartAction)> {
     cleanup_idle_sessions();
     let sessions = active_sessions();
     let mut guard = sessions
         .lock()
         .map_err(|e| anyhow::anyhow!("Codex session registry lock poisoned: {e}"))?;
-    if let Some(active) = guard.get_mut(key) {
-        if active.config_fingerprint != config_fingerprint {
+    if let Some(active) = guard.get(key) {
+        let stale = active.config_fingerprint != config_fingerprint
+            || active.dynamic_tools_fingerprint != dynamic_tools_fingerprint;
+        if stale && active.running {
             anyhow::bail!(
-                "Codex agent engine model configuration changed while a session was active"
+                "Codex agent engine configuration changed while a session has an active turn"
             );
         }
-        if active.running {
-            anyhow::bail!("Codex agent engine session already has an active turn");
+        if stale {
+            let stale = guard.remove(key);
+            drop(guard);
+            if let Some(stale) = stale {
+                remove_pending_human_requests_for_session(key);
+                let _ = linux_env::pty::close_pty_session(stale.pty);
+            }
+            return acquire_session_process(
+                request,
+                native_library_dir,
+                key,
+                state,
+                config_fingerprint,
+                dynamic_tools_fingerprint,
+                dynamic_tools,
+            );
         }
+    }
+    if let Some(active) = guard.get_mut(key) {
         active.running = true;
         active.last_used = Instant::now();
         let action = if state.native_thread_id.is_some() {
@@ -697,7 +578,8 @@ fn acquire_session_process(
                 lines: skill_roots_then_turn_lines(&mut active.rpc, request, state),
             }
         } else {
-            let (request_id, line, is_resume) = thread_open_request(&mut active.rpc, state);
+            let (request_id, line, is_resume) =
+                thread_open_request(&mut active.rpc, state, Some(request), dynamic_tools);
             StartAction::OpenThread {
                 request_id,
                 line,
@@ -707,10 +589,16 @@ fn acquire_session_process(
         return Ok((active.pty, action));
     }
 
+    ensure_codex_cli_available(&request.files_dir)?;
+
+    let network_env = super::env::codex_process_env(&request.engine_config);
+    let network_exports = super::env::shell_export_prefix(&network_env);
     let argv = vec![
         "/bin/sh".to_string(),
         "-lc".to_string(),
-        "mkdir -p /workspace /root/.codex && stty raw -echo -icanon -ixon -ixoff 2>/dev/null; export HOME=/root CODEX_HOME=/root/.codex PATH=\"/root/.local/bin:$PATH\"; exec codex app-server 2>&1".to_string(),
+        format!(
+            "mkdir -p /workspace /root/.codex && stty raw -echo -icanon -ixon -ixoff 2>/dev/null; export HOME=/root CODEX_HOME=/root/.codex PATH=\"/root/.local/bin:$PATH\"; {network_exports}exec codex app-server 2>&1"
+        ),
     ];
     let workspace_dir = crate::storage::FileBridge::new_with_workspace_files_dir(
         &request.files_dir,
@@ -719,7 +607,7 @@ fn acquire_session_process(
     .workspace_dir()
     .display()
     .to_string();
-    let pty = crate::android_linux_env::pty::open_pty_session(
+    let pty = linux_env::pty::open_pty_session(
         &request.files_dir,
         native_library_dir,
         &workspace_dir,
@@ -733,7 +621,8 @@ fn acquire_session_process(
     let initialized_line = initialized_notification(&rpc);
     let (_skills_root_id, skills_root_line) = skills_extra_roots_set_request(&mut rpc);
     let (_skills_list_id, skills_list_line) = skills_list_request(&mut rpc, true);
-    let (open_request_id, open_line, is_resume) = thread_open_request(&mut rpc, state);
+    let (open_request_id, open_line, is_resume) =
+        thread_open_request(&mut rpc, state, Some(request), dynamic_tools);
     let action = StartAction::InitializeThenOpen {
         initialize_id,
         initialize_line,
@@ -753,18 +642,35 @@ fn acquire_session_process(
             human_responses: Vec::new(),
             files_dir: request.files_dir.clone(),
             config_fingerprint: config_fingerprint.to_string(),
+            dynamic_tools_fingerprint: dynamic_tools_fingerprint.to_string(),
             close_after_turn: false,
         },
     );
     Ok((pty, action))
 }
 
-#[cfg(target_os = "android")]
-fn write_line(pty: u64, line: &str) -> anyhow::Result<()> {
-    crate::android_linux_env::pty::write_pty_session(pty, &(line.to_string() + "\n"))
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn ensure_codex_cli_available(files_dir: &str) -> anyhow::Result<()> {
+    let rootfs_dir = std::path::Path::new(files_dir).join("linux-env/rootfs");
+    let candidates = [
+        rootfs_dir.join("root/.local/bin/codex"),
+        rootfs_dir.join("usr/local/bin/codex"),
+        rootfs_dir.join("usr/bin/codex"),
+    ];
+    if candidates.iter().any(|path| path.exists()) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "Codex CLI is missing from the bundled Linux rootfs; rebuild the bundled rootfs with tools/scripts/bake_android_rootfs.sh so `codex app-server` is available"
+    )
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn write_line(pty: u64, line: &str) -> anyhow::Result<()> {
+    linux_env::pty::write_pty_session(pty, &(line.to_string() + "\n"))
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn write_lines(pty: u64, lines: &[String]) -> anyhow::Result<()> {
     for line in lines {
         write_line(pty, line)?;
@@ -772,7 +678,7 @@ fn write_lines(pty: u64, lines: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn with_active_rpc<T>(key: &str, build: impl FnOnce(&mut JsonRpcClient) -> T) -> Option<T> {
     let sessions = active_sessions();
     let mut guard = sessions.lock().ok()?;
@@ -781,7 +687,7 @@ fn with_active_rpc<T>(key: &str, build: impl FnOnce(&mut JsonRpcClient) -> T) ->
     Some(build(&mut active.rpc))
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn write_turn_after_thread_open(
     pty: u64,
     key: &str,
@@ -797,7 +703,13 @@ fn write_turn_after_thread_open(
     })
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn is_rpc_response(message: &serde_json::Value) -> bool {
+    response_id(message).is_some()
+        && (message.get("result").is_some() || message.get("error").is_some())
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn log_codex_runtime_message(message: &serde_json::Value) {
     if let Some(codex_home) = message
         .pointer("/result/codexHome")
@@ -821,7 +733,7 @@ fn log_codex_runtime_message(message: &serde_json::Value) {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn release_session_process(key: &str, close: bool) {
     let sessions = active_sessions();
     let (active, did_close, clear_mapping) = {
@@ -846,11 +758,11 @@ fn release_session_process(key: &str, close: bool) {
         if clear_mapping {
             clear_state(&active.files_dir, key);
         }
-        let _ = crate::android_linux_env::pty::close_pty_session(active.pty);
+        let _ = linux_env::pty::close_pty_session(active.pty);
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn register_human_request(key: &str, request_id: &str, rpc_id: &str, question_id: &str) {
     if let Ok(mut guard) = pending_human_requests().lock() {
         guard.insert(
@@ -864,7 +776,7 @@ fn register_human_request(key: &str, request_id: &str, rpc_id: &str, question_id
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn drain_human_responses(key: &str) -> Vec<(String, String)> {
     active_sessions()
         .lock()
@@ -878,14 +790,14 @@ fn drain_human_responses(key: &str) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn remove_pending_human_requests_for_session(key: &str) {
     if let Ok(mut guard) = pending_human_requests().lock() {
         guard.retain(|_, pending| pending.session_key != key);
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) fn answer_human_request(request_id: &str, response: &str) -> bool {
     let pending = {
         let Ok(mut guard) = pending_human_requests().lock() else {
@@ -897,7 +809,6 @@ pub(crate) fn answer_human_request(request_id: &str, response: &str) -> bool {
         return false;
     };
     let payload = json!({
-        "jsonrpc": "2.0",
         "id": rpc_id_json_value(&pending.rpc_id),
         "result": {
             "answers": {
@@ -913,7 +824,7 @@ pub(crate) fn answer_human_request(request_id: &str, response: &str) -> bool {
         .ok()
         .and_then(|mut guard| {
             let active = guard.get_mut(&pending.session_key)?;
-            match crate::android_linux_env::pty::write_pty_session(active.pty, &(payload + "\n")) {
+            match linux_env::pty::write_pty_session(active.pty, &(payload + "\n")) {
                 Ok(()) => {
                     active
                         .human_responses
@@ -933,19 +844,19 @@ pub(crate) fn answer_human_request(request_id: &str, response: &str) -> bool {
     true
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn rpc_id_json_value(raw: &str) -> serde_json::Value {
     raw.parse::<u64>()
         .map(serde_json::Value::from)
         .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn answer_human_request(_request_id: &str, _response: &str) -> bool {
     false
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn cleanup_idle_sessions() {
     let expired = {
         let sessions = active_sessions();
@@ -966,12 +877,12 @@ fn cleanup_idle_sessions() {
             .collect::<Vec<_>>()
     };
     for active in expired {
-        let _ = crate::android_linux_env::pty::close_pty_session(active.pty);
+        let _ = linux_env::pty::close_pty_session(active.pty);
     }
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::agent_engine::codex::config;
 
     #[test]
     fn codex_config_dir_targets_linux_env_rootfs_home() {

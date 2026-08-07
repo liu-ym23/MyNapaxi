@@ -2,6 +2,26 @@ import Foundation
 import CryptoKit
 import Security
 
+/// A one-turn explicit selection of an installed Agent App Provider.
+public struct NapaxiAgentProviderSelection: Equatable, Sendable {
+    public let providerId: String
+
+    public init(providerId: String) {
+        self.providerId = providerId
+    }
+
+    public func applyToMessage(_ message: String) throws -> String {
+        let id = providerId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else {
+            throw NapaxiError.invalidJSON("providerId must not be empty")
+        }
+        guard !id.contains("}") else {
+            throw NapaxiError.invalidJSON("providerId must not contain }")
+        }
+        return "@{provider:\(id)} \(message.drop(while: { $0.isWhitespace }))"
+    }
+}
+
 public struct NapaxiAgentProviderDescriptor: Codable, Equatable, Sendable {
     public var platform: String
     public var packageName: String
@@ -9,6 +29,9 @@ public struct NapaxiAgentProviderDescriptor: Codable, Equatable, Sendable {
     public var activityName: String
     public var label: String
     public var signingCertSha256: String
+    public var packageVersionCode: Int
+    public var packageLastUpdateTimeMs: Int
+    public var trustedRefreshSupported: Bool
     public var installUrl: String
     public var actionUrl: String
     public var universalLinkDomain: String
@@ -22,6 +45,9 @@ public struct NapaxiAgentProviderDescriptor: Codable, Equatable, Sendable {
         activityName: String = "",
         label: String = "",
         signingCertSha256: String = "",
+        packageVersionCode: Int = 0,
+        packageLastUpdateTimeMs: Int = 0,
+        trustedRefreshSupported: Bool = false,
         installUrl: String = "",
         actionUrl: String = "",
         universalLinkDomain: String = "",
@@ -34,6 +60,9 @@ public struct NapaxiAgentProviderDescriptor: Codable, Equatable, Sendable {
         self.activityName = activityName
         self.label = label
         self.signingCertSha256 = signingCertSha256
+        self.packageVersionCode = packageVersionCode
+        self.packageLastUpdateTimeMs = packageLastUpdateTimeMs
+        self.trustedRefreshSupported = trustedRefreshSupported
         self.installUrl = installUrl
         self.actionUrl = actionUrl
         self.universalLinkDomain = universalLinkDomain
@@ -55,6 +84,9 @@ public struct NapaxiAgentProviderDescriptor: Codable, Equatable, Sendable {
             activityName: activityName ?? installActivityName ?? "",
             label: map.string("label") ?? "",
             signingCertSha256: map.string("signingCertSha256") ?? "",
+            packageVersionCode: map.int("packageVersionCode") ?? 0,
+            packageLastUpdateTimeMs: map.int("packageLastUpdateTimeMs") ?? 0,
+            trustedRefreshSupported: map.bool("trustedRefreshSupported") ?? false,
             installUrl: map.string("installUrl") ?? "",
             actionUrl: map.string("actionUrl") ?? "",
             universalLinkDomain: map.string("universalLinkDomain") ?? "",
@@ -70,6 +102,9 @@ public struct NapaxiAgentProviderDescriptor: Codable, Equatable, Sendable {
         case activityName
         case label
         case signingCertSha256
+        case packageVersionCode
+        case packageLastUpdateTimeMs
+        case trustedRefreshSupported
         case installUrl
         case actionUrl
         case universalLinkDomain
@@ -88,6 +123,9 @@ public struct NapaxiAgentProviderDescriptor: Codable, Equatable, Sendable {
             activityName: activityName ?? installActivityName ?? "",
             label: try container.decodeIfPresent(String.self, forKey: .label) ?? "",
             signingCertSha256: try container.decodeIfPresent(String.self, forKey: .signingCertSha256) ?? "",
+            packageVersionCode: try container.decodeIfPresent(Int.self, forKey: .packageVersionCode) ?? 0,
+            packageLastUpdateTimeMs: try container.decodeIfPresent(Int.self, forKey: .packageLastUpdateTimeMs) ?? 0,
+            trustedRefreshSupported: try container.decodeIfPresent(Bool.self, forKey: .trustedRefreshSupported) ?? false,
             installUrl: try container.decodeIfPresent(String.self, forKey: .installUrl) ?? "",
             actionUrl: try container.decodeIfPresent(String.self, forKey: .actionUrl) ?? "",
             universalLinkDomain: try container.decodeIfPresent(String.self, forKey: .universalLinkDomain) ?? "",
@@ -114,6 +152,9 @@ public struct NapaxiAgentProviderDescriptor: Codable, Equatable, Sendable {
             "signingCertSha256": .string(signingCertSha256),
         ]
         object.setNonEmpty("installUrl", installUrl)
+        if packageVersionCode > 0 { object["packageVersionCode"] = .number(Double(packageVersionCode)) }
+        if packageLastUpdateTimeMs > 0 { object["packageLastUpdateTimeMs"] = .number(Double(packageLastUpdateTimeMs)) }
+        if trustedRefreshSupported { object["trustedRefreshSupported"] = .bool(true) }
         object.setNonEmpty("actionUrl", actionUrl)
         object.setNonEmpty("universalLinkDomain", universalLinkDomain)
         object.setNonEmpty("iosBundleId", iosBundleId)
@@ -593,7 +634,7 @@ public final class NapaxiAgentProviderHost: @unchecked Sendable {
             hostPackageName: hostInfo.bundleId,
             createdAt: created,
             expiresAt: expires,
-            hostInstanceId: Self.randomHex(byteCount: 16),
+            hostInstanceId: stableHostInstanceId(),
             hostSharedSecret: Self.randomHex(byteCount: 32),
             hostBundleId: hostInfo.bundleId,
             hostTeamId: hostInfo.teamId,
@@ -602,6 +643,16 @@ public final class NapaxiAgentProviderHost: @unchecked Sendable {
             backgroundTriggerSupported: hostInfo.backgroundTriggerSupported,
             hostBackgroundTriggerService: hostInfo.backgroundTriggerService
         )
+    }
+
+    private func stableHostInstanceId() -> String {
+        let key = "napaxi.agent_provider.host_instance_id.\(hostInfo.bundleId).v1"
+        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
+            return existing
+        }
+        let created = Self.randomHex(byteCount: 16)
+        UserDefaults.standard.set(created, forKey: key)
+        return created
     }
 
     public func installURL(
@@ -625,6 +676,20 @@ public final class NapaxiAgentProviderHost: @unchecked Sendable {
         openURL: @escaping URLOpener
     ) async throws -> NapaxiAgentProviderInstallResponse {
         let request = createInstallRequest()
+        return try await requestInstall(
+            provider: provider,
+            request: request,
+            timeoutSeconds: timeoutSeconds,
+            openURL: openURL
+        )
+    }
+
+    public func requestInstall(
+        provider: NapaxiAgentProviderDescriptor,
+        request: NapaxiAgentInstallRequest,
+        timeoutSeconds: UInt64 = NapaxiAgentProviderHost.defaultInstallTimeoutSeconds,
+        openURL: @escaping URLOpener
+    ) async throws -> NapaxiAgentProviderInstallResponse {
         let handoffURL = try installURL(for: provider, request: request)
 
         return try await withTaskCancellationHandler {

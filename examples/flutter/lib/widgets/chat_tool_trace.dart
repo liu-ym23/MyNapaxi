@@ -4,6 +4,7 @@ const _toolFailureColor = Color(0xFF6B7280);
 const _toolFailureSurface = Color(0xFFF9FAFB);
 const _toolFailureBorder = Color(0xFFE5E7EB);
 const _toolFailureTerminalColor = Color(0xFF9CA3AF);
+const _liveReasoningMaxCharacters = 8000;
 
 class _AgentTraceSection extends StatefulWidget {
   const _AgentTraceSection({
@@ -47,7 +48,10 @@ class _AgentTraceSectionState extends State<_AgentTraceSection>
     } else if (!widget.message.isStreaming && _pulseController.isAnimating) {
       _pulseController.stop();
       _pulseController.value = 0;
-      if (widget.message.content.isNotEmpty) _expanded = false;
+      // A terminal trace must stop participating in every subsequent frame.
+      // In particular, a reasoning-only segment can be very large and used to
+      // strand the final UI frame while it remained expanded.
+      _expanded = false;
     }
   }
 
@@ -152,6 +156,7 @@ class _AgentTraceSectionState extends State<_AgentTraceSection>
           for (final step in traceSteps)
             _AgentTraceStepView(
               step: step,
+              limitReasoning: message.isStreaming,
               onLoadFullToolCall: widget.onLoadFullToolCall,
             ),
         ],
@@ -330,10 +335,12 @@ String _skillReasonLabel(AppStrings strings, String reason) {
 class _AgentTraceStepView extends StatelessWidget {
   const _AgentTraceStepView({
     required this.step,
+    required this.limitReasoning,
     required this.onLoadFullToolCall,
   });
 
   final AgentTraceStep step;
+  final bool limitReasoning;
   final Future<AgentToolCall?> Function(AgentToolCall toolCall)
   onLoadFullToolCall;
 
@@ -345,7 +352,12 @@ class _AgentTraceStepView extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (step.reasoning.trim().isNotEmpty)
-          _ReasoningBlock(text: step.reasoning.trim()),
+          _ReasoningBlock(
+            text: _reasoningForLiveDisplay(
+              step.reasoning.trim(),
+              limit: limitReasoning,
+            ),
+          ),
         ...toolWidgets,
       ],
     );
@@ -388,6 +400,18 @@ class _AgentTraceStepView extends StatelessWidget {
     }
     return widgets;
   }
+}
+
+String _reasoningForLiveDisplay(String text, {required bool limit}) {
+  if (!limit || text.length <= _liveReasoningMaxCharacters) return text;
+  var start = text.length - _liveReasoningMaxCharacters;
+  // Do not split a UTF-16 surrogate pair when taking the live tail.
+  if (start > 0) {
+    final codeUnit = text.codeUnitAt(start);
+    if (codeUnit >= 0xDC00 && codeUnit <= 0xDFFF) start -= 1;
+  }
+  return '… Earlier reasoning is hidden while this response is running.\n\n'
+      '${text.substring(start)}';
 }
 
 class _TraceCountChip extends StatelessWidget {
@@ -457,23 +481,18 @@ class _ReasoningBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: IntrinsicHeight(
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Container(width: 2, color: const Color(0xFFE5E7EB)),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                text,
-                style: const TextStyle(
-                  color: Color(0xFF6B7280),
-                  fontSize: 13,
-                  height: 1.4,
-                ),
-              ),
-            ),
-          ],
+      child: Container(
+        decoration: const BoxDecoration(
+          border: Border(left: BorderSide(color: Color(0xFFE5E7EB), width: 2)),
+        ),
+        padding: const EdgeInsets.only(left: 10),
+        child: Text(
+          text,
+          style: const TextStyle(
+            color: Color(0xFF6B7280),
+            fontSize: 13,
+            height: 1.4,
+          ),
         ),
       ),
     );
@@ -853,7 +872,8 @@ class _PlanToolView extends StatelessWidget {
   Widget build(BuildContext context) {
     final args = _decodeJsonMap(toolCall.arguments);
     final explanation = _stringField(args, ['explanation']).trim();
-    final steps = (args['steps'] as List?)
+    final steps =
+        (args['steps'] as List?)
             ?.whereType<Map>()
             .map((step) => Map<String, dynamic>.from(step))
             .toList(growable: false) ??
@@ -893,18 +913,12 @@ class _PlanStepRow extends StatelessWidget {
     final status = step['status']?.toString().trim().toLowerCase() ?? '';
     final text = step['step']?.toString().trim() ?? '';
     final (icon, color) = switch (status) {
-      'completed' => (
-        Icons.check_circle_rounded,
-        const Color(0xFF059669),
-      ),
+      'completed' => (Icons.check_circle_rounded, const Color(0xFF059669)),
       'inprogress' => (
         Icons.radio_button_checked_rounded,
         const Color(0xFF2563EB),
       ),
-      _ => (
-        Icons.radio_button_unchecked_rounded,
-        const Color(0xFF9CA3AF),
-      ),
+      _ => (Icons.radio_button_unchecked_rounded, const Color(0xFF9CA3AF)),
     };
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
@@ -1125,6 +1139,9 @@ class _WebToolViewState extends State<_WebToolView> {
     final searchResults = name == 'web_search'
         ? _parseWebSearchResults(output)
         : const <_WebSearchResult>[];
+    final searchDeclaredCount = name == 'web_search'
+        ? _parseWebSearchDeclaredCount(output)
+        : null;
     final rows = _toolInfoRows(toolCall, widget.spec.kind);
 
     return Column(
@@ -1135,7 +1152,10 @@ class _WebToolViewState extends State<_WebToolView> {
           const SizedBox(height: 8),
         ],
         if (searchResults.isNotEmpty)
-          _WebSearchResultsView(results: searchResults)
+          _WebSearchResultsView(
+            results: searchResults,
+            declaredCount: searchDeclaredCount,
+          )
         else
           _WebContentPreview(
             toolName: name,
@@ -1213,9 +1233,10 @@ class _WebSearchResult {
 }
 
 class _WebSearchResultsView extends StatelessWidget {
-  const _WebSearchResultsView({required this.results});
+  const _WebSearchResultsView({required this.results, this.declaredCount});
 
   final List<_WebSearchResult> results;
+  final int? declaredCount;
 
   @override
   Widget build(BuildContext context) {
@@ -1230,6 +1251,18 @@ class _WebSearchResultsView extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Text(
+            declaredCount == null || declaredCount == results.length
+                ? 'Results (${results.length})'
+                : 'Results (${results.length} shown / $declaredCount reported)',
+            style: const TextStyle(
+              color: Color(0xFF374151),
+              fontSize: 12,
+              height: 1.35,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
           for (var i = 0; i < results.length; i++) ...[
             _WebSearchResultCard(index: i + 1, result: results[i]),
             if (i != results.length - 1)
@@ -3727,6 +3760,30 @@ List<String> _memoryTreeLines(Object? value, [int depth = 0]) {
   return ['$prefix$value'];
 }
 
+String _parseWebSearchDiagnostics(String output) {
+  final decoded = _decodeJsonMap(output);
+  final diagnostics = _stringField(decoded, ['diagnostics']);
+  if (diagnostics.isNotEmpty) return diagnostics;
+  for (final rawLine in output.split('\n')) {
+    final line = rawLine.trim();
+    const prefix = 'Search diagnostics:';
+    if (line.startsWith(prefix)) {
+      return line.substring(prefix.length).trim();
+    }
+  }
+  return '';
+}
+
+int? _parseWebSearchDeclaredCount(String output) {
+  final decoded = _decodeJsonMap(output);
+  final value = decoded['result_count'];
+  if (value is int && value >= 0) return value;
+  if (value is num && value >= 0) return value.toInt();
+  final results = decoded['results'];
+  if (results is List) return results.length;
+  return null;
+}
+
 List<_WebSearchResult> _parseWebSearchResults(String output) {
   final jsonResults = _parseJsonSearchResults(output);
   if (jsonResults.isNotEmpty) return jsonResults;
@@ -3755,7 +3812,11 @@ List<_WebSearchResult> _parseWebSearchResults(String output) {
   final itemPattern = RegExp(r'^\s*\d+\.\s+(.*)$');
   for (final rawLine in lines) {
     final line = rawLine.trim();
-    if (line.isEmpty || line.startsWith('Search results for:')) continue;
+    if (line.isEmpty ||
+        line.startsWith('Search results for:') ||
+        line.startsWith('Search diagnostics:')) {
+      continue;
+    }
     final itemMatch = itemPattern.firstMatch(line);
     if (itemMatch != null) {
       flush();
@@ -3852,6 +3913,9 @@ List<({String label, String value})> _toolInfoRows(
         ]),
       );
       add('status', _stringField(result, ['status', 'status_code']));
+      if (_canonicalToolName(toolCall.name) == 'web_search') {
+        add('diagnostics', _parseWebSearchDiagnostics(toolCall.output ?? ''));
+      }
       break;
     case _ToolDisplayKind.browser:
       add('action', _browserDisplayTitle(_canonicalToolName(toolCall.name)));

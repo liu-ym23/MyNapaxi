@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::tool_registry::{ToolDescriptor, ToolRegistry};
-use crate::types::{ChatEvent, PlatformLlmConfig};
+use crate::types::{ChatEvent, IncomingAttachment, PlatformLlmConfig};
 
 #[cfg(test)]
 use super::TurnMode;
@@ -22,6 +22,8 @@ pub(crate) struct PreparedTurn {
     pub(crate) history: Vec<crate::session::SessionMessage>,
     pub(crate) raw_history: Vec<serde_json::Value>,
     pub(crate) context_events: Vec<ChatEvent>,
+    pub(crate) attachments: Vec<IncomingAttachment>,
+    pub(crate) tool_descriptors: Vec<ToolDescriptor>,
 }
 
 #[cfg(test)]
@@ -59,6 +61,7 @@ pub(crate) async fn prepare_turn(
         tools,
         extra_tools,
         is_group_context,
+        None,
         &mut context,
         &mut hooks,
     )
@@ -77,6 +80,7 @@ pub(crate) async fn prepare_turn_with_hooks<H>(
     tools: Option<&Arc<ToolRegistry>>,
     extra_tools: &[ToolDescriptor],
     is_group_context: bool,
+    agent_engine: Option<&crate::agent_engine::AgentEngineSelection>,
     context: &mut TurnLifecycleContext,
     hooks: &mut H,
 ) -> std::result::Result<PreparedTurn, ChatEvent>
@@ -103,6 +107,12 @@ where
     };
     hooks.stage_completed(context, TurnStage::ParseInput);
 
+    if let Err(error) = crate::skills::export_prompt_skills(files_dir, agent_id).await {
+        let message = format!("Skill sandbox sync failed: {error}");
+        hooks.stage_failed(context, TurnStage::PreparePrompt, &message);
+        return Err(chat_error(message));
+    }
+
     hooks.stage_started(context, TurnStage::PreparePrompt);
     let has_shell_tool = crate::tool_loop::has_tool_named(tools, extra_tools, "shell").await;
     let has_browser_tool =
@@ -120,6 +130,7 @@ where
             has_shell_tool,
             has_browser_tool,
             is_group_context,
+            include_first_run_bootstrap: !crate::agent_engine::selection_is_codex(agent_engine),
         },
     )
     .await;
@@ -202,6 +213,8 @@ where
         history,
         raw_history,
         context_events,
+        attachments,
+        tool_descriptors: preflight_descriptors,
     })
 }
 
@@ -216,6 +229,7 @@ pub(crate) async fn reprepare_turn_after_context_overflow_with_hooks<H>(
     tools: Option<&Arc<ToolRegistry>>,
     extra_tools: &[ToolDescriptor],
     is_group_context: bool,
+    agent_engine: Option<&crate::agent_engine::AgentEngineSelection>,
     context: &mut TurnLifecycleContext,
     hooks: &mut H,
 ) -> std::result::Result<PreparedTurn, ChatEvent>
@@ -243,6 +257,12 @@ where
     context.thread_id = Some(thread_id.clone());
     hooks.stage_completed(context, TurnStage::ParseInput);
 
+    if let Err(error) = crate::skills::export_prompt_skills(files_dir, agent_id).await {
+        let message = format!("Skill sandbox sync failed: {error}");
+        hooks.stage_failed(context, TurnStage::PreparePrompt, &message);
+        return Err(chat_error(message));
+    }
+
     hooks.stage_started(context, TurnStage::PreparePrompt);
     let has_shell_tool = crate::tool_loop::has_tool_named(tools, extra_tools, "shell").await;
     let has_browser_tool =
@@ -260,6 +280,7 @@ where
             has_shell_tool,
             has_browser_tool,
             is_group_context,
+            include_first_run_bootstrap: !crate::agent_engine::selection_is_codex(agent_engine),
         },
     )
     .await;
@@ -317,6 +338,8 @@ where
         history,
         raw_history,
         context_events: context_output.events,
+        attachments,
+        tool_descriptors: preflight_descriptors,
     })
 }
 

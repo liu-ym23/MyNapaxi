@@ -21,6 +21,69 @@ functional names such as `AgentProvider`, `AgentPackage`, `AgentAction`,
 The SDK does not provide silent cross-app execution and does not store provider
 credentials.
 
+## Explicit provider selection
+
+A Host can make one installed Provider available to the current default Agent
+for a single message without switching Agent identity. The canonical prefix is:
+
+```text
+@{provider:<provider_id>} <user request>
+```
+
+Core removes the marker before model execution, mounts only that Provider's
+actions, and persists a friendly `@<display_name>` mention in history. The
+Flutter, Android, and iOS SDKs expose `AgentProviderSelection` as a convenience
+for constructing this one-turn selection. It does not change the current
+Agent, session, or memory scope and does not carry over to the next message.
+Human-readable names resolve only when unique; duplicate display names produce
+an ambiguity error listing canonical provider ids instead of choosing one. An
+unknown canonical provider id fails before model execution.
+
+Protocol v2 packages and proposals retain their legacy `agent_id` for Provider
+validation compatibility, but Provider registration no longer creates an
+`AgentDefinition` and the action can be invoked by the current default Agent.
+Packages are stored by `provider_id`; legacy agent-keyed files migrate on read.
+
+## Providers generated on-device
+
+New Android apps produced by the bundled `android-apk-build` skill include an
+`assets/agent-app.json` declaration, trusted install entry, and action Activity
+by default. A dependency-free Java Lite SDK owns caller-certificate, HMAC,
+expiry, nonce, idempotency, and replay validation; generated apps must not copy
+or reimplement that reusable protocol logic.
+
+Generated action activities start from bundled templates and route declared
+actions through `AgentProviderActionRegistry`. The build validator checks that
+every package action has exactly one source registration. Provider support is
+default-on for newly generated apps, can be explicitly disabled, and does not
+prevent legacy projects without a declaration from rebuilding.
+
+The launcher UI and Provider action Activity must call the same app-owned
+domain service. High and critical risk actions require Provider-owned
+confirmation UI. After APK installation, the Host discovers the Provider and
+runs the trusted enable handshake only after user consent; installation is not
+silent authorization.
+
+The Napaxi V1 product journey is:
+
+1. The user describes and generates any Android app in Napaxi. The skill emits
+   a provider package and handlers for that app's actual domain; it is not tied
+   to a notes, tasks, or other fixed example.
+2. The user installs the APK through Android's package installer. When Napaxi
+   resumes or next launches, the Host discovers apps declaring the provider
+   protocol and asks whether to enable them.
+3. Settings > Connected apps always lists available, enabled, and now-missing
+   apps. Disabling removes the Napaxi connection but neither uninstalls the app
+   nor deletes app-owned data.
+4. Once connected, the user types `@` and chooses from Agent apps that are both
+   connected and still installed. The Host inserts `@<display_name>` to select
+   that app explicitly. V1 does not perform natural-language auto-selection or
+   change the current Agent, session, or memory scope.
+
+Repository provider examples are protocol/build fixtures, not prebuilt apps
+required by product acceptance. End-to-end acceptance starts by generating a
+new domain app inside Napaxi.
+
 ## Package
 
 A provider app declares one `AgentPackage` with one or more actions:
@@ -36,7 +99,10 @@ A provider app declares one `AgentPackage` with one or more actions:
     {
       "action_id": "provider.order.create",
       "tool_name": "app_action_provider_order_create",
+      "display_name": "Create order",
+      "localized_display_names": {"zh-CN": "创建订单"},
       "description": "Create an order proposal.",
+      "localized_descriptions": {"zh-CN": "在应用中创建一个新订单。"},
       "parameters": { "type": "object", "properties": {} },
       "result_schema": { "type": "object" },
       "risk": "high",
@@ -49,6 +115,17 @@ A provider app declares one `AgentPackage` with one or more actions:
   "result": {}
 }
 ```
+
+`display_name`, `localized_display_names`, and `localized_descriptions` are
+optional for wire compatibility but should be supplied by every new Provider.
+The Host uses them to render the Agent App capability detail page. Locale keys
+use BCP 47-style tags such as `zh-CN` and `en`; when no localized value matches,
+the Host falls back to `display_name` and `description`.
+
+`confirmation_policy` accepts `none` and `provider_required`. Hosts and the
+Lite Provider SDK normalize the legacy value `provider` to
+`provider_required` so existing manifests remain fail-closed, but newly built
+Provider apps must not emit that legacy alias. Unknown values are rejected.
 
 Provider action tool names continue to use the host-side
 `app_action_` prefix so descriptor and invocation admission can map to the
@@ -102,6 +179,26 @@ The host ignores any `install_binding` returned by the provider. It reads the
 Android package name, action Activity, and signing certificate digest from the
 system and writes that trusted binding before registering the package.
 
+One host installation reuses a stable `host_instance_id`; each provider still
+receives an independent shared secret. If trusted validation returns
+`host_not_bound` before provider business logic starts, the host may resend an
+explicit `INSTALL_AGENT` request with the existing host instance id and shared
+secret, then retry the unchanged proposal once. Restore is allowed only while
+the provider package/bundle identity and signing identity still match the
+stored install binding. It must not loop after a second failure or silently
+trust a changed provider identity.
+
+Generated Android Providers opt into trusted in-place manifest refresh with
+the application metadata key `agent.provider.TRUSTED_REFRESH_SUPPORTED=true`.
+After a package replacement, the Host may repeat the install handshake and
+register the returned manifest only when the OS package name and signing
+certificate still match the stored binding and the returned `provider_id` and
+`agent_id` are unchanged. The Host preserves its existing instance id/shared
+secret and Core-owned auto-invoke/usage state. Package version code and last
+update time are change detectors, not trust anchors. A missing package or a
+changed signing/Provider/Agent identity remains unavailable until an explicit
+reconnect.
+
 Host to provider app:
 
 - Intent action: `agent.provider.action.HANDLE_PROPOSAL`
@@ -144,6 +241,45 @@ Trusted validation checks the Android caller package/signature, proposal HMAC
 signature, expiry, nonce/idempotency fields, and local replay store. Untrusted
 requests may be downgraded to explicit provider confirmation or rejected, but
 must not run silently.
+
+## Android Runtime Diagnostics
+
+New Android apps generated on-device include a private, bounded runtime
+diagnostics store. It captures uncaught Java exceptions, relevant Android
+historical process-exit reasons (including ANR and native crash when exposed by
+the OS), small action-lifecycle breadcrumbs, and structured app runtime logs.
+Log levels are `debug`, `info`, `warning`, `error`, and `crash`; debug collection
+is off by default. Logs are capped at 300 entries or 512 KiB, expire after three
+days, and are further capped to 256 KiB per Host response. Reports and logs are
+sanitized and remain in the Provider app's private storage; they are not copied
+into chat, memory, workspace files, or model context.
+
+Napaxi retrieves reports from the Agent App detail page through a third,
+model-hidden Android entry point:
+
+- Intent action: `agent.provider.action.GET_DIAGNOSTICS`
+- Request extra: `agent.provider.extra.DIAGNOSTICS_REQUEST_JSON`
+- Result extra: `agent.provider.extra.DIAGNOSTICS_RESULT_JSON`
+
+Diagnostics protocol v1 supports `list`, `ack`, and `configure`. `configure`
+changes only debug-level collection; info, warning, error, and crash collection
+remain enabled. Every request identifies the `provider_id`, `host_instance_id`,
+operation, report-id list, detailed-log setting, timestamp, expiry, and nonce,
+and is signed with `hmac-sha256-v1` using the Provider's
+existing trusted Host binding. The Provider validates the caller package and
+certificate, binding, expiry, and signature before returning data. Diagnostics
+must not be declared in `AgentPackage.actions`, mounted as a tool, or invoked by
+natural-language routing.
+
+Generated app domain code should emit small semantic events rather than mirror
+raw `logcat`: module, event name, short message, optional trace id, and bounded
+metadata. A trace id should connect one user operation across UI, domain,
+storage/network, and outcome. Providers must not record credentials, full
+payloads, raw user content, or arbitrary WebView console output.
+
+This first version is implemented by the Android Lite SDK and Flutter Android
+Host bridge. Older Android Provider apps and iOS return an explicit unsupported
+state without affecting their existing actions.
 
 ## Result Return
 

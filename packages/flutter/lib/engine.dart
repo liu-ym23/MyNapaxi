@@ -16,6 +16,7 @@ import 'models/background.dart';
 import 'models/capability.dart';
 import 'models/channel.dart';
 import 'models/agent_app.dart';
+import 'models/agent_provider_install.dart';
 import 'agent_engine.dart';
 import 'mcp.dart';
 import 'file_bridge.dart';
@@ -44,6 +45,7 @@ import 'api/automation_api.dart';
 import 'api/evolution_api.dart';
 import 'api/tool_api.dart';
 import 'api/workspace_api.dart';
+import 'api/project_api.dart';
 import 'generated/bridge/agent_engine.dart' as rust_agent_engine;
 import 'generated/bridge/file_bridge.dart' as rust_file_bridge;
 import 'generated/bridge/init.dart' as rust_init;
@@ -164,6 +166,7 @@ class NapaxiEngine {
   late final SessionRunApi sessionRuns;
   late final AgentApi agents;
   late final WorkspaceApi workspace;
+  late final ProjectApi projects;
   late final SkillApi skills;
   late final GroupApi groups;
   late final BackgroundApi background;
@@ -202,6 +205,7 @@ class NapaxiEngine {
     sessionRuns = SessionRunApi(() => _handle);
     agents = AgentApi(() => _handle, config: () => _config);
     workspace = WorkspaceApi(() => _handle, config: () => _config);
+    projects = ProjectApi(() => _handle);
     skills = SkillApi(() => _handle, config: () => _config);
     groups = GroupApi(() => _handle, config: () => _config);
     background = BackgroundApi(_core);
@@ -246,7 +250,7 @@ class NapaxiEngine {
         NapaxiChannelCapability.im,
         NapaxiChannelCapability.device,
         if (_toolExecutor != null) 'napaxi.tool.custom_host',
-        'napaxi.agent_engine.codex',
+        if (platform == 'android') 'napaxi.agent_engine.codex',
         if (_agentEngineExecutor != null) 'napaxi.agent_engine.external_host',
         if (_agentAppActionExecutor != null) 'napaxi.tool.agent_app_action',
         if (_platformToolExecutor != null) 'napaxi.platform_tool.*',
@@ -321,10 +325,15 @@ class NapaxiEngine {
     final platformToolsEnabled =
         enablePlatformTools ?? PlatformToolProvider.isSupported;
     final automationEnabled = enableAutomation ?? backgroundConfig != null;
+    final hostPlatform = platformContextMap['platform'] as String?;
+    final iosQemuSandboxReady =
+        platformContextMap['ios_qemu_sandbox_ready'] == true ||
+        platformContextMap['iosQemuSandboxReady'] == true;
     final effectiveCapabilityProfile =
         capabilityProfile ??
         _buildHostCapabilityProfile(
-          platform: platformContextMap['platform'] as String?,
+          platform: hostPlatform,
+          iosQemuSandboxReady: iosQemuSandboxReady,
           hasCustomToolExecutor: toolExecutor != null,
           hasAgentEngineExecutor: agentEngineExecutor != null,
           hasAgentAppActionExecutor: agentAppActionExecutor != null,
@@ -344,6 +353,8 @@ class NapaxiEngine {
         _buildHostCapabilitySelection(
           hasCustomToolExecutor: toolExecutor != null,
           hasAgentEngineExecutor: agentEngineExecutor != null,
+          platform: hostPlatform,
+          iosQemuSandboxReady: iosQemuSandboxReady,
           hasAgentAppActionExecutor: agentAppActionExecutor != null,
           hasBrowserController: browserController != null,
           enableAutomation: automationEnabled,
@@ -399,6 +410,7 @@ class NapaxiEngine {
 
   static NapaxiCapabilityProfile _buildHostCapabilityProfile({
     required String? platform,
+    required bool iosQemuSandboxReady,
     required bool hasCustomToolExecutor,
     required bool hasAgentEngineExecutor,
     required bool hasAgentAppActionExecutor,
@@ -406,39 +418,63 @@ class NapaxiEngine {
     required bool enablePlatformTools,
     required bool enableAutomation,
   }) {
+    final iosQemuSandboxAvailable = platform == 'ios' && iosQemuSandboxReady;
+    // iOS ships a lightweight QEMU rootfs without Codex CLI, so only Android
+    // advertises the built-in sandboxed Codex agent engine by default.
+    final sandboxedCodexAvailable = platform == 'android';
     return NapaxiCapabilityProfile(
       platform: platform,
       supportedCapabilities: [
         NapaxiChannelCapability.im,
         NapaxiChannelCapability.device,
         if (hasCustomToolExecutor) 'napaxi.tool.custom_host',
-        'napaxi.agent_engine.codex',
+        if (sandboxedCodexAvailable) 'napaxi.agent_engine.codex',
+        if (iosQemuSandboxAvailable) 'napaxi.platform.ios_qemu',
         if (hasAgentEngineExecutor) 'napaxi.agent_engine.external_host',
         if (hasAgentAppActionExecutor) 'napaxi.tool.agent_app_action',
         if (enablePlatformTools) 'napaxi.platform_tool.*',
         if (hasBrowserController) BrowserToolProvider.capabilityId,
         if (enableAutomation) 'napaxi.service.automation',
       ],
+      disabledCapabilities: [
+        if (platform == 'ios') 'napaxi.agent_engine.codex',
+        if (platform == 'ios' && !iosQemuSandboxReady) 'napaxi.tool.shell',
+        if (platform == 'ios' && !iosQemuSandboxReady)
+          'napaxi.platform.ios_qemu',
+      ],
     );
   }
 
   static NapaxiCapabilitySelection _buildHostCapabilitySelection({
+    required String? platform,
+    required bool iosQemuSandboxReady,
     required bool hasCustomToolExecutor,
     required bool hasAgentEngineExecutor,
     required bool hasAgentAppActionExecutor,
     required bool hasBrowserController,
     required bool enableAutomation,
   }) {
+    final iosQemuSandboxAvailable = platform == 'ios' && iosQemuSandboxReady;
+    // iOS ships a lightweight QEMU rootfs without Codex CLI, so only Android
+    // advertises the built-in sandboxed Codex agent engine by default.
+    final sandboxedCodexAvailable = platform == 'android';
     return NapaxiCapabilitySelection(
       enabledCapabilities: [
         NapaxiChannelCapability.im,
         NapaxiChannelCapability.device,
         if (hasCustomToolExecutor) 'napaxi.tool.custom_host',
-        'napaxi.agent_engine.codex',
+        if (sandboxedCodexAvailable) 'napaxi.agent_engine.codex',
+        if (iosQemuSandboxAvailable) 'napaxi.platform.ios_qemu',
         if (hasAgentEngineExecutor) 'napaxi.agent_engine.external_host',
         if (hasAgentAppActionExecutor) 'napaxi.tool.agent_app_action',
         if (hasBrowserController) BrowserToolProvider.capabilityId,
         if (enableAutomation) 'napaxi.service.automation',
+      ],
+      disabledCapabilities: [
+        if (platform == 'ios') 'napaxi.agent_engine.codex',
+        if (platform == 'ios' && !iosQemuSandboxReady) 'napaxi.tool.shell',
+        if (platform == 'ios' && !iosQemuSandboxReady)
+          'napaxi.platform.ios_qemu',
       ],
     );
   }
@@ -643,10 +679,12 @@ class NapaxiEngine {
   Stream<ChatEvent> send(
     String message, {
     List<McAttachment>? attachments,
+    AgentProviderSelection? providerSelection,
     int maxIterations = 0,
   }) => _core.send(
     message,
     attachments: attachments,
+    providerSelection: providerSelection,
     maxIterations: maxIterations,
   );
 
@@ -663,6 +701,7 @@ class NapaxiEngine {
     List<McAttachment>? attachments,
     List<String>? sandboxPaths,
     int? userMsgIndex,
+    AgentProviderSelection? providerSelection,
     int maxIterations = 0,
   }) => _core.sendToSession(
     sessionKey,
@@ -671,6 +710,7 @@ class NapaxiEngine {
     attachments: attachments,
     sandboxPaths: sandboxPaths,
     userMsgIndex: userMsgIndex,
+    providerSelection: providerSelection,
     maxIterations: maxIterations,
   );
 

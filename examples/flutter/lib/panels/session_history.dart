@@ -357,6 +357,7 @@ class _SessionHistorySheet extends StatefulWidget {
     required this.onProjectSessionRemove,
     required this.onFilesSelected,
     required this.onSkillsSelected,
+    required this.onAppsSelected,
     required this.onProjectsSelected,
     required this.onSettingsSelected,
     required this.primaryView,
@@ -366,7 +367,6 @@ class _SessionHistorySheet extends StatefulWidget {
     required this.onSessionRenameEditingChanged,
     required this.onSearchModeChanged,
     required this.onSessionDelete,
-    this.onPendingEvolutionChanged,
   });
 
   final DemoAgent activeAgent;
@@ -411,6 +411,7 @@ class _SessionHistorySheet extends StatefulWidget {
   final ValueChanged<String> onProjectSessionRemove;
   final VoidCallback onFilesSelected;
   final VoidCallback onSkillsSelected;
+  final VoidCallback onAppsSelected;
   final VoidCallback onProjectsSelected;
   final VoidCallback onSettingsSelected;
   final _ChatPrimaryView primaryView;
@@ -420,7 +421,6 @@ class _SessionHistorySheet extends StatefulWidget {
   final ValueChanged<bool> onSessionRenameEditingChanged;
   final ValueChanged<bool> onSearchModeChanged;
   final ValueChanged<String> onSessionDelete;
-  final Future<void> Function()? onPendingEvolutionChanged;
 
   @override
   State<_SessionHistorySheet> createState() => _SessionHistorySheetState();
@@ -698,6 +698,7 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
       onSessionDelete: widget.onSessionDelete,
       onStartChat: (message, attachments, pinnedSkillNames) =>
           widget.onProjectChatStarted(project.id, message),
+      onFiles: () {},
       agentId: widget.activeAgent.id,
     );
   }
@@ -1036,6 +1037,14 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
             },
           ),
           _SessionMenuAction(
+            key: const Key('apps_menu_item'),
+            icon: Icons.grid_view_outlined,
+            label: _projectCopy(context, english: 'Apps', chinese: '应用'),
+            selected: widget.primaryView == _ChatPrimaryView.apps,
+            selectedKey: const Key('apps_menu_selected'),
+            onTap: widget.onAppsSelected,
+          ),
+          _SessionMenuAction(
             key: const Key('projects_menu_item'),
             icon: Icons.folder_copy_outlined,
             label: _projectCopy(context, english: 'Projects', chinese: '项目'),
@@ -1099,7 +1108,6 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
           clientFuture: _skillsClientFuture!,
           agentId: widget.activeAgent.id,
           initialTab: _skillsInitialTab,
-          onPendingEvolutionChanged: widget.onPendingEvolutionChanged,
           onBack: _handleBack,
         );
       case _SessionHistoryView.scenarios:
@@ -1348,144 +1356,146 @@ class _SessionHistorySheetState extends State<_SessionHistorySheet> {
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Material(
-                  color: _appSurfaceColor,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                    side: const BorderSide(color: _appSurfaceBorderColor),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: InkWell(
-                    key: Key('session_preview_action_${session.id}'),
-                    onTap: () =>
-                        Navigator.of(sheetContext).pop(_SessionAction.open),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(18, 18, 14, 20),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  strings.latestMessage,
-                                  style: const TextStyle(
-                                    color: _sessionMenuMuted,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 7),
-                                Text(
-                                  _sessionHistoryDisplayTitle(session),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: _sessionMenuText,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                ConstrainedBox(
-                                  constraints: const BoxConstraints(
-                                    minHeight: 72,
-                                  ),
-                                  child: Align(
-                                    alignment: Alignment.topLeft,
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        for (
-                                          var index = 0;
-                                          index < previewEntries.length;
-                                          index++
-                                        ) ...[
-                                          if (index > 0)
-                                            const SizedBox(height: 5),
-                                          Text(
-                                            previewEntries[index],
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Color(0xFF5F5F5F),
-                                              fontSize: 14,
-                                              height: 1.45,
-                                            ),
-                                          ),
-                                        ],
-                                      ],
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Material(
+                    color: _appSurfaceColor,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      side: const BorderSide(color: _appSurfaceBorderColor),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      key: Key('session_preview_action_${session.id}'),
+                      onTap: () =>
+                          Navigator.of(sheetContext).pop(_SessionAction.open),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 18, 14, 20),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    strings.latestMessage,
+                                    style: const TextStyle(
+                                      color: _sessionMenuMuted,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
                                     ),
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(height: 7),
+                                  Text(
+                                    _sessionHistoryDisplayTitle(session),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: _sessionMenuText,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  ConstrainedBox(
+                                    constraints: const BoxConstraints(
+                                      minHeight: 72,
+                                    ),
+                                    child: Align(
+                                      alignment: Alignment.topLeft,
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          for (
+                                            var index = 0;
+                                            index < previewEntries.length;
+                                            index++
+                                          ) ...[
+                                            if (index > 0)
+                                              const SizedBox(height: 5),
+                                            Text(
+                                              previewEntries[index],
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                color: Color(0xFF5F5F5F),
+                                                fontSize: 14,
+                                                height: 1.45,
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
+                            const SizedBox(width: 12),
+                            const Icon(
+                              Icons.arrow_forward_ios_rounded,
+                              color: Color(0xFF989898),
+                              size: 17,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Material(
+                    color: _appSurfaceColor,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      side: const BorderSide(color: _appSurfaceBorderColor),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: Padding(
+                      padding: const EdgeInsets.all(6),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _SessionSheetAction(
+                            key: Key('session_pin_action_${session.id}'),
+                            icon: Icons.push_pin_outlined,
+                            showIconSlash: session.isPinned,
+                            label: session.isPinned
+                                ? strings.unpinChat
+                                : strings.pinChat,
+                            onTap: () => Navigator.of(
+                              sheetContext,
+                            ).pop(_SessionAction.pinToggle),
                           ),
-                          const SizedBox(width: 12),
-                          const Icon(
-                            Icons.arrow_forward_ios_rounded,
-                            color: Color(0xFF989898),
-                            size: 17,
+                          const SizedBox(height: 2),
+                          _SessionSheetAction(
+                            key: Key('session_rename_action_${session.id}'),
+                            icon: Icons.edit_outlined,
+                            label: strings.renameChat,
+                            onTap: () => Navigator.of(
+                              sheetContext,
+                            ).pop(_SessionAction.rename),
+                          ),
+                          const SizedBox(height: 2),
+                          _SessionSheetAction(
+                            key: Key('session_delete_action_${session.id}'),
+                            icon: Icons.delete_outline_rounded,
+                            label: strings.deleteChat,
+                            isDestructive: true,
+                            onTap: () => Navigator.of(
+                              sheetContext,
+                            ).pop(_SessionAction.delete),
                           ),
                         ],
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 10),
-                Material(
-                  color: _appSurfaceColor,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                    side: const BorderSide(color: _appSurfaceBorderColor),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: Padding(
-                    padding: const EdgeInsets.all(6),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _SessionSheetAction(
-                          key: Key('session_pin_action_${session.id}'),
-                          icon: Icons.push_pin_outlined,
-                          showIconSlash: session.isPinned,
-                          label: session.isPinned
-                              ? strings.unpinChat
-                              : strings.pinChat,
-                          onTap: () => Navigator.of(
-                            sheetContext,
-                          ).pop(_SessionAction.pinToggle),
-                        ),
-                        const SizedBox(height: 2),
-                        _SessionSheetAction(
-                          key: Key('session_rename_action_${session.id}'),
-                          icon: Icons.edit_outlined,
-                          label: strings.renameChat,
-                          onTap: () => Navigator.of(
-                            sheetContext,
-                          ).pop(_SessionAction.rename),
-                        ),
-                        const SizedBox(height: 2),
-                        _SessionSheetAction(
-                          key: Key('session_delete_action_${session.id}'),
-                          icon: Icons.delete_outline_rounded,
-                          label: strings.deleteChat,
-                          isDestructive: true,
-                          onTap: () => Navigator.of(
-                            sheetContext,
-                          ).pop(_SessionAction.delete),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         );
@@ -1727,6 +1737,8 @@ enum _SessionHistoryView {
 
 enum _SettingsSection {
   menu,
+  connectedApps,
+  connectedAppDetail,
   agent,
   modelManagement,
   modelEditor,
@@ -1948,9 +1960,10 @@ class _SettingsLicenseRecord {
 }
 
 class _SettingsGroupCard extends StatelessWidget {
-  const _SettingsGroupCard({required this.children});
+  const _SettingsGroupCard({required this.children, this.dividerInset = 54});
 
   final List<Widget> children;
+  final double dividerInset;
 
   @override
   Widget build(BuildContext context) {
@@ -1964,9 +1977,9 @@ class _SettingsGroupCard extends StatelessWidget {
           for (var index = 0; index < children.length; index++) ...[
             children[index],
             if (index != children.length - 1)
-              const Padding(
-                padding: EdgeInsets.only(left: 54),
-                child: Divider(height: 1, color: _configBorderFaint),
+              Padding(
+                padding: EdgeInsets.only(left: dividerInset),
+                child: const Divider(height: 1, color: _configBorderFaint),
               ),
           ],
         ],
@@ -2210,6 +2223,7 @@ class _SettingsPageState extends State<_SettingsPage>
   final GlobalKey<_LlmModelProfilePageState> _modelEditorKey = GlobalKey();
   final GlobalKey<_FeedbackPageState> _feedbackPageKey = GlobalKey();
   LlmModelProfile? _editingProfile;
+  sdk.AgentAppPackage? _selectedConnectedApp;
   ModelCapability? _editingCapability;
   bool _editingNewModel = false;
   Future<NapaxiChatClient>? _scenariosClientFuture;
@@ -2411,6 +2425,11 @@ class _SettingsPageState extends State<_SettingsPage>
   String _sectionTitle(AppStrings strings, _SettingsSection section) {
     return switch (section) {
       _SettingsSection.menu => strings.settingsTitle,
+      _SettingsSection.connectedApps =>
+        _language == AppLanguage.chinese ? 'Agent应用' : 'Agent apps',
+      _SettingsSection.connectedAppDetail =>
+        _selectedConnectedApp?.displayName ??
+            (_language == AppLanguage.chinese ? '应用能力' : 'App capabilities'),
       _SettingsSection.agent =>
         _language == AppLanguage.chinese ? '智能体' : 'Agent',
       _SettingsSection.modelManagement =>
@@ -2615,6 +2634,11 @@ class _SettingsPageState extends State<_SettingsPage>
     _sectionController.forward(from: 0);
   }
 
+  void _openConnectedAppDetail(sdk.AgentAppPackage package) {
+    _selectedConnectedApp = package;
+    _setSection(_SettingsSection.connectedAppDetail);
+  }
+
   void _handleBackSwipeDown(PointerDownEvent event) {
     if (isMenu ||
         _backSwipePointer != null ||
@@ -2721,6 +2745,23 @@ class _SettingsPageState extends State<_SettingsPage>
         onOpenFeedback: () => _setSection(_SettingsSection.feedback),
         onOpenAbout: () => _setSection(_SettingsSection.about),
       ),
+      _SettingsSection.connectedApps => _ConnectedAppsSettingsPage(
+        clientFuture: widget.createNearbyClientFuture(),
+        language: _language,
+        onOpenDetails: _openConnectedAppDetail,
+      ),
+      _SettingsSection.connectedAppDetail =>
+        _selectedConnectedApp == null
+            ? const SizedBox.shrink()
+            : _ConnectedAppDetailPage(
+                package: _selectedConnectedApp!,
+                language: _language,
+                clientFuture: widget.createNearbyClientFuture(),
+                onChanged: (package) {
+                  if (!mounted) return;
+                  setState(() => _selectedConnectedApp = package);
+                },
+              ),
       _SettingsSection.agent => _AgentSettingsPage(
         config: _config,
         onConfigChanged: _handleConfigChanged,
@@ -2802,6 +2843,1729 @@ class _SettingsPageState extends State<_SettingsPage>
       ),
     };
   }
+}
+
+String _connectedAppPlatformId(sdk.AgentAppPackage package) {
+  final binding = package.installBinding;
+  if (binding == null) return '';
+  final androidPackage = binding.appPackageName.trim();
+  if (androidPackage.isNotEmpty) return androidPackage;
+  return binding.iosBundleId.trim();
+}
+
+String _providerPlatformId(sdk.AgentProviderDescriptor provider) {
+  final androidPackage = provider.packageName.trim();
+  if (androidPackage.isNotEmpty) return androidPackage;
+  return provider.iosBundleId.trim();
+}
+
+class _AppsPage extends StatefulWidget {
+  const _AppsPage({
+    super.key,
+    required this.clientFuture,
+    required this.language,
+    required this.onMenu,
+    required this.onConnectedAppsChanged,
+  });
+
+  final Future<NapaxiChatClient> clientFuture;
+  final AppLanguage language;
+  final VoidCallback onMenu;
+  final VoidCallback onConnectedAppsChanged;
+
+  @override
+  State<_AppsPage> createState() => _AppsPageState();
+}
+
+class _AppsPageState extends State<_AppsPage> {
+  sdk.AgentAppPackage? _selectedPackage;
+
+  bool get isShowingDetails => _selectedPackage != null;
+
+  void _openDetails(sdk.AgentAppPackage package) {
+    setState(() => _selectedPackage = package);
+  }
+
+  void _closeDetails() {
+    setState(() => _selectedPackage = null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = _selectedPackage;
+    final chinese = widget.language == AppLanguage.chinese;
+    return PopScope(
+      canPop: selected == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _selectedPackage != null) _closeDetails();
+      },
+      child: Scaffold(
+        key: const Key('apps_primary_page'),
+        backgroundColor: _configPageBackground,
+        appBar: AppBar(
+          title: Text(
+            selected?.displayName.trim().isNotEmpty == true
+                ? selected!.displayName.trim()
+                : (chinese ? '应用' : 'Apps'),
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          backgroundColor: _configPageBackground,
+          foregroundColor: _configTextPrimary,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          leading: selected == null
+              ? IconButton(
+                  key: const Key('apps_menu_button'),
+                  tooltip: MaterialLocalizations.of(
+                    context,
+                  ).openAppDrawerTooltip,
+                  onPressed: widget.onMenu,
+                  icon: const Icon(Icons.menu_rounded),
+                )
+              : BackButton(onPressed: _closeDetails),
+        ),
+        body: selected == null
+            ? _ConnectedAppsSettingsPage(
+                clientFuture: widget.clientFuture,
+                language: widget.language,
+                onOpenDetails: _openDetails,
+                onChanged: widget.onConnectedAppsChanged,
+              )
+            : _ConnectedAppDetailPage(
+                package: selected,
+                language: widget.language,
+                clientFuture: widget.clientFuture,
+                onChanged: (package) {
+                  if (!mounted) return;
+                  setState(() => _selectedPackage = package);
+                  widget.onConnectedAppsChanged();
+                },
+              ),
+      ),
+    );
+  }
+}
+
+class _ConnectedAppsSettingsPage extends StatefulWidget {
+  const _ConnectedAppsSettingsPage({
+    required this.clientFuture,
+    required this.language,
+    required this.onOpenDetails,
+    this.onChanged,
+  });
+
+  final Future<NapaxiChatClient> clientFuture;
+  final AppLanguage language;
+  final ValueChanged<sdk.AgentAppPackage> onOpenDetails;
+  final VoidCallback? onChanged;
+
+  @override
+  State<_ConnectedAppsSettingsPage> createState() =>
+      _ConnectedAppsSettingsPageState();
+}
+
+class _ConnectedAppsSettingsPageState extends State<_ConnectedAppsSettingsPage>
+    with WidgetsBindingObserver {
+  List<sdk.AgentProviderDescriptor> _discovered = const [];
+  List<sdk.AgentAppPackage> _connected = const [];
+  String? _busyPlatformId;
+  String? _error;
+  bool _loading = true;
+
+  bool get _chinese => widget.language == AppLanguage.chinese;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_refresh());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refresh());
+    }
+  }
+
+  Future<void> _refresh() async {
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final client = await widget.clientFuture;
+      final results = await Future.wait<Object>([
+        client.discoverAgentProviders(),
+        client.listConnectedApps(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _discovered = results[0] as List<sdk.AgentProviderDescriptor>;
+        _connected = results[1] as List<sdk.AgentAppPackage>;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = _friendlyDisplayError(error);
+      });
+    }
+  }
+
+  Future<void> _enable(sdk.AgentProviderDescriptor provider) async {
+    final platformId = _providerPlatformId(provider);
+    setState(() => _busyPlatformId = platformId);
+    try {
+      final client = await widget.clientFuture;
+      final package = await client.enableAgentProvider(provider);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _chinese
+                ? '已启用 ${package.displayName}'
+                : '${package.displayName} enabled',
+          ),
+        ),
+      );
+      await _refresh();
+      widget.onChanged?.call();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyDisplayError(error))));
+    } finally {
+      if (mounted) setState(() => _busyPlatformId = null);
+    }
+  }
+
+  Future<void> _disable(sdk.AgentAppPackage package) async {
+    setState(() => _busyPlatformId = _connectedAppPlatformId(package));
+    try {
+      final client = await widget.clientFuture;
+      await client.disableConnectedApp(package.providerId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _chinese
+                ? '已禁用 ${package.displayName}'
+                : '${package.displayName} disabled',
+          ),
+        ),
+      );
+      await _refresh();
+      widget.onChanged?.call();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyDisplayError(error))));
+    } finally {
+      if (mounted) setState(() => _busyPlatformId = null);
+    }
+  }
+
+  Future<void> _removeUnavailable(sdk.AgentAppPackage package) async {
+    final name = package.displayName.trim().isEmpty
+        ? package.providerId
+        : package.displayName.trim();
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.24),
+      builder: (sheetContext) => SafeArea(
+        top: false,
+        child: Material(
+          color: _appSurfaceColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 12, 22, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Center(
+                  child: SizedBox(
+                    width: 38,
+                    height: 4,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Color(0xFFD2D4D8),
+                        borderRadius: BorderRadius.all(Radius.circular(2)),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 22),
+                Text(
+                  _chinese ? '移除应用记录？' : 'Remove app record?',
+                  style: const TextStyle(
+                    color: _sessionMenuText,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  _chinese
+                      ? '将移除 $name 在 Napaxi 中的连接记录，聊天记录不会受影响。'
+                      : 'This removes the connection record for $name from Napaxi. Chat history will not be affected.',
+                  style: const TextStyle(
+                    color: _sessionMenuMuted,
+                    fontSize: 15,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 22),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(sheetContext).pop(false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _sessionMenuText,
+                          minimumSize: const Size.fromHeight(48),
+                          side: const BorderSide(color: _appSurfaceBorderColor),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: Text(_chinese ? '取消' : 'Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('confirm_remove_uninstalled_app'),
+                        onPressed: () => Navigator.of(sheetContext).pop(true),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFDC2626),
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size.fromHeight(48),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: Text(_chinese ? '移除' : 'Remove'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final platformId = _connectedAppPlatformId(package);
+    setState(() => _busyPlatformId = platformId);
+    try {
+      final client = await widget.clientFuture;
+      await client.disableConnectedApp(package.providerId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_chinese ? '已移除 $name 的连接记录' : '$name record removed'),
+        ),
+      );
+      await _refresh();
+      widget.onChanged?.call();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyDisplayError(error))));
+    } finally {
+      if (mounted) setState(() => _busyPlatformId = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading && _connected.isEmpty && _discovered.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    final discoveredById = {
+      for (final provider in _discovered)
+        _providerPlatformId(provider): provider,
+    };
+    final connectedIds = {
+      for (final package in _connected) _connectedAppPlatformId(package),
+    };
+    final enabled = _connected
+        .where(
+          (package) =>
+              discoveredById.containsKey(_connectedAppPlatformId(package)),
+        )
+        .toList(growable: false);
+    final enabledNameCounts = <String, int>{};
+    for (final package in enabled) {
+      final name = package.displayName.trim().toLowerCase();
+      if (name.isEmpty) continue;
+      enabledNameCounts.update(name, (count) => count + 1, ifAbsent: () => 1);
+    }
+    final unavailable = _connected
+        .where(
+          (package) =>
+              !discoveredById.containsKey(_connectedAppPlatformId(package)),
+        )
+        .toList(growable: false);
+    final available = _discovered
+        .where(
+          (provider) => !connectedIds.contains(_providerPlatformId(provider)),
+        )
+        .toList(growable: false);
+
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: ListView(
+        key: const Key('connected_apps_settings_page'),
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 40),
+        children: [
+          if (_error != null) ...[
+            Text(
+              _error!,
+              style: const TextStyle(color: Color(0xFFB42318), fontSize: 13),
+            ),
+          ],
+          if (enabled.isNotEmpty) ...[
+            _SettingsGroupTitle(title: _chinese ? '已启用' : 'Enabled'),
+            _SettingsGroupCard(
+              dividerInset: 16,
+              children: [
+                for (final package in enabled)
+                  _ConnectedAppRow(
+                    key: Key(
+                      'connected_app_enabled_${_connectedAppPlatformId(package)}',
+                    ),
+                    title: package.displayName.trim().isEmpty
+                        ? package.providerId
+                        : package.displayName,
+                    subtitle: _connectedAppSubtitle(
+                      package,
+                      duplicateName:
+                          (enabledNameCounts[package.displayName
+                                  .trim()
+                                  .toLowerCase()] ??
+                              0) >
+                          1,
+                    ),
+                    enabled: true,
+                    busy: _busyPlatformId == _connectedAppPlatformId(package),
+                    onDetailsTap: () => widget.onOpenDetails(package),
+                    onChanged: (enabled) {
+                      if (!enabled) unawaited(_disable(package));
+                    },
+                  ),
+              ],
+            ),
+          ],
+          if (available.isNotEmpty) ...[
+            if (enabled.isNotEmpty) const SizedBox(height: 24),
+            _SettingsGroupTitle(title: _chinese ? '可用应用' : 'Available apps'),
+            _SettingsGroupCard(
+              dividerInset: 16,
+              children: [
+                for (final provider in available)
+                  _ConnectedAppRow(
+                    key: Key(
+                      'connected_app_available_${_providerPlatformId(provider)}',
+                    ),
+                    title: provider.label.trim().isEmpty
+                        ? _providerPlatformId(provider)
+                        : provider.label,
+                    subtitle: _chinese ? '未启用' : 'Disabled',
+                    enabled: false,
+                    busy: _busyPlatformId == _providerPlatformId(provider),
+                    onChanged: (enabled) {
+                      if (enabled) unawaited(_enable(provider));
+                    },
+                  ),
+              ],
+            ),
+          ],
+          if (unavailable.isNotEmpty) ...[
+            if (enabled.isNotEmpty || available.isNotEmpty)
+              const SizedBox(height: 24),
+            _SettingsGroupTitle(title: _chinese ? '已卸载' : 'Uninstalled'),
+            _SettingsGroupCard(
+              dividerInset: 16,
+              children: [
+                for (final package in unavailable)
+                  _UnavailableConnectedAppRow(
+                    key: Key(
+                      'connected_app_uninstalled_${_connectedAppPlatformId(package)}',
+                    ),
+                    title: package.displayName.trim().isEmpty
+                        ? package.providerId
+                        : package.displayName,
+                    subtitle: _chinese
+                        ? '相关能力已停止使用'
+                        : 'Its capabilities are no longer available',
+                    busy: _busyPlatformId == _connectedAppPlatformId(package),
+                    onRemove: () => unawaited(_removeUnavailable(package)),
+                    chinese: _chinese,
+                  ),
+              ],
+            ),
+          ],
+          if (!_loading &&
+              _error == null &&
+              _connected.isEmpty &&
+              available.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 72, 24, 0),
+              child: Column(
+                children: [
+                  Text(
+                    _chinese ? '还没有发现 Agent 应用' : 'No Agent apps found',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: _configTextPrimary,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _chinese
+                        ? '通过 Napaxi 生成并安装一个 App，返回后它会自动出现在这里。'
+                        : 'Generate and install an app with Napaxi. It will appear here when you return.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: _configTextSecondary,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _connectedAppSubtitle(
+    sdk.AgentAppPackage package, {
+    required bool duplicateName,
+  }) {
+    final capabilityText = _chinese
+        ? '${package.actions.length} 项能力'
+        : '${package.actions.length} ${package.actions.length == 1 ? 'capability' : 'capabilities'}';
+    if (!duplicateName) return capabilityText;
+    final appPackageName = package.installBinding?.appPackageName.trim() ?? '';
+    final identifier = appPackageName.isEmpty
+        ? package.providerId
+        : appPackageName;
+    return '$capabilityText · $identifier';
+  }
+}
+
+class _UnavailableConnectedAppRow extends StatelessWidget {
+  const _UnavailableConnectedAppRow({
+    super.key,
+    required this.title,
+    required this.subtitle,
+    required this.busy,
+    required this.onRemove,
+    required this.chinese,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool busy;
+  final VoidCallback onRemove;
+  final bool chinese;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: _configTextSecondary,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: _configTextSecondary,
+                    fontSize: 12,
+                    height: 1.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          if (busy)
+            const SizedBox(
+              width: 46,
+              height: 36,
+              child: Padding(
+                padding: EdgeInsets.all(9),
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else
+            TextButton(
+              key: Key('remove_uninstalled_app_$title'),
+              onPressed: onRemove,
+              style: TextButton.styleFrom(
+                foregroundColor: _configTextPrimary,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                minimumSize: const Size(0, 36),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(chinese ? '移除' : 'Remove'),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConnectedAppRow extends StatelessWidget {
+  const _ConnectedAppRow({
+    super.key,
+    required this.title,
+    required this.subtitle,
+    required this.enabled,
+    required this.busy,
+    required this.onChanged,
+    this.onDetailsTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool enabled;
+  final bool busy;
+  final ValueChanged<bool> onChanged;
+  final VoidCallback? onDetailsTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              key: onDetailsTap == null
+                  ? null
+                  : Key('connected_app_capabilities_$title'),
+              onTap: onDetailsTap,
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: _configTextPrimary,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            subtitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: _configTextSecondary,
+                              fontSize: 12,
+                              height: 1.3,
+                            ),
+                          ),
+                        ),
+                        if (onDetailsTap != null) ...[
+                          const SizedBox(width: 2),
+                          const Icon(
+                            Icons.chevron_right_rounded,
+                            size: 16,
+                            color: _configTextSecondary,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          if (busy)
+            const SizedBox(
+              width: 46,
+              height: 36,
+              child: Padding(
+                padding: EdgeInsets.all(9),
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else
+            SizedBox(
+              width: 46,
+              height: 36,
+              child: FittedBox(
+                fit: BoxFit.contain,
+                child: Switch(
+                  value: enabled,
+                  onChanged: onChanged,
+                  activeThumbColor: _configSurface,
+                  activeTrackColor: _configTextPrimary,
+                  inactiveThumbColor: _configSurface,
+                  inactiveTrackColor: _configBorder,
+                  trackOutlineColor: const WidgetStatePropertyAll(
+                    Colors.transparent,
+                  ),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConnectedAppDetailPage extends StatefulWidget {
+  const _ConnectedAppDetailPage({
+    required this.package,
+    required this.language,
+    required this.clientFuture,
+    required this.onChanged,
+  });
+
+  final sdk.AgentAppPackage package;
+  final AppLanguage language;
+  final Future<NapaxiChatClient> clientFuture;
+  final ValueChanged<sdk.AgentAppPackage> onChanged;
+
+  @override
+  State<_ConnectedAppDetailPage> createState() =>
+      _ConnectedAppDetailPageState();
+}
+
+class _ConnectedAppDetailPageState extends State<_ConnectedAppDetailPage> {
+  late sdk.AgentAppPackage _package = widget.package;
+  bool _savingAutoInvoke = false;
+  bool _repairingBinding = false;
+  bool _loadingDiagnostics = false;
+  bool _savingDetailedDiagnostics = false;
+  int _diagnosticsGeneration = 0;
+  sdk.AgentAppDiagnosticsSnapshot? _diagnostics;
+
+  bool get _chinese => widget.language == AppLanguage.chinese;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadDiagnostics());
+  }
+
+  @override
+  void didUpdateWidget(_ConnectedAppDetailPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.package.providerId != widget.package.providerId ||
+        oldWidget.package.autoInvokeEnabled !=
+            widget.package.autoInvokeEnabled) {
+      _package = widget.package;
+    }
+    if (oldWidget.package.providerId != widget.package.providerId) {
+      _diagnostics = null;
+      unawaited(_loadDiagnostics(supersede: true));
+    }
+  }
+
+  Future<void> _loadDiagnostics({bool supersede = false}) async {
+    if (_loadingDiagnostics && !supersede) return;
+    final generation = ++_diagnosticsGeneration;
+    final providerId = _package.providerId;
+    setState(() => _loadingDiagnostics = true);
+    try {
+      final client = await widget.clientFuture;
+      final diagnostics = await client.listConnectedAppDiagnostics(providerId);
+      if (!mounted || generation != _diagnosticsGeneration) return;
+      setState(() => _diagnostics = diagnostics);
+    } catch (error) {
+      if (!mounted || generation != _diagnosticsGeneration) return;
+      setState(
+        () => _diagnostics = sdk.AgentAppDiagnosticsSnapshot(
+          supported: true,
+          error: _friendlyDisplayError(error),
+        ),
+      );
+    } finally {
+      if (mounted && generation == _diagnosticsGeneration) {
+        setState(() => _loadingDiagnostics = false);
+      }
+    }
+  }
+
+  Future<void> _setDetailedDiagnostics(bool enabled) async {
+    if (_savingDetailedDiagnostics) return;
+    setState(() => _savingDetailedDiagnostics = true);
+    try {
+      final client = await widget.clientFuture;
+      final diagnostics = await client.setConnectedAppDetailedDiagnostics(
+        _package.providerId,
+        enabled,
+      );
+      if (!mounted) return;
+      setState(() => _diagnostics = diagnostics);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyDisplayError(error))));
+    } finally {
+      if (mounted) setState(() => _savingDetailedDiagnostics = false);
+    }
+  }
+
+  Future<void> _setAutoInvoke(bool enabled) async {
+    if (_savingAutoInvoke) return;
+    setState(() => _savingAutoInvoke = true);
+    try {
+      final client = await widget.clientFuture;
+      final updated = await client.setConnectedAppAutoInvoke(
+        _package.providerId,
+        enabled,
+      );
+      if (!mounted) return;
+      setState(() => _package = updated);
+      widget.onChanged(updated);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyDisplayError(error))));
+    } finally {
+      if (mounted) setState(() => _savingAutoInvoke = false);
+    }
+  }
+
+  Future<void> _repairBinding() async {
+    if (_repairingBinding) return;
+    setState(() => _repairingBinding = true);
+    try {
+      final client = await widget.clientFuture;
+      final updated = await client.repairConnectedApp(_package.providerId);
+      if (!mounted) return;
+      setState(() => _package = updated);
+      widget.onChanged(updated);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_chinese ? '连接已修复' : 'Connection repaired')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyDisplayError(error))));
+    } finally {
+      if (mounted) setState(() => _repairingBinding = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      key: const Key('connected_app_detail_page'),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 40),
+      children: [
+        _SettingsGroupTitle(title: _chinese ? '调用方式' : 'Invocation'),
+        _SettingsGroupCard(
+          dividerInset: 16,
+          children: [
+            _ConnectedAppRow(
+              key: Key('connected_app_auto_invoke_${_package.providerId}'),
+              title: _chinese ? '自动调用' : 'Automatic invocation',
+              subtitle: _chinese
+                  ? '未指定应用时，允许 Napaxi 根据对话内容使用'
+                  : 'Allow Napaxi to use this app when it was not explicitly selected',
+              enabled: _package.autoInvokeEnabled,
+              busy: _savingAutoInvoke,
+              onChanged: (enabled) => unawaited(_setAutoInvoke(enabled)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          key: Key('connected_app_repair_${_package.providerId}'),
+          onPressed: _repairingBinding
+              ? null
+              : () => unawaited(_repairBinding()),
+          icon: _repairingBinding
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.sync_rounded),
+          label: Text(_chinese ? '检查并修复连接' : 'Check and repair connection'),
+        ),
+        const SizedBox(height: 24),
+        _SettingsGroupTitle(
+          title: _chinese ? '运行诊断' : 'Runtime diagnostics',
+          trailing: TextButton(
+            key: Key(
+              'connected_app_diagnostics_refresh_${_package.providerId}',
+            ),
+            onPressed: _loadingDiagnostics
+                ? null
+                : () => unawaited(_loadDiagnostics()),
+            child: Text(_chinese ? '重新检查' : 'Check again'),
+          ),
+        ),
+        if (_diagnostics?.supported == true) ...[
+          _SettingsGroupCard(
+            dividerInset: 16,
+            children: [
+              _ConnectedAppRow(
+                key: Key(
+                  'connected_app_detailed_diagnostics_${_package.providerId}',
+                ),
+                title: _chinese ? '详细日志' : 'Detailed logs',
+                subtitle: _chinese
+                    ? '开启后额外记录调试信息；普通运行和错误日志始终保留'
+                    : 'Also collect debug events; normal and error logs are always retained',
+                enabled: _diagnostics!.detailedLoggingEnabled,
+                busy: _savingDetailedDiagnostics,
+                onChanged: (enabled) =>
+                    unawaited(_setDetailedDiagnostics(enabled)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
+        _ConnectedAppDiagnosticsCard(
+          providerId: _package.providerId,
+          language: widget.language,
+          loading: _loadingDiagnostics,
+          snapshot: _diagnostics,
+        ),
+        const SizedBox(height: 24),
+        _SettingsGroupTitle(
+          title: _chinese
+              ? '${_package.actions.length} 项能力'
+              : '${_package.actions.length} ${_package.actions.length == 1 ? 'capability' : 'capabilities'}',
+        ),
+        Material(
+          color: _configSurface,
+          borderRadius: BorderRadius.circular(18),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var index = 0; index < _package.actions.length; index++) ...[
+                _ConnectedAppCapabilityRow(
+                  action: _package.actions[index],
+                  language: widget.language,
+                ),
+                if (index != _package.actions.length - 1)
+                  const Padding(
+                    padding: EdgeInsets.only(left: 16),
+                    child: Divider(height: 1, color: _configBorderFaint),
+                  ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ConnectedAppDiagnosticsCard extends StatefulWidget {
+  const _ConnectedAppDiagnosticsCard({
+    required this.providerId,
+    required this.language,
+    required this.loading,
+    required this.snapshot,
+  });
+
+  final String providerId;
+  final AppLanguage language;
+  final bool loading;
+  final sdk.AgentAppDiagnosticsSnapshot? snapshot;
+
+  @override
+  State<_ConnectedAppDiagnosticsCard> createState() =>
+      _ConnectedAppDiagnosticsCardState();
+}
+
+class _ConnectedAppDiagnosticsCardState
+    extends State<_ConnectedAppDiagnosticsCard> {
+  String _levelFilter = 'all';
+  String _moduleFilter = 'all';
+  String _timeFilter = 'all';
+
+  bool get _chinese => widget.language == AppLanguage.chinese;
+
+  @override
+  void didUpdateWidget(_ConnectedAppDiagnosticsCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.providerId != widget.providerId) {
+      _levelFilter = 'all';
+      _moduleFilter = 'all';
+      _timeFilter = 'all';
+    }
+    final modules = widget.snapshot?.logs.map((entry) => entry.module).toSet();
+    if (_moduleFilter != 'all' && modules?.contains(_moduleFilter) != true) {
+      _moduleFilter = 'all';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final diagnostics = widget.snapshot;
+    return Material(
+      key: Key('connected_app_diagnostics_${widget.providerId}'),
+      color: _configSurface,
+      borderRadius: BorderRadius.circular(18),
+      clipBehavior: Clip.antiAlias,
+      child:
+          diagnostics == null ||
+              (widget.loading &&
+                  diagnostics.reports.isEmpty &&
+                  diagnostics.logs.isEmpty)
+          ? const Padding(
+              padding: EdgeInsets.all(18),
+              child: Center(
+                child: SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            )
+          : _buildContent(diagnostics),
+    );
+  }
+
+  Widget _buildContent(sdk.AgentAppDiagnosticsSnapshot diagnostics) {
+    if (!diagnostics.supported) {
+      return _status(
+        title: _chinese ? '此应用版本暂不支持诊断' : 'Diagnostics are not supported',
+        description: _chinese
+            ? '应用原有能力不受影响；重新生成或升级应用后即可使用。'
+            : 'Existing capabilities still work. Regenerate or update the app to enable diagnostics.',
+      );
+    }
+    if (diagnostics.error.isNotEmpty) {
+      return _status(
+        title: _chinese ? '暂时无法读取诊断信息' : 'Diagnostics are unavailable',
+        description: diagnostics.error,
+      );
+    }
+    if (diagnostics.reports.isEmpty && diagnostics.logs.isEmpty) {
+      return _status(
+        title: _chinese ? '暂无诊断信息' : 'No diagnostics yet',
+        description: _chinese
+            ? '应用运行、出现普通错误、崩溃或无响应后，相关信息会在这里显示。'
+            : 'Runtime events, ordinary errors, crashes, and not-responding details will appear here.',
+      );
+    }
+    final modules =
+        diagnostics.logs
+            .map((entry) => entry.module)
+            .where((module) => module.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort();
+    final filteredLogs = diagnostics.logs.where(_matchesLogFilters).toList();
+    final visibleLogs = filteredLogs.take(50).toList(growable: false);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _sectionHeader(
+          _chinese ? '异常记录' : 'Runtime failures',
+          diagnostics.reports.length,
+        ),
+        if (diagnostics.reports.isEmpty)
+          _inlineMessage(
+            _chinese ? '未发现崩溃或运行异常' : 'No crashes or runtime failures found',
+          )
+        else
+          for (var index = 0; index < diagnostics.reports.length; index++) ...[
+            if (index > 0)
+              const Padding(
+                padding: EdgeInsets.only(left: 16),
+                child: Divider(height: 1, color: _configBorderFaint),
+              ),
+            _ConnectedAppDiagnosticReportTile(
+              report: diagnostics.reports[index],
+              language: widget.language,
+            ),
+          ],
+        const Divider(height: 24, color: _configBorderFaint),
+        _sectionHeader(
+          _chinese ? '运行日志' : 'Runtime logs',
+          diagnostics.logs.length,
+        ),
+        if (diagnostics.logs.isEmpty)
+          _inlineMessage(_chinese ? '暂无运行日志' : 'No runtime logs available')
+        else ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _filterDropdown(
+                  value: _levelFilter,
+                  values: const [
+                    'all',
+                    'crash',
+                    'error',
+                    'warning',
+                    'info',
+                    'debug',
+                  ],
+                  label: (value) => _diagnosticLevelLabel(value, _chinese),
+                  onChanged: (value) => setState(() => _levelFilter = value),
+                ),
+                _filterDropdown(
+                  value: _moduleFilter,
+                  values: ['all', ...modules],
+                  label: (value) => value == 'all'
+                      ? (_chinese ? '全部模块' : 'All modules')
+                      : value,
+                  onChanged: (value) => setState(() => _moduleFilter = value),
+                ),
+                _filterDropdown(
+                  value: _timeFilter,
+                  values: const ['all', '1h', '24h', '3d'],
+                  label: (value) => _diagnosticTimeLabel(value, _chinese),
+                  onChanged: (value) => setState(() => _timeFilter = value),
+                ),
+              ],
+            ),
+          ),
+          if (visibleLogs.isEmpty)
+            _inlineMessage(
+              _chinese ? '没有符合筛选条件的日志' : 'No logs match these filters',
+            )
+          else
+            for (var index = 0; index < visibleLogs.length; index++) ...[
+              if (index > 0)
+                const Padding(
+                  padding: EdgeInsets.only(left: 16),
+                  child: Divider(height: 1, color: _configBorderFaint),
+                ),
+              _ConnectedAppDiagnosticLogTile(
+                entry: visibleLogs[index],
+                language: widget.language,
+              ),
+            ],
+          if (filteredLogs.length > visibleLogs.length)
+            _inlineMessage(
+              _chinese
+                  ? '仅显示最新 50 条符合条件的日志'
+                  : 'Showing the newest 50 matching logs',
+            ),
+        ],
+      ],
+    );
+  }
+
+  bool _matchesLogFilters(sdk.AgentAppDiagnosticLogEntry entry) {
+    if (_levelFilter != 'all' && entry.level != _levelFilter) return false;
+    if (_moduleFilter != 'all' && entry.module != _moduleFilter) return false;
+    if (_timeFilter == 'all') return true;
+    final timestamp = DateTime.tryParse(entry.timestamp)?.toUtc();
+    if (timestamp == null) return false;
+    final duration = switch (_timeFilter) {
+      '1h' => const Duration(hours: 1),
+      '24h' => const Duration(hours: 24),
+      _ => const Duration(days: 3),
+    };
+    return timestamp.isAfter(DateTime.now().toUtc().subtract(duration));
+  }
+
+  Widget _sectionHeader(String title, int count) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(
+                color: _configTextPrimary,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Text(
+            '$count',
+            style: const TextStyle(color: _configTextTertiary, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _inlineMessage(String message) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 16),
+      child: Align(
+        alignment: AlignmentDirectional.centerStart,
+        child: Text(
+          message,
+          style: const TextStyle(color: _configTextSecondary, fontSize: 13),
+        ),
+      ),
+    );
+  }
+
+  Widget _filterDropdown({
+    required String value,
+    required List<String> values,
+    required String Function(String value) label,
+    required ValueChanged<String> onChanged,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: _configSurfaceMuted,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _configBorderFaint),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: value,
+          isDense: true,
+          borderRadius: BorderRadius.circular(12),
+          dropdownColor: _configSurface,
+          style: const TextStyle(color: _configTextSecondary, fontSize: 12),
+          items: [
+            for (final item in values)
+              DropdownMenuItem(value: item, child: Text(label(item))),
+          ],
+          onChanged: (next) {
+            if (next != null) onChanged(next);
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _status({required String title, required String description}) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 15, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: _configTextPrimary,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            description,
+            style: const TextStyle(
+              color: _configTextSecondary,
+              fontSize: 13,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConnectedAppDiagnosticReportTile extends StatelessWidget {
+  const _ConnectedAppDiagnosticReportTile({
+    required this.report,
+    required this.language,
+  });
+
+  final sdk.AgentAppDiagnosticReport report;
+  final AppLanguage language;
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese = language == AppLanguage.chinese;
+    final occurredAt = DateTime.tryParse(report.timestamp);
+    final details = report.stackTrace.trim().isNotEmpty
+        ? report.stackTrace.trim()
+        : report.description.trim().isNotEmpty
+        ? report.description.trim()
+        : report.summary;
+    return ExpansionTile(
+      key: Key('connected_app_diagnostic_report_${report.id}'),
+      tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      iconColor: _configTextSecondary,
+      collapsedIconColor: _configTextTertiary,
+      shape: const Border(),
+      collapsedShape: const Border(),
+      title: Text(
+        report.summary,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: _configTextPrimary,
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      subtitle: Text(
+        [
+          _diagnosticKindLabel(report.kind, chinese),
+          if (occurredAt != null) _formatFileDate(occurredAt),
+        ].join(' · '),
+        style: const TextStyle(color: _configTextTertiary, fontSize: 12),
+      ),
+      children: [
+        Align(
+          alignment: AlignmentDirectional.centerStart,
+          child: SelectableText(
+            details,
+            style: const TextStyle(
+              color: _configTextSecondary,
+              fontSize: 12,
+              height: 1.45,
+              fontFamily: 'monospace',
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ConnectedAppDiagnosticLogTile extends StatelessWidget {
+  const _ConnectedAppDiagnosticLogTile({
+    required this.entry,
+    required this.language,
+  });
+
+  final sdk.AgentAppDiagnosticLogEntry entry;
+  final AppLanguage language;
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese = language == AppLanguage.chinese;
+    final occurredAt = DateTime.tryParse(entry.timestamp);
+    final details = <String>[
+      '${chinese ? '事件' : 'Event'}: ${entry.event}',
+      if (entry.traceId.isNotEmpty)
+        '${chinese ? '追踪 ID' : 'Trace ID'}: ${entry.traceId}',
+      if (entry.thread.isNotEmpty)
+        '${chinese ? '线程' : 'Thread'}: ${entry.thread}',
+      if (entry.metadata.isNotEmpty)
+        '${chinese ? '上下文' : 'Context'}:\n${const JsonEncoder.withIndent('  ').convert(entry.metadata)}',
+    ].join('\n');
+    return ExpansionTile(
+      key: Key('connected_app_diagnostic_log_${entry.id}'),
+      tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      iconColor: _configTextSecondary,
+      collapsedIconColor: _configTextTertiary,
+      shape: const Border(),
+      collapsedShape: const Border(),
+      title: Text(
+        entry.summary,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: _configTextPrimary,
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+      subtitle: Text(
+        [
+          _diagnosticLevelLabel(entry.level, chinese),
+          if (entry.module.isNotEmpty) entry.module,
+          if (occurredAt != null) _formatFileDate(occurredAt),
+        ].join(' · '),
+        style: const TextStyle(color: _configTextTertiary, fontSize: 12),
+      ),
+      children: [
+        if (details.isNotEmpty)
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: SelectableText(
+              details,
+              style: const TextStyle(
+                color: _configTextSecondary,
+                fontSize: 12,
+                height: 1.45,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+String _diagnosticKindLabel(String kind, bool chinese) {
+  return switch (kind.toLowerCase()) {
+    'anr' => chinese ? '应用无响应' : 'Not responding',
+    'java_crash' || 'crash' => chinese ? '应用崩溃' : 'Crash',
+    'native_crash' => chinese ? '原生崩溃' : 'Native crash',
+    'low_memory' => chinese ? '内存不足' : 'Low memory',
+    _ => chinese ? '运行异常' : 'Runtime failure',
+  };
+}
+
+String _diagnosticLevelLabel(String level, bool chinese) {
+  return switch (level.toLowerCase()) {
+    'all' => chinese ? '全部等级' : 'All levels',
+    'crash' => chinese ? '崩溃' : 'Crash',
+    'error' => chinese ? '错误' : 'Error',
+    'warning' => chinese ? '警告' : 'Warning',
+    'debug' => chinese ? '调试' : 'Debug',
+    _ => chinese ? '信息' : 'Info',
+  };
+}
+
+String _diagnosticTimeLabel(String value, bool chinese) {
+  return switch (value) {
+    '1h' => chinese ? '最近 1 小时' : 'Last hour',
+    '24h' => chinese ? '最近 24 小时' : 'Last 24 hours',
+    '3d' => chinese ? '最近 3 天' : 'Last 3 days',
+    _ => chinese ? '全部时间' : 'All time',
+  };
+}
+
+class _ConnectedAppCapabilityRow extends StatelessWidget {
+  const _ConnectedAppCapabilityRow({
+    required this.action,
+    required this.language,
+  });
+
+  final sdk.AgentAppActionManifest action;
+  final AppLanguage language;
+
+  @override
+  Widget build(BuildContext context) {
+    final copy = _agentAppActionCopy(action, language);
+    final requiresConfirmation =
+        action.confirmationPolicy.trim().toLowerCase() != 'none';
+    return Padding(
+      key: Key('agent_app_capability_${action.actionId}'),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  copy.title,
+                  style: const TextStyle(
+                    color: _configTextPrimary,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              if (requiresConfirmation) ...[
+                const SizedBox(width: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _configSurfaceMuted,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: _configBorderFaint),
+                  ),
+                  child: Text(
+                    language == AppLanguage.chinese
+                        ? '操作时需确认'
+                        : 'Confirmation required',
+                    style: const TextStyle(
+                      color: _configTextSecondary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (copy.description.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Text(
+              copy.description,
+              style: const TextStyle(
+                color: _configTextSecondary,
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+({String title, String description}) _agentAppActionCopy(
+  sdk.AgentAppActionManifest action,
+  AppLanguage language,
+) {
+  final chinese = language == AppLanguage.chinese;
+  final localizedTitle = _agentAppLocalizedValue(
+    action.localizedDisplayNames,
+    chinese,
+  );
+  final localizedDescription = _agentAppLocalizedValue(
+    action.localizedDescriptions,
+    chinese,
+  );
+  final legacy = _legacyAgentAppActionCopy(action.actionId, chinese);
+  final title = localizedTitle.isNotEmpty
+      ? localizedTitle
+      : action.displayName.trim().isNotEmpty
+      ? action.displayName.trim()
+      : legacy?.title ?? _humanizeAgentAppActionId(action.actionId);
+  final description = localizedDescription.isNotEmpty
+      ? localizedDescription
+      : legacy?.description ?? action.description.trim();
+  return (title: title, description: description);
+}
+
+String _agentAppLocalizedValue(Map<String, String> values, bool chinese) {
+  final preferred = chinese
+      ? const ['zh-CN', 'zh_CN', 'zh-Hans', 'zh']
+      : const ['en', 'en-US', 'en_US'];
+  for (final locale in preferred) {
+    final exact = values[locale]?.trim() ?? '';
+    if (exact.isNotEmpty) return exact;
+    for (final entry in values.entries) {
+      if (entry.key.toLowerCase() == locale.toLowerCase() &&
+          entry.value.trim().isNotEmpty) {
+        return entry.value.trim();
+      }
+    }
+  }
+  return '';
+}
+
+({String title, String description})? _legacyAgentAppActionCopy(
+  String actionId,
+  bool chinese,
+) {
+  final copies =
+      <
+        String,
+        ({
+          String enTitle,
+          String enDescription,
+          String zhTitle,
+          String zhDescription,
+        })
+      >{
+        'note.create': (
+          enTitle: 'Create note',
+          enDescription: 'Create a new note in the app.',
+          zhTitle: '创建笔记',
+          zhDescription: '在应用中创建一条新笔记。',
+        ),
+        'note.list': (
+          enTitle: 'Search notes',
+          enDescription: 'View all notes or search by keyword.',
+          zhTitle: '搜索笔记',
+          zhDescription: '查看全部笔记或按关键词搜索。',
+        ),
+        'note.get': (
+          enTitle: 'Read note',
+          enDescription: 'Read the contents of a selected note.',
+          zhTitle: '读取笔记',
+          zhDescription: '读取一条指定笔记的内容。',
+        ),
+        'note.update': (
+          enTitle: 'Update note',
+          enDescription: 'Change the title or content of an existing note.',
+          zhTitle: '更新笔记',
+          zhDescription: '修改已有笔记的标题或内容。',
+        ),
+        'note.delete': (
+          enTitle: 'Delete note',
+          enDescription: 'Delete a selected note.',
+          zhTitle: '删除笔记',
+          zhDescription: '删除一条指定笔记。',
+        ),
+        'task.add': (
+          enTitle: 'Add task',
+          enDescription: 'Add a new task in the app.',
+          zhTitle: '添加任务',
+          zhDescription: '在应用中添加一项新任务。',
+        ),
+        'task.list': (
+          enTitle: 'View tasks',
+          enDescription: 'View all tasks or filter by completion state.',
+          zhTitle: '查看任务',
+          zhDescription: '查看全部任务或按完成状态筛选。',
+        ),
+        'task.complete': (
+          enTitle: 'Complete task',
+          enDescription: 'Mark a selected task as completed.',
+          zhTitle: '完成任务',
+          zhDescription: '将一项指定任务标记为已完成。',
+        ),
+        'task.delete': (
+          enTitle: 'Delete task',
+          enDescription: 'Delete a selected task.',
+          zhTitle: '删除任务',
+          zhDescription: '删除一项指定任务。',
+        ),
+        'desk.scene.focus': (
+          enTitle: 'Focus scene',
+          enDescription: 'Switch to a desk scene for focused work.',
+          zhTitle: '专注场景',
+          zhDescription: '切换到适合专注工作的桌面场景。',
+        ),
+        'desk.scene.relax': (
+          enTitle: 'Relax scene',
+          enDescription: 'Switch to a warm, relaxing desk scene.',
+          zhTitle: '放松场景',
+          zhDescription: '切换到温暖放松的桌面场景。',
+        ),
+        'desk.scene.off': (
+          enTitle: 'Turn desk off',
+          enDescription: 'Turn the virtual desk devices off.',
+          zhTitle: '关闭桌面设备',
+          zhDescription: '关闭虚拟桌面的灯光和插座。',
+        ),
+        'desk.light.set_color': (
+          enTitle: 'Set light color',
+          enDescription: 'Set the virtual desk light color.',
+          zhTitle: '设置灯光颜色',
+          zhDescription: '设置虚拟桌面灯光的颜色。',
+        ),
+        'desk.light.set_brightness': (
+          enTitle: 'Set brightness',
+          enDescription: 'Set the desk light brightness from 0 to 100.',
+          zhTitle: '设置亮度',
+          zhDescription: '将虚拟桌面的灯光亮度设置为 0 到 100。',
+        ),
+        'desk.plug.turn_on': (
+          enTitle: 'Turn plug on',
+          enDescription: 'Turn the virtual desk plug on.',
+          zhTitle: '打开插座',
+          zhDescription: '打开虚拟桌面的插座。',
+        ),
+        'desk.plug.turn_off': (
+          enTitle: 'Turn plug off',
+          enDescription: 'Turn the virtual desk plug off.',
+          zhTitle: '关闭插座',
+          zhDescription: '关闭虚拟桌面的插座。',
+        ),
+        'desk.status.get': (
+          enTitle: 'Read desk status',
+          enDescription: 'View the current virtual desk state.',
+          zhTitle: '读取桌面状态',
+          zhDescription: '查看虚拟桌面的当前状态。',
+        ),
+        'home.light.set': (
+          enTitle: 'Control light',
+          enDescription: 'Turn a light on or off and set its brightness.',
+          zhTitle: '控制灯光',
+          zhDescription: '打开或关闭灯光，并可设置亮度。',
+        ),
+        'home.light.matrix.preset.show': (
+          enTitle: 'Show matrix preset',
+          enDescription: 'Show a preset pattern on the light matrix.',
+          zhTitle: '显示矩阵预设',
+          zhDescription: '在灯光矩阵上显示预设图案。',
+        ),
+        'home.light.matrix.animation.show': (
+          enTitle: 'Play matrix animation',
+          enDescription: 'Play a short animation on the light matrix.',
+          zhTitle: '播放矩阵动画',
+          zhDescription: '在灯光矩阵上播放短动画。',
+        ),
+        'home.light.matrix.draw_20x5': (
+          enTitle: 'Draw pixel frame',
+          enDescription: 'Draw a still frame on the 20×5 light matrix.',
+          zhTitle: '绘制像素画面',
+          zhDescription: '在 20×5 灯光矩阵上绘制一帧像素画面。',
+        ),
+        'wallet.payment.pay': (
+          enTitle: 'Make payment',
+          enDescription: 'Create a virtual payment after app confirmation.',
+          zhTitle: '虚拟支付',
+          zhDescription: '在应用确认后创建一笔虚拟支付记录。',
+        ),
+        'wallet.records.list': (
+          enTitle: 'View payment records',
+          enDescription: 'View recent virtual wallet payment records.',
+          zhTitle: '查看支付记录',
+          zhDescription: '查看最近的虚拟钱包支付记录。',
+        ),
+        'wallet.quiet_pay.configure': (
+          enTitle: 'Configure quiet pay',
+          enDescription: 'Configure small no-interruption payments.',
+          zhTitle: '配置小额免打扰支付',
+          zhDescription: '启用、关闭或调整小额免打扰支付额度。',
+        ),
+      };
+  final copy = copies[actionId.trim()];
+  if (copy == null) return null;
+  return chinese
+      ? (title: copy.zhTitle, description: copy.zhDescription)
+      : (title: copy.enTitle, description: copy.enDescription);
+}
+
+String _humanizeAgentAppActionId(String actionId) {
+  final leaf = actionId.trim().split('.').last.replaceAll('_', ' ').trim();
+  if (leaf.isEmpty) return actionId;
+  return '${leaf[0].toUpperCase()}${leaf.substring(1)}';
 }
 
 class _ChannelSettingsPage extends StatefulWidget {

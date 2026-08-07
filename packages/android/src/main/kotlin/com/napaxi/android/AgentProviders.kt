@@ -21,6 +21,21 @@ import java.util.UUID
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
+private const val META_TRUSTED_REFRESH_SUPPORTED =
+    "agent.provider.TRUSTED_REFRESH_SUPPORTED"
+
+/** A one-turn explicit selection of an installed Agent App Provider. */
+public data class AgentProviderSelection(
+    val providerId: String,
+) {
+    public fun applyToMessage(message: String): String {
+        val id = providerId.trim()
+        require(id.isNotEmpty()) { "providerId must not be empty" }
+        require('}' !in id) { "providerId must not contain }" }
+        return "@{provider:$id} ${message.trimStart()}"
+    }
+}
+
 public data class AgentProviderDescriptor(
     val packageName: String,
     val activityName: String,
@@ -28,6 +43,9 @@ public data class AgentProviderDescriptor(
     val installActivityName: String = activityName,
     val platform: String = "android",
     val signingCertSha256: String = "",
+    val packageVersionCode: Long = 0,
+    val packageLastUpdateTimeMs: Long = 0,
+    val trustedRefreshSupported: Boolean = false,
     val installUrl: String = "",
     val actionUrl: String = "",
     val universalLinkDomain: String = "",
@@ -51,6 +69,9 @@ public data class AgentProviderDescriptor(
                 put("install_activity_name", installActivityName)
                 put("signing_cert_sha256", signingCertSha256)
             }
+            if (packageVersionCode > 0) put("packageVersionCode", packageVersionCode)
+            if (packageLastUpdateTimeMs > 0) put("packageLastUpdateTimeMs", packageLastUpdateTimeMs)
+            if (trustedRefreshSupported) put("trustedRefreshSupported", true)
             if (installUrl.isNotBlank()) put("installUrl", installUrl)
             if (actionUrl.isNotBlank()) put("actionUrl", actionUrl)
             if (universalLinkDomain.isNotBlank()) put("universalLinkDomain", universalLinkDomain)
@@ -87,6 +108,15 @@ public data class AgentProviderDescriptor(
                 activityName = activityName,
                 displayName = displayName,
                 signingCertSha256 = obj.optString("signingCertSha256", obj.optString("signing_cert_sha256")),
+                packageVersionCode = obj.optLong("packageVersionCode", obj.optLong("package_version_code")),
+                packageLastUpdateTimeMs = obj.optLong(
+                    "packageLastUpdateTimeMs",
+                    obj.optLong("package_last_update_time_ms"),
+                ),
+                trustedRefreshSupported = obj.optBoolean(
+                    "trustedRefreshSupported",
+                    obj.optBoolean("trusted_refresh_supported", false),
+                ),
                 installUrl = obj.optString("installUrl", obj.optString("install_url")),
                 actionUrl = obj.optString("actionUrl", obj.optString("action_url")),
                 universalLinkDomain = obj.optString("universalLinkDomain", obj.optString("universal_link_domain")),
@@ -101,17 +131,104 @@ public data class AgentProviderDescriptor(
     }
 }
 
+/** Provider-owned failure details returned by the trusted diagnostics channel. */
+public data class AgentAppDiagnosticReport(
+    val id: String,
+    val kind: String,
+    val timestamp: String,
+    val exceptionType: String = "",
+    val message: String = "",
+    val stackTrace: String = "",
+    val description: String = "",
+    val metadata: Map<String, Any?> = emptyMap(),
+) {
+    public companion object {
+        @JvmStatic
+        public fun fromMap(map: Map<String, *>): AgentAppDiagnosticReport =
+            AgentAppDiagnosticReport(
+                id = map["id"]?.toString().orEmpty(),
+                kind = map["kind"]?.toString() ?: "unknown",
+                timestamp = map["timestamp"]?.toString().orEmpty(),
+                exceptionType = map["exception_type"]?.toString().orEmpty(),
+                message = map["message"]?.toString().orEmpty(),
+                stackTrace = map["stack_trace"]?.toString().orEmpty(),
+                description = map["description"]?.toString().orEmpty(),
+                metadata = (map["metadata"] as? Map<*, *>)
+                    ?.entries
+                    ?.associate { it.key.toString() to it.value }
+                    .orEmpty(),
+            )
+    }
+}
+
+/** Provider-owned structured runtime event. */
+public data class AgentAppDiagnosticLogEntry(
+    val id: String,
+    val timestamp: String,
+    val level: String,
+    val module: String,
+    val event: String,
+    val message: String = "",
+    val traceId: String = "",
+    val thread: String = "",
+    val metadata: Map<String, Any?> = emptyMap(),
+) {
+    public companion object {
+        @JvmStatic
+        public fun fromMap(map: Map<String, *>): AgentAppDiagnosticLogEntry =
+            AgentAppDiagnosticLogEntry(
+                id = map["id"]?.toString().orEmpty(),
+                timestamp = map["timestamp"]?.toString().orEmpty(),
+                level = map["level"]?.toString() ?: "info",
+                module = map["module"]?.toString().orEmpty(),
+                event = map["event"]?.toString().orEmpty(),
+                message = map["message"]?.toString().orEmpty(),
+                traceId = map["trace_id"]?.toString().orEmpty(),
+                thread = map["thread"]?.toString().orEmpty(),
+                metadata = (map["metadata"] as? Map<*, *>)
+                    ?.entries
+                    ?.associate { it.key.toString() to it.value }
+                    .orEmpty(),
+            )
+    }
+}
+
+/** Typed diagnostics result with an explicit unsupported state. */
+public data class AgentAppDiagnosticsSnapshot(
+    val supported: Boolean,
+    val reports: List<AgentAppDiagnosticReport> = emptyList(),
+    val logs: List<AgentAppDiagnosticLogEntry> = emptyList(),
+    val detailedLoggingEnabled: Boolean = false,
+    val error: String = "",
+)
+
 public data class PendingAgentProviderInstall(
     val descriptor: AgentProviderDescriptor,
     val request: AgentInstallRequest,
     val requestCode: Int = AgentProviderHostApi.REQUEST_INSTALL_AGENT,
+    val expectedProviderId: String = "",
+    val expectedAgentId: String = "",
 )
+
+/** Host hook that restores provider-side trust for one rejected action. */
+public fun interface AgentProviderBindingRepair {
+    public fun repair(request: AgentAppActionRequest, callback: (Boolean) -> Unit)
+}
 
 public class AgentProviderInstallApi internal constructor(
     private val host: AgentProviderHostApi,
 ) {
     public fun discoverProviders(): List<AgentProviderDescriptor> =
         host.discoverProviders()
+
+    /** Finds an installed Provider by its OS package identifier. */
+    public fun discoverProviderForPackage(packageName: String): AgentProviderDescriptor? {
+        val expected = packageName.trim()
+        if (expected.isEmpty()) return null
+        return discoverProviders().firstOrNull {
+            it.packageName == expected || it.iosBundleId == expected
+        }
+    }
 
     public fun buildInstallRequest(
         expiresAt: Instant = Instant.now().plusSeconds(600),
@@ -125,6 +242,54 @@ public class AgentProviderInstallApi internal constructor(
         requestCode: Int = AgentProviderHostApi.REQUEST_INSTALL_AGENT,
     ): AgentInstallRequest =
         host.requestInstall(activity, provider, request, requestCode)
+
+    /** Restores provider-side trust without rotating the installed binding. */
+    public fun restoreBinding(
+        activity: Activity,
+        installed: AgentAppPackage,
+        requestCode: Int = AgentProviderHostApi.REQUEST_INSTALL_AGENT,
+    ): PendingAgentProviderInstall = host.restoreBinding(activity, installed, requestCode)
+
+    /** Refreshes the manifest after a trusted in-place provider update. */
+    public fun refreshBinding(
+        activity: Activity,
+        installed: AgentAppPackage,
+        requestCode: Int = AgentProviderHostApi.REQUEST_INSTALL_AGENT,
+    ): PendingAgentProviderInstall = host.restoreBinding(activity, installed, requestCode)
+
+    /** Native Android Host diagnostics are not wired in this release. */
+    public fun listDiagnostics(packageDef: AgentAppPackage): AgentAppDiagnosticsSnapshot {
+        require(packageDef.providerId.isNotBlank()) { "providerId must not be empty" }
+        return AgentAppDiagnosticsSnapshot(
+            supported = false,
+            error = "unsupported_host_adapter",
+        )
+    }
+
+    /** Native Android Host detailed-log configuration is not wired in this release. */
+    public fun setDetailedDiagnostics(
+        packageDef: AgentAppPackage,
+        enabled: Boolean,
+    ): AgentAppDiagnosticsSnapshot {
+        require(packageDef.providerId.isNotBlank()) { "providerId must not be empty" }
+        return AgentAppDiagnosticsSnapshot(
+            supported = false,
+            error = "unsupported_host_adapter",
+        )
+    }
+
+    /** Discovers and starts the trusted enable handshake for an installed app. */
+    public fun enableInstalledProvider(
+        activity: Activity,
+        packageName: String,
+        request: AgentInstallRequest = buildInstallRequest(),
+        requestCode: Int = AgentProviderHostApi.REQUEST_INSTALL_AGENT,
+    ): AgentInstallRequest {
+        val provider = requireNotNull(discoverProviderForPackage(packageName)) {
+            "Installed Agent App Provider not found: $packageName"
+        }
+        return requestInstall(activity, provider, request, requestCode)
+    }
 
     public fun beginInstallFromLaunchIntent(
         activity: Activity,
@@ -241,17 +406,47 @@ public class AgentProviderHostApi internal constructor(
 ) {
     public fun discoverProviders(): List<AgentProviderDescriptor> {
         val intent = Intent(AgentProviderContract.ACTION_INSTALL_AGENT).addCategory(Intent.CATEGORY_DEFAULT)
-        val infos = context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+        val infos = context.packageManager.queryIntentActivities(
+            intent,
+            PackageManager.MATCH_DEFAULT_ONLY or PackageManager.GET_META_DATA,
+        )
         return infos
             .mapNotNull { info ->
                 val packageName = info.activityInfo?.packageName ?: return@mapNotNull null
                 val installActivityName = info.activityInfo?.name ?: return@mapNotNull null
+                val packageInfo = runCatching {
+                    context.packageManager.getPackageInfo(packageName, 0)
+                }.getOrNull()
+                val applicationInfo = runCatching {
+                    context.packageManager.getApplicationInfo(
+                        packageName,
+                        PackageManager.GET_META_DATA,
+                    )
+                }.getOrNull()
+                val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    packageInfo?.longVersionCode ?: 0L
+                } else {
+                    @Suppress("DEPRECATION")
+                    packageInfo?.versionCode?.toLong() ?: 0L
+                }
+                val trustedRefreshSupported =
+                    info.activityInfo?.metaData?.getBoolean(
+                        META_TRUSTED_REFRESH_SUPPORTED,
+                        false,
+                    ) == true ||
+                        applicationInfo?.metaData?.getBoolean(
+                            META_TRUSTED_REFRESH_SUPPORTED,
+                            false,
+                        ) == true
                 AgentProviderDescriptor(
                     packageName = packageName,
                     activityName = findActionActivity(packageName) ?: installActivityName,
                     displayName = info.loadLabel(context.packageManager)?.toString() ?: packageName,
                     installActivityName = installActivityName,
                     signingCertSha256 = runCatching { signingCertSha256(packageName) }.getOrDefault(""),
+                    packageVersionCode = versionCode,
+                    packageLastUpdateTimeMs = packageInfo?.lastUpdateTime ?: 0L,
+                    trustedRefreshSupported = trustedRefreshSupported,
                 )
             }
             .distinctBy { "${it.packageName}/${it.installActivityName}" }
@@ -269,11 +464,82 @@ public class AgentProviderHostApi internal constructor(
             createdAt = Instant.now().toString(),
             expiresAt = expiresAt.toString(),
             hostSigningCertSha256 = signingCertSha256(packageName),
-            hostInstanceId = UUID.randomUUID().toString(),
+            hostInstanceId = stableHostInstanceId(),
             hostSharedSecret = UUID.randomUUID().toString(),
             backgroundTriggerSupported = true,
             hostBackgroundTriggerService = AgentTriggerIngressService::class.java.name,
         )
+    }
+
+    public fun buildRestoreRequest(
+        installed: AgentAppPackage,
+        expiresAt: Instant = Instant.now().plusSeconds(600),
+    ): AgentInstallRequest {
+        val binding = requireNotNull(installed.installBinding) {
+            "Agent App has no trusted install binding"
+        }
+        require(binding.hostInstanceId.isNotBlank() && binding.hostSharedSecret.isNotBlank()) {
+            "Agent App trusted binding is incomplete"
+        }
+        val fresh = buildInstallRequest(expiresAt)
+        if (binding.hostPackageName.isNotBlank()) {
+            require(binding.hostPackageName == fresh.hostPackageName) {
+                "Host package identity changed; explicit reconnect is required"
+            }
+        }
+        if (binding.hostSigningCertSha256.isNotBlank()) {
+            require(binding.hostSigningCertSha256.equals(fresh.hostSigningCertSha256, ignoreCase = true)) {
+                "Host signing identity changed; explicit reconnect is required"
+            }
+        }
+        return fresh.copy(
+            hostInstanceId = binding.hostInstanceId,
+            hostSharedSecret = binding.hostSharedSecret,
+        )
+    }
+
+    public fun restoreBinding(
+        activity: Activity,
+        installed: AgentAppPackage,
+        requestCode: Int = REQUEST_INSTALL_AGENT,
+    ): PendingAgentProviderInstall {
+        val binding = requireNotNull(installed.installBinding) {
+            "Agent App has no trusted install binding"
+        }
+        require(binding.platform == "android" && binding.appPackageName.isNotBlank()) {
+            "Agent App is not installed with an Android binding"
+        }
+        val provider = requireNotNull(
+            discoverProviders().firstOrNull { it.packageName == binding.appPackageName },
+        ) {
+            "Installed Agent App Provider not found: ${binding.appPackageName}"
+        }
+        require(provider.signingCertSha256.equals(binding.signingCertSha256, ignoreCase = true)) {
+            "Provider app signature changed; explicit reconnect is required"
+        }
+        val request = buildRestoreRequest(installed)
+        requestInstall(activity, provider, request, requestCode)
+        return PendingAgentProviderInstall(
+            provider,
+            request,
+            requestCode,
+            expectedProviderId = installed.providerId,
+            expectedAgentId = installed.agentId,
+        )
+    }
+
+    private fun stableHostInstanceId(): String {
+        val preferences = context.getSharedPreferences(
+            "napaxi_agent_provider_host",
+            Context.MODE_PRIVATE,
+        )
+        val existing = preferences.getString("host_instance_id_v1", null)?.trim().orEmpty()
+        if (existing.isNotEmpty()) return existing
+        val created = UUID.randomUUID().toString()
+        check(preferences.edit().putString("host_instance_id_v1", created).commit()) {
+            "Unable to persist Agent Provider Host instance id"
+        }
+        return created
     }
 
     public fun requestInstall(activity: Activity, descriptor: AgentProviderDescriptor, request: AgentInstallRequest = buildInstallRequest(), requestCode: Int = REQUEST_INSTALL_AGENT): AgentInstallRequest {
@@ -312,11 +578,22 @@ public class AgentProviderHostApi internal constructor(
         request: AgentInstallRequest,
         descriptor: AgentProviderDescriptor,
         now: Instant = Instant.now(),
+        expectedProviderId: String = "",
+        expectedAgentId: String = "",
     ): AgentAppPackage {
         validateInstallResult(result, request, now)
         val packageJson = result.packageJson ?: error("Provider did not return an Agent package")
+        val returnedPackage = JSONObject(packageJson)
+        if (expectedProviderId.isNotBlank() || expectedAgentId.isNotBlank()) {
+            require(
+                returnedPackage.optString("provider_id") == expectedProviderId &&
+                    returnedPackage.optString("agent_id") == expectedAgentId,
+            ) {
+                "Restored Agent App identity does not match installation"
+            }
+        }
         val binding = buildInstallBinding(descriptor, request, result)
-        val packageWithBinding = JSONObject(packageJson)
+        val packageWithBinding = returnedPackage
             .put("install_binding", binding.toJsonObject())
             .toString()
         return engine.agentApp.registerPackage(packageWithBinding)
@@ -328,8 +605,19 @@ public class AgentProviderHostApi internal constructor(
         data: Intent?,
         pending: PendingAgentProviderInstall,
         now: Instant = Instant.now(),
-    ): AgentAppPackage? =
-        handleInstallActivityResult(requestCode, resultCode, data, pending.descriptor, pending.request, pending.requestCode, now)
+    ): AgentAppPackage? {
+        if (requestCode != pending.requestCode) return null
+        check(resultCode == Activity.RESULT_OK) { "Provider install was canceled" }
+        val result = parseInstallResult(data) ?: error("Install result missing")
+        return registerInstallResult(
+            result,
+            pending.request,
+            pending.descriptor,
+            now,
+            expectedProviderId = pending.expectedProviderId,
+            expectedAgentId = pending.expectedAgentId,
+        )
+    }
 
     public suspend fun handleInstallActivityResult(
         requestCode: Int,
@@ -358,12 +646,39 @@ public class AgentProviderHostApi internal constructor(
         descriptor: AgentProviderDescriptor,
         request: AgentInstallRequest,
         result: AgentInstallResult,
-    ): AgentAppInstallBinding =
-        AgentAppInstallBinding(
+    ): AgentAppInstallBinding {
+        val packageInfo = runCatching {
+            context.packageManager.getPackageInfo(descriptor.packageName, 0)
+        }.getOrNull()
+        val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo?.longVersionCode ?: 0L
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo?.versionCode?.toLong() ?: 0L
+        }
+        val activityInfo = runCatching {
+            context.packageManager.getActivityInfo(
+                ComponentName(descriptor.packageName, descriptor.installActivityName),
+                PackageManager.GET_META_DATA,
+            )
+        }.getOrNull()
+        val applicationInfo = runCatching {
+            context.packageManager.getApplicationInfo(
+                descriptor.packageName,
+                PackageManager.GET_META_DATA,
+            )
+        }.getOrNull()
+        val trustedRefreshSupported =
+            activityInfo?.metaData?.getBoolean(META_TRUSTED_REFRESH_SUPPORTED, false) == true ||
+                applicationInfo?.metaData?.getBoolean(META_TRUSTED_REFRESH_SUPPORTED, false) == true
+        return AgentAppInstallBinding(
             platform = "android",
             appPackageName = descriptor.packageName,
             activityName = descriptor.activityName,
             signingCertSha256 = signingCertSha256(descriptor.packageName),
+            appVersionCode = versionCode,
+            appLastUpdateTimeMs = packageInfo?.lastUpdateTime ?: 0L,
+            trustedRefreshSupported = trustedRefreshSupported,
             installedAt = result.completedAt,
             installRequestId = request.requestId,
             protocolVersion = request.protocolVersion,
@@ -374,6 +689,7 @@ public class AgentProviderHostApi internal constructor(
             backgroundTriggerSupported = request.backgroundTriggerSupported,
             hostBackgroundTriggerService = request.hostBackgroundTriggerService,
         )
+    }
 
     public fun parseInstallResult(data: Intent?): AgentInstallResult? =
         data?.getStringExtra(AgentProviderContract.EXTRA_INSTALL_RESULT_JSON)
@@ -569,7 +885,7 @@ public class AgentProviderHostApi internal constructor(
                 "Provider action binding is incomplete"
             }
             require(currentSigningCertSha256.equals(binding.signingCertSha256, ignoreCase = true)) {
-                "Provider app signature changed; reinstall this Agent"
+                "Provider app signature changed; explicit reconnect is required"
             }
             val action = packageDef.actions.firstOrNull {
                 it.actionId == proposal.actionId && it.toolName == proposal.toolName
@@ -752,12 +1068,24 @@ public class AgentProviderHostApi internal constructor(
 public class AndroidAgentProviderActionExecutor @JvmOverloads constructor(
     private val activity: Activity,
     private val requestCode: Int = AgentProviderHostApi.REQUEST_HANDLE_PROPOSAL,
+    private val repairBinding: AgentProviderBindingRepair? = null,
 ) : AgentAppActionExecutor {
     private var pendingCallback: AgentAppActionCallback? = null
     private var pendingRequestId: String? = null
+    private var pendingRequest: AgentAppActionRequest? = null
+    private var pendingAllowsRepair: Boolean = false
+    private var repairInProgress: Boolean = false
 
     override fun execute(request: AgentAppActionRequest, callback: AgentAppActionCallback) {
-        if (pendingCallback != null) {
+        executeAttempt(request, callback, allowRepair = true)
+    }
+
+    private fun executeAttempt(
+        request: AgentAppActionRequest,
+        callback: AgentAppActionCallback,
+        allowRepair: Boolean,
+    ) {
+        if (pendingCallback != null || repairInProgress) {
             callback.success(failedActionResult(request.requestId, "Agent provider action already in progress"))
             return
         }
@@ -782,11 +1110,15 @@ public class AndroidAgentProviderActionExecutor @JvmOverloads constructor(
         }
         pendingCallback = callback
         pendingRequestId = request.requestId
+        pendingRequest = request
+        pendingAllowsRepair = allowRepair
         try {
             activity.startActivityForResult(intent, requestCode)
         } catch (error: Throwable) {
             pendingCallback = null
             pendingRequestId = null
+            pendingRequest = null
+            pendingAllowsRepair = false
             callback.success(failedActionResult(request.requestId, error.message ?: "Provider action handoff failed"))
         }
     }
@@ -795,11 +1127,29 @@ public class AndroidAgentProviderActionExecutor @JvmOverloads constructor(
         if (requestCode != this.requestCode) return false
         val callback = pendingCallback ?: return false
         val requestId = pendingRequestId.orEmpty()
+        val request = pendingRequest
+        val allowRepair = pendingAllowsRepair
         pendingCallback = null
         pendingRequestId = null
+        pendingRequest = null
+        pendingAllowsRepair = false
         val resultJson = data?.getStringExtra(AgentProviderContract.EXTRA_RESULT_JSON)
         if (resultCode == Activity.RESULT_OK && !resultJson.isNullOrBlank()) {
-            callback.success(AgentAppActionResult(resultJson))
+            val actionResult = AgentAppActionResult(resultJson)
+            val repair = repairBinding
+            if (allowRepair && actionResult.isHostBindingMissing && request != null && repair != null) {
+                repairInProgress = true
+                repair.repair(request) { repaired ->
+                    repairInProgress = false
+                    if (repaired) {
+                        executeAttempt(request, callback, allowRepair = false)
+                    } else {
+                        callback.success(actionResult)
+                    }
+                }
+                return true
+            }
+            callback.success(actionResult)
         } else {
             callback.success(failedActionResult(requestId, "Provider action was canceled or returned no result"))
         }

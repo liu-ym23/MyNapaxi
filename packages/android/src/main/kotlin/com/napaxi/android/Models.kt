@@ -391,6 +391,74 @@ public data class SessionInfo(
     }
 }
 
+public enum class NapaxiWorkspacePolicy(public val wireName: String) {
+    UseProjectDefault("use_project_default"),
+    KeepCurrent("keep_current"),
+    UsePersonalDefault("use_personal_default"),
+}
+
+public data class NapaxiProject(
+    val id: String,
+    val accountId: String,
+    val agentId: String,
+    val name: String,
+    val defaultWorkspaceId: String,
+    val state: String,
+    val createdAt: String,
+    val updatedAt: String,
+) {
+    public companion object {
+        @JvmStatic
+        public fun fromJson(rawJson: String): NapaxiProject =
+            fromJsonObject(JSONObject(rawJson.ifBlank { "{}" }))
+
+        public fun fromJsonObject(obj: JSONObject): NapaxiProject = NapaxiProject(
+            id = obj.optString("id"),
+            accountId = obj.optString("account_id"),
+            agentId = obj.optString("agent_id"),
+            name = obj.optString("name"),
+            defaultWorkspaceId = obj.optString("default_workspace_id"),
+            state = obj.optString("state", "active"),
+            createdAt = obj.optString("created_at"),
+            updatedAt = obj.optString("updated_at"),
+        )
+
+        @JvmStatic
+        public fun fromMap(map: Map<String, *>): NapaxiProject =
+            fromJsonObject(JSONObject(map))
+    }
+}
+
+public data class NapaxiSessionPlacement(
+    val threadId: String,
+    val projectId: String?,
+    val runtimeWorkspaceId: String,
+    val workingDirectory: String?,
+    val revision: Long,
+    val projectEnteredAt: String?,
+    val workspaceUpdatedAt: String,
+) {
+    public companion object {
+        @JvmStatic
+        public fun fromJson(rawJson: String): NapaxiSessionPlacement =
+            fromJsonObject(JSONObject(rawJson.ifBlank { "{}" }))
+
+        public fun fromJsonObject(obj: JSONObject): NapaxiSessionPlacement = NapaxiSessionPlacement(
+            threadId = obj.optString("thread_id"),
+            projectId = obj.optString("project_id").takeIf { it.isNotBlank() },
+            runtimeWorkspaceId = obj.optString("runtime_workspace_id"),
+            workingDirectory = obj.optString("working_directory").takeIf { it.isNotBlank() },
+            revision = obj.optLong("revision"),
+            projectEnteredAt = obj.optString("project_entered_at").takeIf { it.isNotBlank() },
+            workspaceUpdatedAt = obj.optString("workspace_updated_at"),
+        )
+
+        @JvmStatic
+        public fun fromMap(map: Map<String, *>): NapaxiSessionPlacement =
+            fromJsonObject(JSONObject(map))
+    }
+}
+
 public data class AgentHandle(
     val agentId: String,
     val rawJson: String,
@@ -4703,6 +4771,9 @@ public data class AgentAppInstallBinding(
     val appPackageName: String,
     val activityName: String,
     val signingCertSha256: String,
+    val appVersionCode: Long = 0,
+    val appLastUpdateTimeMs: Long = 0,
+    val trustedRefreshSupported: Boolean = false,
     val installedAt: String,
     val installRequestId: String,
     val protocolVersion: Int = 2,
@@ -4731,6 +4802,9 @@ public data class AgentAppInstallBinding(
         .put("protocol_version", protocolVersion)
         .apply {
             if (hostPackageName.isNotBlank()) put("host_package_name", hostPackageName)
+            if (appVersionCode > 0) put("app_version_code", appVersionCode)
+            if (appLastUpdateTimeMs > 0) put("app_last_update_time_ms", appLastUpdateTimeMs)
+            if (trustedRefreshSupported) put("trusted_refresh_supported", true)
             if (hostSigningCertSha256.isNotBlank()) put("host_signing_cert_sha256", hostSigningCertSha256)
             if (hostInstanceId.isNotBlank()) put("host_instance_id", hostInstanceId)
             if (hostSharedSecret.isNotBlank()) put("host_shared_secret", hostSharedSecret)
@@ -4761,6 +4835,9 @@ public data class AgentAppInstallBinding(
                 appPackageName = obj.optString("app_package_name"),
                 activityName = obj.optString("activity_name"),
                 signingCertSha256 = obj.optString("signing_cert_sha256"),
+                appVersionCode = obj.optLong("app_version_code"),
+                appLastUpdateTimeMs = obj.optLong("app_last_update_time_ms"),
+                trustedRefreshSupported = obj.optBoolean("trusted_refresh_supported", false),
                 installedAt = obj.optString("installed_at"),
                 installRequestId = obj.optString("install_request_id"),
                 protocolVersion = obj.optInt("protocol_version", 1),
@@ -4796,6 +4873,9 @@ public class AgentAppPackage(rawJson: String) : RawJsonModel(rawJson) {
         handoff: JSONObject = JSONObject(),
         result: JSONObject = JSONObject(),
         installBinding: AgentAppInstallBinding? = null,
+        autoInvokeEnabled: Boolean = false,
+        lastUsedAt: String = "",
+        useCount: Long = 0,
         createdAt: String = "",
         updatedAt: String = "",
     ) : this(
@@ -4810,6 +4890,9 @@ public class AgentAppPackage(rawJson: String) : RawJsonModel(rawJson) {
             .put("result", result)
             .apply {
                 installBinding?.let { put("install_binding", it.toJsonObject()) }
+                put("auto_invoke_enabled", autoInvokeEnabled)
+                if (lastUsedAt.isNotBlank()) put("last_used_at", lastUsedAt)
+                if (useCount > 0) put("use_count", useCount)
                 if (createdAt.isNotBlank()) put("created_at", createdAt)
                 if (updatedAt.isNotBlank()) put("updated_at", updatedAt)
             }
@@ -4830,6 +4913,9 @@ public class AgentAppPackage(rawJson: String) : RawJsonModel(rawJson) {
         get() = obj.optJSONObject("install_binding")?.let {
             AgentAppInstallBinding.fromJsonObject(it)
         }
+    public val autoInvokeEnabled: Boolean get() = obj.optBoolean("auto_invoke_enabled", false)
+    public val lastUsedAt: String get() = obj.optString("last_used_at")
+    public val useCount: Long get() = obj.optLong("use_count", 0)
     public val createdAt: String get() = obj.optString("created_at")
     public val updatedAt: String get() = obj.optString("updated_at")
 
@@ -4857,11 +4943,23 @@ public class AgentAppActionManifest(rawJson: String) : RawJsonModel(rawJson) {
         confirmationPolicy: String = "provider_required",
         executionModes: List<String> = emptyList(),
         timeoutSeconds: Int = 600,
+        displayName: String = "",
+        localizedDisplayNames: Map<String, String> = emptyMap(),
+        localizedDescriptions: Map<String, String> = emptyMap(),
     ) : this(
         JSONObject()
             .put("action_id", actionId)
             .put("tool_name", toolName)
             .put("description", description)
+            .apply {
+                if (displayName.isNotBlank()) put("display_name", displayName)
+                if (localizedDisplayNames.isNotEmpty()) {
+                    put("localized_display_names", JSONObject(localizedDisplayNames))
+                }
+                if (localizedDescriptions.isNotEmpty()) {
+                    put("localized_descriptions", JSONObject(localizedDescriptions))
+                }
+            }
             .put("parameters", parameters)
             .put("result_schema", resultSchema)
             .put("risk", risk)
@@ -4874,6 +4972,11 @@ public class AgentAppActionManifest(rawJson: String) : RawJsonModel(rawJson) {
     public val actionId: String get() = obj.optString("action_id")
     public val toolName: String get() = obj.optString("tool_name")
     public val description: String get() = obj.optString("description")
+    public val displayName: String get() = obj.optString("display_name")
+    public val localizedDisplayNames: Map<String, String>
+        get() = obj.optJSONObject("localized_display_names")?.toStringMap().orEmpty()
+    public val localizedDescriptions: Map<String, String>
+        get() = obj.optJSONObject("localized_descriptions")?.toStringMap().orEmpty()
     public val parameters: JSONObject get() = obj.optJSONObject("parameters") ?: JSONObject("""{"type":"object","properties":{}}""")
     public val resultSchema: JSONObject get() = obj.optJSONObject("result_schema") ?: JSONObject("""{"type":"object"}""")
     public val risk: String get() = obj.optString("risk", "high")
@@ -4885,6 +4988,15 @@ public class AgentAppActionManifest(rawJson: String) : RawJsonModel(rawJson) {
         .put("action_id", actionId)
         .put("tool_name", toolName)
         .put("description", description)
+        .apply {
+            if (displayName.isNotBlank()) put("display_name", displayName)
+            if (localizedDisplayNames.isNotEmpty()) {
+                put("localized_display_names", JSONObject(localizedDisplayNames))
+            }
+            if (localizedDescriptions.isNotEmpty()) {
+                put("localized_descriptions", JSONObject(localizedDescriptions))
+            }
+        }
         .put("parameters", parameters)
         .put("result_schema", resultSchema)
         .put("risk", risk)
@@ -5005,7 +5117,31 @@ public class AgentAppActionResult(rawJson: String) : RawJsonModel(rawJson) {
     public val requestId: String get() = obj.optString("request_id")
     public val status: String get() = obj.optString("status")
     public val result: JSONObject get() = obj.optJSONObject("result") ?: JSONObject()
-    public val error: String? get() = obj.optNullableString("error")
+    public val error: String?
+        get() {
+            obj.optNullableString("error")?.let { return it }
+            val structured = obj.optJSONObject("error") ?: return null
+            val code = structured.optString("code").trim()
+            val message = structured.optString("message").trim()
+            return when {
+                code.isNotEmpty() && message.isNotEmpty() -> "$code: $message"
+                code.isNotEmpty() -> code
+                message.isNotEmpty() -> message
+                else -> structured.toString()
+            }
+        }
+    public val errorCode: String?
+        get() {
+            obj.optJSONObject("error")?.optString("code")?.trim()?.takeIf(String::isNotEmpty)?.let {
+                return it
+            }
+            return error
+                ?.substringBefore(':')
+                ?.trim()
+                ?.takeIf { it.matches(Regex("^[a-z][a-z0-9_]*$")) }
+        }
+    public val isHostBindingMissing: Boolean
+        get() = status == "failed" && errorCode == "host_not_bound"
     public val providerTraceId: String? get() = obj.optNullableString("provider_trace_id")
     public val completedAt: String get() = obj.optString("completed_at")
     public val signature: String? get() = obj.optNullableString("signature")

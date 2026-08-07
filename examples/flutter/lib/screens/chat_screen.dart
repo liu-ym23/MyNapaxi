@@ -4,6 +4,8 @@ const String _debugHotReloadTargetFromEnvironment = String.fromEnvironment(
   'NAPAXI_DEBUG_HOT_RELOAD_TARGET',
   defaultValue: '',
 );
+const String _seenConnectedAppPackagesKey =
+    'napaxi.connected_apps.seen_packages.v1';
 
 /// Hot-reload-friendly debug target.
 ///
@@ -419,7 +421,15 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-enum _ChatPrimaryView { chat, files, skills, projects, projectDetail }
+enum _ChatPrimaryView {
+  chat,
+  files,
+  skills,
+  apps,
+  projects,
+  projectDetail,
+  projectFiles,
+}
 
 class _CodexInstallProgress {
   const _CodexInstallProgress({
@@ -795,12 +805,15 @@ class _ChatScreenState extends State<ChatScreen>
   static const String _seenAttachmentsKey = 'napaxi_demo.seen_attachments.v1';
   static const String _activeScenarioKey = 'napaxi_demo.active_scenario.v1';
   static const double _sessionMenuFlingVelocity = 650;
+  static const double _sessionMenuOpenDragThreshold = 35;
+  static const double _projectBackHorizontalDragThreshold = 56;
   static const double _bottomFollowThreshold = 72;
   static const double _bottomPinnedTolerance = 1;
   static const double _historyTopLoadThreshold = 360;
   static const int _initialHistoryPageLimit = 30;
   static const int _olderHistoryPageLimit = 24;
   static const Duration _contextStatusRefreshTimeout = Duration(seconds: 8);
+  static const Duration _sessionRunReconcileInterval = Duration(seconds: 2);
   static const List<_SlashCommandSpec> _slashCommands = [
     _SlashCommandSpec(
       name: '/help',
@@ -883,8 +896,6 @@ class _ChatScreenState extends State<ChatScreen>
   String? _browserPanelSessionId;
   StreamSubscription<sdk.BackgroundActionEvent>? _backgroundActionSubscription;
   StreamSubscription<DemoChannelBridgeEvent>? _channelBridgeSubscription;
-  final Map<String, Timer> _evolutionPollTimers = {};
-  final Map<String, Timer> _evolutionHideTimers = {};
   final Set<String> _unsavedSessionIds = <String>{};
   final Map<String, ChatSessionRunState> _sessionRuns = {};
   final Set<String> _a2aUnreadConversationSessionIds = <String>{};
@@ -895,7 +906,10 @@ class _ChatScreenState extends State<ChatScreen>
       _SkillsInitialTab.installed;
   _ChatPrimaryView _primaryView = _ChatPrimaryView.chat;
   Future<NapaxiChatClient>? _primaryFilesClientFuture;
+  Future<NapaxiChatClient>? _projectFilesClientFuture;
   Future<NapaxiChatClient>? _primarySkillsClientFuture;
+  Future<NapaxiChatClient>? _primaryAppsClientFuture;
+  final GlobalKey<_AppsPageState> _appsPageKey = GlobalKey<_AppsPageState>();
   String? _selectedChatProjectId;
   bool _isRenamingSessionTitle = false;
   bool _isSessionHistorySearching = false;
@@ -905,10 +919,13 @@ class _ChatScreenState extends State<ChatScreen>
   String _activeDeveloperEngineId = _defaultDeveloperEngineId;
   DemoGitSettings _gitSettings = const DemoGitSettings();
   final Set<String> _stoppingSessionIds = {};
+  bool _isReconcilingSessionRuns = false;
+  Timer? _sessionRunReconcileTimer;
   bool _isRetractingPendingInterjections = false;
   int _nextInterjectionId = 1;
   bool _isHandlingNotificationStop = false;
   bool _isHandlingProviderInstall = false;
+  bool _isScanningConnectedApps = false;
   bool _isHandlingAgentTrigger = false;
   bool _isCheckingCodexEnvironment = false;
   Future<bool>? _codexEnvironmentPreflight;
@@ -924,6 +941,7 @@ class _ChatScreenState extends State<ChatScreen>
   Future<void>? _restorePersistedStateFuture;
   bool _isCheckingForUpdate = false;
   List<DemoChannelInputSource> _channelInputSources = const [];
+  List<sdk.AgentAppPackage> _connectedAgentApps = const [];
   String? _channelInputBusyAccountId;
   String? _channelInputActiveAccountId;
   final Map<String, sdk.SessionKey> _sdkSessions = {};
@@ -931,6 +949,7 @@ class _ChatScreenState extends State<ChatScreen>
   Map<String, String> _renamedSessionTitles = const {};
   List<_ChatProject> _chatProjects = const [];
   Map<String, String> _projectSessionIds = const {};
+  Set<String> _workspaceMismatchSessionKeys = const {};
   Map<String, List<ChatAttachment>> _assistantAttachmentCache = const {};
   Map<String, List<ChatAttachment>> _pendingAssistantAttachments = const {};
   Map<String, Set<String>> _seenAttachmentIds = const {};
@@ -1086,7 +1105,6 @@ class _ChatScreenState extends State<ChatScreen>
     }
     if (message.attachments.isNotEmpty ||
         message.humanRequest != null ||
-        message.evolutionStatus != null ||
         message.action != null) {
       return true;
     }
@@ -1284,15 +1302,10 @@ class _ChatScreenState extends State<ChatScreen>
     for (final run in _sessionRuns.values) {
       unawaited(run.subscription.cancel());
     }
-    for (final timer in _evolutionPollTimers.values) {
-      timer.cancel();
-    }
-    for (final timer in _evolutionHideTimers.values) {
-      timer.cancel();
-    }
     for (final timer in _contextCompactionHideTimers.values) {
       timer.cancel();
     }
+    _sessionRunReconcileTimer?.cancel();
     _backgroundActionSubscription?.cancel();
     _channelBridgeSubscription?.cancel();
     _chatClient?.dispose();
@@ -1326,8 +1339,9 @@ class _ChatScreenState extends State<ChatScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
+      unawaited(_reconcileStaleSessionRuns(source: 'app-resumed'));
       unawaited(_enqueueCodexConfigSync(_config));
-      unawaited(_handlePendingProviderInstall());
+      unawaited(_refreshConnectedAppsAfterResume());
       unawaited(_handlePendingAgentTrigger());
       unawaited(_ensureConfiguredChannelsConnected());
       _scheduleA2AConnectionRestoreIfAllowed();
@@ -1336,6 +1350,88 @@ class _ChatScreenState extends State<ChatScreen>
         state == AppLifecycleState.paused) {
       unawaited(_ensureConfiguredChannelsConnected());
     }
+  }
+
+  Future<void> _reconcileStaleSessionRuns({required String source}) async {
+    if (_isReconcilingSessionRuns || !mounted) return;
+    final client = _chatClient;
+    if (client == null) return;
+    final candidates = _sessionRuns.entries
+        .where((entry) => !entry.value.isTerminal)
+        .map((entry) => MapEntry(entry.key, entry.value))
+        .toList(growable: false);
+    if (candidates.isEmpty) return;
+
+    _isReconcilingSessionRuns = true;
+    try {
+      for (final candidate in candidates) {
+        final sessionId = candidate.key;
+        final observed = candidate.value;
+        bool isActive;
+        try {
+          isActive = client.hasActiveSessionRun(
+            observed.sessionKey,
+            agentId: observed.agentId,
+          );
+        } catch (error) {
+          _traceChat(
+            'run reconcile skipped source=$source session=$sessionId '
+            'error="${_tracePreview(_friendlyError(error))}"',
+          );
+          continue;
+        }
+        if (isActive || !mounted) continue;
+
+        final current = _sessionRuns[sessionId];
+        if (current == null ||
+            current.isTerminal ||
+            current.startedAt != observed.startedAt) {
+          continue;
+        }
+        _traceChat(
+          'run reconcile terminal source=$source session=$sessionId '
+          'assistant=${current.assistantMessageId}',
+        );
+        _forceCompleteInflightToolCalls(current.assistantMessageId);
+        _flushPendingAssistantAttachments(
+          sessionId,
+          current.assistantMessageId,
+        );
+        unawaited(current.subscription.cancel());
+        final wasCancelling = current.status == sdk.SessionRunStatus.cancelling;
+        _finishSessionRun(
+          sessionId,
+          current.assistantMessageId,
+          status: wasCancelling
+              ? sdk.SessionRunStatus.cancelled
+              : sdk.SessionRunStatus.completed,
+          activity: wasCancelling ? 'Stopped' : 'Completed',
+        );
+      }
+    } finally {
+      _isReconcilingSessionRuns = false;
+      _stopSessionRunReconcileTimerIfIdle();
+    }
+  }
+
+  void _ensureSessionRunReconcileTimer() {
+    if (_sessionRunReconcileTimer?.isActive ?? false) return;
+    _sessionRunReconcileTimer = Timer.periodic(_sessionRunReconcileInterval, (
+      _,
+    ) {
+      if (!mounted || !_sessionRuns.values.any((run) => !run.isTerminal)) {
+        _sessionRunReconcileTimer?.cancel();
+        _sessionRunReconcileTimer = null;
+        return;
+      }
+      unawaited(_reconcileStaleSessionRuns(source: 'foreground-watchdog'));
+    });
+  }
+
+  void _stopSessionRunReconcileTimerIfIdle() {
+    if (_sessionRuns.values.any((run) => !run.isTerminal)) return;
+    _sessionRunReconcileTimer?.cancel();
+    _sessionRunReconcileTimer = null;
   }
 
   void _handleChatScroll() {
@@ -2629,24 +2725,36 @@ class _ChatScreenState extends State<ChatScreen>
       if (!_usesInjectedChatClient) {
         await _restoreA2AConversationSessions();
       }
-      _initialStateRestored = true;
+      if (mounted) {
+        setState(() => _initialStateRestored = true);
+      } else {
+        _initialStateRestored = true;
+      }
       if (!_usesInjectedChatClient) {
         unawaited(_ensureConfiguredChannelsConnected());
         _scheduleA2AConnectionRestoreIfAllowed();
       }
+      unawaited(_refreshConnectedAgentApps());
       await _handlePendingProviderInstall();
+      unawaited(_scanForConnectedApps());
       await _handlePendingAgentTrigger();
     } catch (_) {
       // Best-effort restore: failures should not block a fresh chat session.
       if (!_usesInjectedChatClient) {
         await _restoreA2AConversationSessions();
       }
-      _initialStateRestored = true;
+      if (mounted) {
+        setState(() => _initialStateRestored = true);
+      } else {
+        _initialStateRestored = true;
+      }
       if (!_usesInjectedChatClient) {
         unawaited(_ensureConfiguredChannelsConnected());
         _scheduleA2AConnectionRestoreIfAllowed();
       }
+      unawaited(_refreshConnectedAgentApps());
       await _handlePendingProviderInstall();
+      unawaited(_scanForConnectedApps());
       await _handlePendingAgentTrigger();
     }
   }
@@ -2860,6 +2968,20 @@ class _ChatScreenState extends State<ChatScreen>
       _chatProjects = List.unmodifiable([..._chatProjects, project]);
     });
     unawaited(_persistChatProjects());
+    unawaited(_registerProjectInCore(project));
+  }
+
+  Future<void> _registerProjectInCore(_ChatProject project) async {
+    try {
+      final client = await _getChatClient();
+      await client.registerProject(
+        projectId: project.id,
+        agentId: project.agentId,
+        name: project.name,
+      );
+    } catch (error) {
+      debugPrint('Project core registration deferred: $error');
+    }
   }
 
   void _toggleChatProjectPin(_ChatProject project) {
@@ -2892,6 +3014,8 @@ class _ChatScreenState extends State<ChatScreen>
       ]);
     });
     unawaited(_persistChatProjects());
+    final updated = _chatProjects.firstWhere((item) => item.id == project.id);
+    unawaited(_registerProjectInCore(updated));
   }
 
   void _showProjectsFromMenu() {
@@ -2917,6 +3041,15 @@ class _ChatScreenState extends State<ChatScreen>
     setState(() {
       _primaryView = _ChatPrimaryView.skills;
       _primarySkillsClientFuture = _buildSkillsClientFuture();
+    });
+    _closeSessionHistory();
+  }
+
+  void _showAppsFromMenu() {
+    _dismissKeyboard();
+    setState(() {
+      _primaryView = _ChatPrimaryView.apps;
+      _primaryAppsClientFuture = _getChatClient();
     });
     _closeSessionHistory();
   }
@@ -3033,6 +3166,7 @@ class _ChatScreenState extends State<ChatScreen>
         ),
       ),
     );
+    if (mounted) unawaited(_refreshConnectedAgentApps());
   }
 
   void _handleEngineConfigChanged() {
@@ -3052,6 +3186,20 @@ class _ChatScreenState extends State<ChatScreen>
       _selectedChatProjectId = project.id;
       _primaryView = _ChatPrimaryView.projectDetail;
     });
+  }
+
+  void _openProjectFiles(_ChatProject project) {
+    _dismissKeyboard();
+    setState(() {
+      _selectedChatProjectId = project.id;
+      _primaryView = _ChatPrimaryView.projectFiles;
+      _projectFilesClientFuture = _buildProjectFilesClientFuture(project);
+    });
+  }
+
+  void _returnToProjectDetail() {
+    _dismissKeyboard();
+    setState(() => _primaryView = _ChatPrimaryView.projectDetail);
   }
 
   String? get _activeSessionProjectId {
@@ -3093,6 +3241,14 @@ class _ChatScreenState extends State<ChatScreen>
       });
     });
     unawaited(_persistChatProjects());
+    unawaited(
+      _movePersistedSession(
+        agentId: _activeAgentId,
+        sessionId: sessionId,
+        projectId: null,
+        workspacePolicy: sdk.NapaxiWorkspacePolicy.usePersonalDefault,
+      ),
+    );
     _showChatSnackBar(
       _projectCopy(
         context,
@@ -3341,6 +3497,12 @@ class _ChatScreenState extends State<ChatScreen>
       }
     });
     await _persistChatProjects();
+    try {
+      final client = await _getChatClient();
+      await client.archiveProject(project.id, agentId: project.agentId);
+    } catch (error) {
+      debugPrint('Project core archive deferred: $error');
+    }
     if (!mounted) return;
     _showChatSnackBar(
       _projectCopy(context, english: 'Project deleted', chinese: '项目已删除'),
@@ -3360,6 +3522,57 @@ class _ChatScreenState extends State<ChatScreen>
       });
     });
     unawaited(_persistChatProjects());
+    unawaited(
+      _movePersistedSession(
+        agentId: agentId,
+        sessionId: sessionId,
+        projectId: projectId,
+        workspacePolicy: sdk.NapaxiWorkspacePolicy.useProjectDefault,
+      ),
+    );
+  }
+
+  Future<void> _movePersistedSession({
+    required String agentId,
+    required String sessionId,
+    required String? projectId,
+    required sdk.NapaxiWorkspacePolicy workspacePolicy,
+  }) async {
+    final session = _sdkSessions[_sessionCacheKey(agentId, sessionId)];
+    if (session == null) return;
+    try {
+      final client = await _getChatClient();
+      sdk.NapaxiProject? targetProject;
+      if (projectId != null) {
+        final project = _chatProjects.firstWhere(
+          (item) => item.id == projectId && item.agentId == agentId,
+        );
+        targetProject = await client.registerProject(
+          projectId: project.id,
+          agentId: project.agentId,
+          name: project.name,
+        );
+      }
+      final placement = await client.moveSessionToProject(
+        session,
+        projectId: projectId,
+        workspacePolicy: workspacePolicy,
+      );
+      if (!mounted) return;
+      final cacheKey = _sessionCacheKey(agentId, sessionId);
+      final mismatched =
+          targetProject != null &&
+          !placement.runtimeMatchesProject(targetProject);
+      setState(() {
+        _workspaceMismatchSessionKeys = {
+          for (final key in _workspaceMismatchSessionKeys)
+            if (key != cacheKey) key,
+          if (mismatched) cacheKey,
+        };
+      });
+    } catch (error) {
+      debugPrint('Project session placement deferred: $error');
+    }
   }
 
   Future<void> _startProjectChat(
@@ -3666,8 +3879,9 @@ class _ChatScreenState extends State<ChatScreen>
 
   Future<void> _restoreSdkSessions(LlmConfigState config) async {
     if (_isCliAgent(_activeAgentId)) {
-      // CLI engines (CC/Codex) own one persistent conversation per engine and
-      // restore straight from their native session store — no Rust record.
+      // CC is still an external CLI host and restores from its native session
+      // store. Codex is core-owned by napaxi.agent_engine.codex and follows
+      // the regular Rust session restore path below.
       await _restoreCliEngineSession(_activeAgentId);
       return;
     }
@@ -3713,6 +3927,7 @@ class _ChatScreenState extends State<ChatScreen>
         ),
       );
     }
+    await _synchronizeCoreProjectPlacements(client, agentId);
     if (restoredSessions.isEmpty) return;
     setState(() {
       _unsavedSessionIds.clear();
@@ -3726,13 +3941,69 @@ class _ChatScreenState extends State<ChatScreen>
     unawaited(_refreshContextStatusForSession(agentId, _activeSessionId));
   }
 
-  bool _isCliAgent(String agentId) =>
-      agentId == 'engine.cc' || agentId == 'engine.codex';
+  Future<void> _synchronizeCoreProjectPlacements(
+    NapaxiChatClient client,
+    String agentId,
+  ) async {
+    try {
+      final projects = _chatProjects
+          .where((project) => project.agentId == agentId)
+          .toList(growable: false);
+      final coreProjects = <String, sdk.NapaxiProject>{};
+      for (final project in projects) {
+        coreProjects[project.id] = await client.registerProject(
+          projectId: project.id,
+          agentId: project.agentId,
+          name: project.name,
+        );
+      }
+      var placements = await client.listSessionPlacements(agentId: agentId);
+      final coreThreadIds = {for (final item in placements) item.threadId};
+      final cachePrefix = '$_activeAccountId::$agentId::';
+      for (final entry in _projectSessionIds.entries) {
+        if (!entry.key.startsWith(cachePrefix)) continue;
+        final sessionId = entry.key.substring(cachePrefix.length);
+        if (coreThreadIds.contains(sessionId)) continue;
+        final session = _sdkSessions[_sessionCacheKey(agentId, sessionId)];
+        if (session == null) continue;
+        await client.moveSessionToProject(
+          session,
+          projectId: entry.value,
+          workspacePolicy: sdk.NapaxiWorkspacePolicy.useProjectDefault,
+        );
+      }
+      placements = await client.listSessionPlacements(agentId: agentId);
+      if (!mounted) return;
+      setState(() {
+        _projectSessionIds = Map.unmodifiable({
+          for (final entry in _projectSessionIds.entries)
+            if (!entry.key.startsWith(cachePrefix)) entry.key: entry.value,
+          for (final placement in placements)
+            if (placement.projectId != null)
+              _sessionCacheKey(agentId, placement.threadId):
+                  placement.projectId!,
+        });
+        _workspaceMismatchSessionKeys = {
+          for (final placement in placements)
+            if (placement.projectId != null &&
+                coreProjects[placement.projectId] != null &&
+                !placement.runtimeMatchesProject(
+                  coreProjects[placement.projectId]!,
+                ))
+              _sessionCacheKey(agentId, placement.threadId),
+        };
+      });
+      await _persistChatProjects();
+    } catch (error) {
+      debugPrint('Project placement restore deferred: $error');
+    }
+  }
 
-  /// Restore CLI engine sessions. CLI engines bypass the Rust session store.
-  /// For Codex, conversations are pulled straight from `thread/list` (one UI
-  /// session per codex thread). For CC there's no list RPC, so we fall back to
-  /// a single fresh conversation.
+  bool _isCliAgent(String agentId) => agentId == 'engine.cc';
+
+  /// Restore external CLI engine sessions. CC bypasses the Rust session store.
+  /// Codex history is core-owned by napaxi.agent_engine.codex, so Codex should
+  /// not enter this path.
   Future<void> _restoreCliEngineSession(String agentId) async {
     final logTag = agentId == 'engine.cc'
         ? 'napaxiCCHistory'
@@ -4064,24 +4335,18 @@ class _ChatScreenState extends State<ChatScreen>
 
   Future<void> _handlePendingProviderInstall() async {
     if (!_initialStateRestored) return;
-    if (!_activeRuntimeProfile.supportsAgents) return;
     if (_isHandlingProviderInstall) return;
     _isHandlingProviderInstall = true;
     try {
       final client = await _getChatClient();
       final agent = await client.installPendingAgentProvider();
       if (agent == null || !mounted) return;
-      await _refreshAgents();
-      if (!mounted) return;
-      if (!_agents.any((candidate) => candidate.id == agent.id)) {
-        setState(() {
-          _agents = List.unmodifiable([..._agents, agent]);
-        });
-      }
-      await _selectAgent(agent.id);
+      await _refreshConnectedAgentApps();
       if (!mounted) return;
       _showSnackBar(
-        'Installed ${agent.name}. Tap the provider button again to trigger Agent.',
+        widget.language == AppLanguage.chinese
+            ? '已启用 ${agent.name}。在对话中输入 @${agent.name} 即可使用。'
+            : '${agent.name} enabled. Type @${agent.name} in chat to use it.',
       );
     } catch (error) {
       if (mounted) {
@@ -4089,6 +4354,271 @@ class _ChatScreenState extends State<ChatScreen>
       }
     } finally {
       _isHandlingProviderInstall = false;
+    }
+  }
+
+  Future<void> _refreshConnectedAppsAfterResume() async {
+    await _handlePendingProviderInstall();
+    await _scanForConnectedApps();
+  }
+
+  void _setConnectedAgentApps(
+    List<sdk.AgentProviderDescriptor> discovered,
+    List<sdk.AgentAppPackage> connected,
+  ) {
+    if (!mounted) return;
+    final installedIds = {
+      for (final provider in discovered) _providerPlatformId(provider),
+    }..remove('');
+    final next =
+        connected
+            .where(
+              (package) =>
+                  installedIds.contains(_connectedAppPlatformId(package)),
+            )
+            .toList(growable: false)
+          ..sort((left, right) {
+            return left.displayName.toLowerCase().compareTo(
+              right.displayName.toLowerCase(),
+            );
+          });
+    setState(() => _connectedAgentApps = List.unmodifiable(next));
+  }
+
+  Future<void> _refreshConnectedAgentApps() async {
+    try {
+      final client = await _getChatClient();
+      final results = await Future.wait<Object>([
+        client.discoverAgentProviders(),
+        client.listConnectedApps(),
+      ]);
+      _setConnectedAgentApps(
+        results[0] as List<sdk.AgentProviderDescriptor>,
+        results[1] as List<sdk.AgentAppPackage>,
+      );
+    } catch (error) {
+      debugPrint('Agent App mention refresh failed: $error');
+    }
+  }
+
+  Future<void> _refreshConnectedAgentAppUsage() async {
+    if (_connectedAgentApps.isEmpty) return;
+    try {
+      final client = await _getChatClient();
+      final registered = await client.listConnectedApps();
+      if (!mounted) return;
+      final byProviderId = {
+        for (final package in registered) package.providerId: package,
+      };
+      setState(() {
+        _connectedAgentApps = List.unmodifiable(
+          _connectedAgentApps
+              .map((package) => byProviderId[package.providerId] ?? package)
+              .toList(growable: false),
+        );
+      });
+    } catch (error) {
+      debugPrint('Agent App usage refresh failed: $error');
+    }
+  }
+
+  Future<bool?> _showConnectedAppsDiscoverySheet(
+    List<sdk.AgentProviderDescriptor> providers,
+  ) {
+    final single = providers.length == 1;
+    final providerName = single
+        ? (providers.single.label.trim().isEmpty
+              ? _providerPlatformId(providers.single)
+              : providers.single.label.trim())
+        : '';
+    final chinese = widget.language == AppLanguage.chinese;
+    return showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.24),
+      builder: (sheetContext) => SafeArea(
+        top: false,
+        child: Material(
+          color: _appSurfaceColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 12, 22, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Center(
+                  child: SizedBox(
+                    width: 38,
+                    height: 4,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Color(0xFFD2D4D8),
+                        borderRadius: BorderRadius.all(Radius.circular(2)),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  single
+                      ? (chinese
+                            ? '发现“$providerName”'
+                            : '$providerName is available')
+                      : (chinese
+                            ? '有 ${providers.length} 个应用可以连接'
+                            : '${providers.length} apps can connect'),
+                  style: const TextStyle(
+                    color: _sessionMenuText,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  single
+                      ? (chinese
+                            ? '这个应用可以与 Napaxi 连接。连接后，你可以在对话开头输入 @$providerName 使用它提供的能力。'
+                            : 'This app can connect with Napaxi. Once connected, start a message with @$providerName to use its capabilities.')
+                      : (chinese
+                            ? '这些应用已经安装在设备上。你可以选择需要连接的应用，连接后通过 @应用名 使用。'
+                            : 'These apps are installed on this device. Choose the apps you want to connect, then use them with @AppName.'),
+                  style: const TextStyle(
+                    color: _sessionMenuMuted,
+                    fontSize: 15,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 22),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(sheetContext).pop(false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _sessionMenuText,
+                          minimumSize: const Size.fromHeight(48),
+                          side: const BorderSide(color: _appSurfaceBorderColor),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: Text(chinese ? '稍后' : 'Not now'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: single
+                            ? const Key(
+                                'enable_discovered_connected_app_button',
+                              )
+                            : const Key(
+                                'review_discovered_connected_apps_button',
+                              ),
+                        onPressed: () => Navigator.of(sheetContext).pop(true),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _sessionMenuText,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size.fromHeight(48),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: Text(
+                          single
+                              ? (chinese ? '连接' : 'Connect')
+                              : (chinese ? '管理应用' : 'Manage apps'),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _scanForConnectedApps() async {
+    if (!_initialStateRestored || _isScanningConnectedApps) return;
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    if (ModalRoute.of(context)?.isCurrent != true) return;
+    _isScanningConnectedApps = true;
+    try {
+      final client = await _getChatClient();
+      final results = await Future.wait<Object>([
+        client.discoverAgentProviders(),
+        client.listConnectedApps(),
+      ]);
+      final discovered = results[0] as List<sdk.AgentProviderDescriptor>;
+      final connected = results[1] as List<sdk.AgentAppPackage>;
+      if (!mounted) return;
+      _setConnectedAgentApps(discovered, connected);
+
+      final installedIds = {
+        for (final provider in discovered) _providerPlatformId(provider),
+      }..remove('');
+      final connectedIds = {
+        for (final package in connected) _connectedAppPlatformId(package),
+      }..remove('');
+      final preferences = await SharedPreferences.getInstance();
+      final seenIds =
+          (preferences.getStringList(_seenConnectedAppPackagesKey) ??
+                  const <String>[])
+              .toSet();
+      // Forget packages that disappeared so a later reinstall is discoverable.
+      seenIds.retainAll(installedIds);
+      final candidates = discovered
+          .where((provider) {
+            final id = _providerPlatformId(provider);
+            return id.isNotEmpty &&
+                !connectedIds.contains(id) &&
+                !seenIds.contains(id);
+          })
+          .toList(growable: false);
+      if (candidates.isEmpty) {
+        await preferences.setStringList(
+          _seenConnectedAppPackagesKey,
+          seenIds.toList()..sort(),
+        );
+        return;
+      }
+
+      seenIds.addAll(candidates.map(_providerPlatformId));
+      await preferences.setStringList(
+        _seenConnectedAppPackagesKey,
+        seenIds.toList()..sort(),
+      );
+      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+
+      if (candidates.length == 1) {
+        final provider = candidates.single;
+        final shouldEnable = await _showConnectedAppsDiscoverySheet(candidates);
+        if (shouldEnable == true && mounted) {
+          final package = await client.enableAgentProvider(provider);
+          await _refreshConnectedAgentApps();
+          if (!mounted) return;
+          _showSnackBar(
+            widget.language == AppLanguage.chinese
+                ? '已启用 ${package.displayName}。现在可以输入 @${package.displayName} 使用。'
+                : '${package.displayName} enabled. You can now use @${package.displayName}.',
+          );
+        }
+        return;
+      }
+
+      final openSettings = await _showConnectedAppsDiscoverySheet(candidates);
+      if (openSettings == true && mounted) {
+        _showAppsFromMenu();
+      }
+    } catch (error) {
+      debugPrint('Connected App discovery failed: $error');
+    } finally {
+      _isScanningConnectedApps = false;
     }
   }
 
@@ -4159,7 +4689,14 @@ class _ChatScreenState extends State<ChatScreen>
     setState(() {
       final run = _sessionRuns[sessionId];
       if (run == null) return;
-      _sessionRuns[sessionId] = update(run);
+      final updated = update(run);
+      if (run.isTerminal && updated.status != run.status) {
+        _traceChat(
+          'run update ignored terminal session=$sessionId '
+          'status=${run.status.name} attempted=${updated.status.name}',
+        );
+      }
+      _sessionRuns[sessionId] = updated.preserveTerminalFrom(run);
     });
   }
 
@@ -4172,6 +4709,7 @@ class _ChatScreenState extends State<ChatScreen>
     bool clearPendingInterjections = false,
   }) {
     if (!mounted) return;
+    final completedAt = DateTime.now();
     setState(() {
       final run = _sessionRuns[sessionId];
       if (run == null) return;
@@ -4179,23 +4717,47 @@ class _ChatScreenState extends State<ChatScreen>
       final deferredInterjections = run.pendingInterjections
           .where((item) => !item.retractsFromSdk)
           .toList(growable: false);
-      _sessionRuns[sessionId] = run.copyWith(
-        status: status,
-        activity: activity,
-        unread: unread || run.unread,
-        error: error,
-        clearError: error == null,
-        updatedAt: DateTime.now(),
-        clearPendingHumanRequest: true,
-        clearPendingHumanMessage: true,
-        pendingInterjections: clearPendingInterjections
-            ? const []
-            : List.unmodifiable(deferredInterjections),
-      );
+      _sessionRuns[sessionId] = run
+          .copyWith(
+            status: status,
+            activity: activity,
+            unread: unread || run.unread,
+            error: error,
+            clearError: error == null,
+            updatedAt: completedAt,
+            clearPendingHumanRequest: true,
+            clearPendingHumanMessage: true,
+            pendingInterjections: clearPendingInterjections
+                ? const []
+                : List.unmodifiable(deferredInterjections),
+          )
+          .preserveTerminalFrom(run);
+      _sessions = _sessions
+          .map((session) {
+            if (session.id != sessionId) return session;
+            var didUpdate = false;
+            final messages = session.messages
+                .map((message) {
+                  final shouldComplete =
+                      message.role == ChatRole.assistant &&
+                      (message.isStreaming || message.id == messageId);
+                  if (!shouldComplete) return message;
+                  didUpdate = true;
+                  return message.copyWith(
+                    isStreaming: false,
+                    completedAt: message.completedAt ?? completedAt,
+                  );
+                })
+                .toList(growable: false);
+            if (!didUpdate) return session;
+            return session.copyWith(
+              updatedAt: completedAt,
+              messages: List.unmodifiable(messages),
+            );
+          })
+          .toList(growable: false);
     });
-    if (messageId != null) {
-      _completeAssistantMessage(messageId);
-    }
+    _stopSessionRunReconcileTimerIfIdle();
   }
 
   String _migrateLiveSessionId({
@@ -4756,6 +5318,7 @@ class _ChatScreenState extends State<ChatScreen>
   Future<void> _sendMessage(
     List<ChatAttachment> attachments, {
     List<String> pinnedSkillNames = const [],
+    sdk.AgentProviderSelection? providerSelection,
   }) async {
     final text = _inputController.text.trim();
     if (text.isEmpty && attachments.isEmpty) return;
@@ -4766,13 +5329,20 @@ class _ChatScreenState extends State<ChatScreen>
       return;
     }
     await _ensureA2AConnectionReadyForUserTurn();
+    await _reconcileStaleSessionRuns(source: 'before-send');
 
     // Prepend /skill_name mentions for pinned skills so the engine
     // activates them explicitly on this turn. The display text (shown in
     // the user message bubble) remains the original user input.
-    final effectiveText = pinnedSkillNames.isEmpty
+    final providerMessage = providerSelection == null
         ? text
-        : '${pinnedSkillNames.map((n) => '/$n').join(' ')} $text';
+        : _stripSelectedAgentAppMention(text, providerSelection.providerId);
+    var effectiveText = pinnedSkillNames.isEmpty
+        ? providerMessage
+        : '${pinnedSkillNames.map((n) => '/$n').join(' ')} $providerMessage';
+    if (providerSelection != null) {
+      effectiveText = providerSelection.applyToMessage(effectiveText);
+    }
 
     final activeRun = _activeRun;
     _traceChat(
@@ -4807,6 +5377,27 @@ class _ChatScreenState extends State<ChatScreen>
       displayText: text,
       pinnedSkillNames: pinnedSkillNames,
     );
+  }
+
+  String _stripSelectedAgentAppMention(String text, String providerId) {
+    sdk.AgentAppPackage? selected;
+    for (final package in _connectedAgentApps) {
+      if (package.providerId == providerId) {
+        selected = package;
+        break;
+      }
+    }
+    final displayName = selected?.displayName.trim() ?? '';
+    if (displayName.isEmpty) return text;
+    final prefix = '@$displayName';
+    if (!text.startsWith(prefix)) return text;
+    if (text.length > prefix.length) {
+      final next = text.substring(prefix.length, prefix.length + 1);
+      if (!RegExp(r'\s').hasMatch(next) && next != ':' && next != '：') {
+        return text;
+      }
+    }
+    return text.substring(prefix.length).replaceFirst(RegExp(r'^[\s:：]+'), '');
   }
 
   Future<bool> _handleSlashCommand(
@@ -4890,7 +5481,6 @@ class _ChatScreenState extends State<ChatScreen>
         _showChatSnackBar('已创建新会话');
         return true;
       case '/model':
-        _appendSlashCommandResult(text, '正在打开模型设置。');
         await _openConfigPage();
         return true;
       case '/tools':
@@ -5221,29 +5811,16 @@ class _ChatScreenState extends State<ChatScreen>
         _listenForBackgroundActions(client);
         await _prepareBackgroundRunFeedback(client);
       }
-      final sdk.SessionKey session;
-      if (agentId == 'engine.cc') {
-        // CC still owns sessions directly through its PTY bridge.
-        // Create a synthetic SessionKey so downstream fields are type-correct.
-        session = sdk.SessionKey(
-          channelType: 'cli',
-          accountId: agentId,
-          threadId: activeSession.id,
-        );
-      } else {
-        // Codex now routes through Rust core's napaxi.agent_engine.codex engine,
-        // so it must use a core-created UUID session. Rust core owns the
-        // Codex native thread mapping instead of letting Flutter bridge state
-        // become the UI/core id.
-        session = await _getSdkSession(client, activeSession.id, agentId);
-        if (!mounted) return;
-        sessionId = _migrateLiveSessionId(
-          agentId: agentId,
-          oldSessionId: sessionId,
-          sessionKey: session,
-        );
-        unawaited(_refreshContextStatusForSession(agentId, sessionId));
-      }
+      // Every engine keeps the same immutable Core session identity. The
+      // engine-specific native thread id remains an implementation detail.
+      final session = await _getSdkSession(client, activeSession.id, agentId);
+      if (!mounted) return;
+      sessionId = _migrateLiveSessionId(
+        agentId: agentId,
+        oldSessionId: sessionId,
+        sessionKey: session,
+      );
+      unawaited(_refreshContextStatusForSession(agentId, sessionId));
       final sdkAttachments = await _toSdkAttachments(attachments);
       if (!mounted) return;
 
@@ -5252,7 +5829,7 @@ class _ChatScreenState extends State<ChatScreen>
       void Function(String)? onNativeThreadId;
 
       var currentAssistantMessageId = assistantMessageId;
-      var sawResponseDelta = false;
+      String? responseDeltaMessageId;
       late final StreamSubscription<sdk.ChatEvent> subscription;
       subscription = client
           .sendToSession(
@@ -5301,7 +5878,7 @@ class _ChatScreenState extends State<ChatScreen>
                     'content="${_tracePreview(content)}"',
                   );
                   markRun(activity: 'Writing response');
-                  if (!sawResponseDelta) {
+                  if (responseDeltaMessageId != currentAssistantMessageId) {
                     _updateAssistantMessage(
                       currentAssistantMessageId,
                       (message) =>
@@ -5309,7 +5886,7 @@ class _ChatScreenState extends State<ChatScreen>
                     );
                   }
                 case sdk.ResponseDeltaEvent(:final content):
-                  if (!sawResponseDelta) {
+                  if (responseDeltaMessageId != currentAssistantMessageId) {
                     _traceChat(
                       'event=response-delta-first session=$sessionId '
                       'assistant=$currentAssistantMessageId '
@@ -5317,7 +5894,7 @@ class _ChatScreenState extends State<ChatScreen>
                     );
                   }
                   markRun(activity: 'Writing response');
-                  sawResponseDelta = true;
+                  responseDeltaMessageId = currentAssistantMessageId;
                   _updateAssistantMessage(
                     currentAssistantMessageId,
                     (message) => message.copyWith(
@@ -5331,7 +5908,7 @@ class _ChatScreenState extends State<ChatScreen>
                     'assistant=$currentAssistantMessageId',
                   );
                   markRun(activity: 'Reconnecting');
-                  sawResponseDelta = false;
+                  responseDeltaMessageId = null;
                   _updateAssistantMessage(
                     currentAssistantMessageId,
                     (message) =>
@@ -5574,7 +6151,7 @@ class _ChatScreenState extends State<ChatScreen>
                   }
                   _markHumanRequestAnswered(sessionId, requestId);
                   currentAssistantMessageId = 'assistant-${_nextMessageId++}';
-                  sawResponseDelta = false;
+                  responseDeltaMessageId = null;
                   markRun(activity: 'Continuing');
                   _appendAssistantShell(sessionId, currentAssistantMessageId);
                 case sdk.MessageInjectedEvent(:final content):
@@ -5586,7 +6163,7 @@ class _ChatScreenState extends State<ChatScreen>
                   _ackPendingInterjection(sessionId, content);
                   if (!_isLastMessage(sessionId, currentAssistantMessageId)) {
                     currentAssistantMessageId = 'assistant-${_nextMessageId++}';
-                    sawResponseDelta = false;
+                    responseDeltaMessageId = null;
                     _appendAssistantShell(sessionId, currentAssistantMessageId);
                   }
                   markRun(activity: 'Continuing');
@@ -5650,21 +6227,12 @@ class _ChatScreenState extends State<ChatScreen>
                     output: content,
                     isError: isError,
                   );
-                case sdk.EvolutionQueuedEvent(:final reviewTypes, :final runs):
+                case sdk.EvolutionQueuedEvent():
                   _finishSessionRun(
                     sessionId,
                     currentAssistantMessageId,
                     status: sdk.SessionRunStatus.completed,
                     activity: 'Learning queued',
-                  );
-                  _markEvolutionQueued(
-                    currentAssistantMessageId,
-                    reviewTypes,
-                    runs,
-                  );
-                  _startEvolutionResultPolling(
-                    currentAssistantMessageId,
-                    runs.map((run) => run.id).toList(growable: false),
                   );
                 case sdk.ErrorEvent(:final message):
                   _traceChat(
@@ -5692,11 +6260,16 @@ class _ChatScreenState extends State<ChatScreen>
                     'event=interrupted session=$sessionId '
                     'assistant=$currentAssistantMessageId',
                   );
-                  _forceCompleteInflightToolCalls(currentAssistantMessageId);
-                  markRun(
+                  // Publish the terminal state before any trace/message
+                  // cleanup. Stop must remain effective even if cleanup is
+                  // expensive or a malformed trace causes it to fail.
+                  _finishSessionRun(
+                    sessionId,
+                    currentAssistantMessageId,
                     status: sdk.SessionRunStatus.cancelled,
                     activity: 'Stopped',
                   );
+                  _forceCompleteInflightToolCalls(currentAssistantMessageId);
                   _flushPendingAssistantAttachments(
                     sessionId,
                     currentAssistantMessageId,
@@ -5715,6 +6288,11 @@ class _ChatScreenState extends State<ChatScreen>
             },
             onError: (Object error) {
               if (!mounted) return;
+              final run = _sessionRuns[sessionId];
+              final wasCancelled =
+                  run?.status == sdk.SessionRunStatus.cancelling ||
+                  run?.status == sdk.SessionRunStatus.cancelled ||
+                  _stoppingSessionIds.contains(sessionId);
               _traceChat(
                 'stream-error session=$sessionId assistant=$currentAssistantMessageId '
                 'error="${_tracePreview(_friendlyError(error))}"',
@@ -5722,23 +6300,29 @@ class _ChatScreenState extends State<ChatScreen>
               _finishSessionRun(
                 sessionId,
                 currentAssistantMessageId,
-                status: sdk.SessionRunStatus.failed,
-                activity: _friendlyError(error),
-                error: _friendlyError(error),
+                status: wasCancelled
+                    ? sdk.SessionRunStatus.cancelled
+                    : sdk.SessionRunStatus.failed,
+                activity: wasCancelled ? 'Stopped' : _friendlyError(error),
+                error: wasCancelled ? null : _friendlyError(error),
               );
               _flushPendingAssistantAttachments(
                 sessionId,
                 currentAssistantMessageId,
               );
-              _updateAssistantMessage(
-                currentAssistantMessageId,
-                (message) => message.copyWith(
-                  content: strings.sdkError(_friendlyError(error)),
-                  isStreaming: false,
-                  action: ChatMessageAction.openConfiguration,
-                  completedAt: DateTime.now(),
-                ),
-              );
+              if (wasCancelled) {
+                _forceCompleteInflightToolCalls(currentAssistantMessageId);
+              } else {
+                _updateAssistantMessage(
+                  currentAssistantMessageId,
+                  (message) => message.copyWith(
+                    content: strings.sdkError(_friendlyError(error)),
+                    isStreaming: false,
+                    action: ChatMessageAction.openConfiguration,
+                    completedAt: DateTime.now(),
+                  ),
+                );
+              }
               unawaited(_refreshContextStatusForSession(agentId, sessionId));
               _scrollToBottom();
             },
@@ -5747,23 +6331,34 @@ class _ChatScreenState extends State<ChatScreen>
               _traceChat(
                 'stream-done session=$sessionId assistant=$currentAssistantMessageId',
               );
+              final run = _sessionRuns[sessionId];
+              final producedSince = run?.startedAt;
+              if (run == null || !run.isTerminal) {
+                final wasStopping =
+                    run?.status == sdk.SessionRunStatus.cancelling ||
+                    _stoppingSessionIds.contains(sessionId);
+                _finishSessionRun(
+                  sessionId,
+                  currentAssistantMessageId,
+                  status: wasStopping
+                      ? sdk.SessionRunStatus.cancelled
+                      : sdk.SessionRunStatus.completed,
+                  activity: wasStopping ? 'Stopped' : 'Completed',
+                );
+              }
+              // Publish the terminal UI state before scanning the workspace
+              // for generated artifacts. Attachment discovery may traverse a
+              // large project and must never hold the Stop state open.
               unawaited(
                 _appendFinalResponseAttachments(
                   sessionId,
                   currentAssistantMessageId,
                   agentId: agentId,
+                  producedSince: producedSince,
                 ),
               );
-              final run = _sessionRuns[sessionId];
-              if (run == null || !run.isTerminal) {
-                _finishSessionRun(
-                  sessionId,
-                  currentAssistantMessageId,
-                  status: sdk.SessionRunStatus.completed,
-                  activity: 'Completed',
-                );
-              }
               unawaited(_refreshContextStatusForSession(agentId, sessionId));
+              unawaited(_refreshConnectedAgentAppUsage());
               _scrollToBottom();
             },
           );
@@ -5778,6 +6373,7 @@ class _ChatScreenState extends State<ChatScreen>
           activity: 'Starting',
         );
       });
+      _ensureSessionRunReconcileTimer();
       _traceChat(
         'run registered session=$sessionId assistant=$assistantMessageId',
       );
@@ -5805,6 +6401,25 @@ class _ChatScreenState extends State<ChatScreen>
       );
       _scrollToBottom(force: true);
     }
+  }
+
+  void _focusHumanRequestAnswer(HumanRequest request) {
+    final pendingRequestId = _activeRun?.pendingHumanRequestId;
+    if (pendingRequestId != request.requestId) {
+      _showChatSnackBar(
+        widget.language == AppLanguage.chinese
+            ? '这个人工确认请求已不可回答'
+            : 'This human request is no longer waiting for an answer.',
+      );
+      return;
+    }
+    _inputFocusNode.requestFocus();
+    _scrollToBottom(force: true);
+    _showChatSnackBar(
+      widget.language == AppLanguage.chinese
+          ? '请输入回答后发送'
+          : 'Type your answer and send it.',
+    );
   }
 
   Future<void> _sendRunningMessage(
@@ -5969,22 +6584,35 @@ class _ChatScreenState extends State<ChatScreen>
     String sessionId, {
     bool clearPendingInterjections = false,
   }) async {
-    if (_stoppingSessionIds.contains(sessionId)) return;
+    if (_stoppingSessionIds.contains(sessionId)) {
+      _traceChat('stop ignored already-stopping session=$sessionId');
+      return;
+    }
     final client = _chatClient;
     final run = _sessionRuns[sessionId];
-    if (run == null) return;
+    if (run == null || run.isTerminal) return;
     final messageId = run.assistantMessageId;
     final subscription = run.subscription;
+    var didStartStopping = false;
 
     if (mounted) {
       setState(() {
+        final current = _sessionRuns[sessionId];
+        if (current == null ||
+            current.isTerminal ||
+            current.startedAt != run.startedAt) {
+          return;
+        }
+        didStartStopping = true;
         _stoppingSessionIds.add(sessionId);
-        _sessionRuns[sessionId] = run.copyWith(
+        _sessionRuns[sessionId] = current.copyWith(
           status: sdk.SessionRunStatus.cancelling,
           activity: 'Stopping',
         );
       });
     }
+    if (!didStartStopping) return;
+    _traceChat('stop requested session=$sessionId assistant=$messageId');
     try {
       _updateAssistantMessage(
         messageId,
@@ -5998,34 +6626,21 @@ class _ChatScreenState extends State<ChatScreen>
       );
 
       if (client != null) {
-        try {
-          await client.cancelSession(run.sessionKey, agentId: run.agentId);
-        } catch (_) {
-          // The local stream has already been stopped; SDK cancellation is best effort.
-        }
+        // Start native cancellation, but never make visible UI convergence
+        // depend on its acknowledgement.
+        unawaited(_requestSessionCancellation(client, run, sessionId));
       }
 
-      // Let the Rust stream's bounded cancel sequence (terminal ToolResult +
-      // Interrupted + close) drive `onDone`. If it doesn't close within the
-      // grace window we force-cancel locally so the UI never hangs.
-      final closed = await _awaitSubscriptionDone(
-        subscription,
-        timeout: const Duration(seconds: 4),
-      );
-      if (!closed) {
-        _forceCompleteInflightToolCalls(messageId);
-        unawaited(subscription.cancel());
-      }
-
-      final hasOtherActiveRuns = _sessionRuns.entries.any(
-        (entry) => entry.key != sessionId && !entry.value.isTerminal,
-      );
-      if (!hasOtherActiveRuns) {
-        await client?.stopBackgroundService();
-      }
+      // Cancellation acknowledgement and stream closure are separate
+      // concerns. Make the local terminal state authoritative immediately;
+      // native cleanup continues independently and the subscription gets a
+      // bounded grace period for its final ToolResult/Interrupted events.
       _flushPendingAssistantAttachments(sessionId, messageId);
       final latest = _sessionRuns[sessionId];
-      if (latest == null || !latest.isTerminal) {
+      if (latest != null &&
+          latest.startedAt == run.startedAt &&
+          !latest.isTerminal) {
+        _forceCompleteInflightToolCalls(messageId);
         _finishSessionRun(
           sessionId,
           messageId,
@@ -6033,7 +6648,7 @@ class _ChatScreenState extends State<ChatScreen>
           activity: 'Stopped',
           clearPendingInterjections: clearPendingInterjections,
         );
-      } else if (clearPendingInterjections) {
+      } else if (clearPendingInterjections && latest != null) {
         _finishSessionRun(
           sessionId,
           null,
@@ -6042,29 +6657,63 @@ class _ChatScreenState extends State<ChatScreen>
           clearPendingInterjections: true,
         );
       }
+
+      unawaited(_cancelSubscriptionAfterGrace(subscription, sessionId));
+      final hasOtherActiveRuns = _sessionRuns.entries.any(
+        (entry) => entry.key != sessionId && !entry.value.isTerminal,
+      );
+      if (!hasOtherActiveRuns && client != null) {
+        unawaited(
+          client
+              .stopBackgroundService()
+              .timeout(const Duration(seconds: 2))
+              .catchError((Object error) {
+                _traceChat(
+                  'stop background cleanup failed session=$sessionId '
+                  'error="${_tracePreview(_friendlyError(error))}"',
+                );
+              }),
+        );
+      }
     } finally {
       if (mounted) setState(() => _stoppingSessionIds.remove(sessionId));
     }
   }
 
-  Future<bool> _awaitSubscriptionDone(
-    StreamSubscription<sdk.ChatEvent> subscription, {
-    required Duration timeout,
-  }) async {
-    final completer = Completer<bool>();
-    Timer? timer;
-    timer = Timer(timeout, () {
-      if (!completer.isCompleted) completer.complete(false);
-    });
-    Future<void> notifyDone() async {
-      if (!completer.isCompleted) completer.complete(true);
+  Future<void> _requestSessionCancellation(
+    NapaxiChatClient client,
+    ChatSessionRunState run,
+    String sessionId,
+  ) async {
+    try {
+      final cancelled = await client
+          .cancelSession(run.sessionKey, agentId: run.agentId)
+          .timeout(const Duration(seconds: 2));
+      _traceChat('stop signal session=$sessionId accepted=$cancelled');
+    } on TimeoutException {
+      _traceChat('stop signal timeout session=$sessionId');
+    } catch (error) {
+      _traceChat(
+        'stop signal failed session=$sessionId '
+        'error="${_tracePreview(_friendlyError(error))}"',
+      );
     }
+  }
 
-    subscription.onDone(notifyDone);
-    subscription.onError((Object _) => notifyDone());
-    final result = await completer.future;
-    timer.cancel();
-    return result;
+  Future<void> _cancelSubscriptionAfterGrace(
+    StreamSubscription<sdk.ChatEvent> subscription,
+    String sessionId,
+  ) async {
+    await Future<void>.delayed(const Duration(seconds: 3));
+    try {
+      await subscription.cancel().timeout(const Duration(seconds: 1));
+      _traceChat('stop stream disposed session=$sessionId');
+    } catch (error) {
+      _traceChat(
+        'stop stream dispose failed session=$sessionId '
+        'error="${_tracePreview(_friendlyError(error))}"',
+      );
+    }
   }
 
   void _forceCompleteInflightToolCalls(String messageId) {
@@ -6749,15 +7398,16 @@ class _ChatScreenState extends State<ChatScreen>
       builder: (sheetContext) {
         return _ConversationAttachmentsSheet(
           items: items,
-          onOpenAttachment: (attachment) {
+          onOpenAttachment: (attachment) async {
             Navigator.of(sheetContext).pop();
-            unawaited(
-              _openAttachment(
-                context,
-                attachment,
-                accountId: _activeAccountId,
-                agentId: _activeAgentId,
-              ),
+            await Future<void>.delayed(Duration.zero);
+            if (!mounted) return;
+            await _openAttachment(
+              context,
+              attachment,
+              accountId: _activeAccountId,
+              agentId: _activeAgentId,
+              clientFuture: _getChatClient,
             );
           },
         );
@@ -6846,182 +7496,6 @@ class _ChatScreenState extends State<ChatScreen>
       _inputController.clear();
     });
     _inputFocusNode.requestFocus();
-  }
-
-  void _markEvolutionQueued(
-    String messageId,
-    List<String> reviewTypes,
-    List<sdk.EvolutionQueuedRun> runs,
-  ) {
-    final effectiveReviewTypes = runs.isEmpty
-        ? reviewTypes
-        : runs.map((run) => run.reviewType).toList(growable: false);
-    _evolutionHideTimers.remove(messageId)?.cancel();
-    _updateAssistantMessage(
-      messageId,
-      (message) => message.copyWith(
-        evolutionStatus: ChatEvolutionStatus(
-          runIds: runs.map((run) => run.id).toList(growable: false),
-          reviewTypes: effectiveReviewTypes,
-          stage: ChatEvolutionStage.reviewing,
-        ),
-      ),
-    );
-  }
-
-  void _startEvolutionResultPolling(String messageId, List<String> runIds) {
-    _evolutionPollTimers.remove(messageId)?.cancel();
-    if (runIds.isEmpty) {
-      _scheduleEvolutionStatusHide(messageId);
-      return;
-    }
-
-    var attempts = 0;
-    Future<void> poll() async {
-      if (!mounted) return;
-      attempts += 1;
-      final List<sdk.EvolutionRun> runs;
-      try {
-        final client = await _getChatClient();
-        runs = await client.listEvolutionRuns(runIds: runIds);
-      } catch (_) {
-        return;
-      }
-      if (!mounted || runs.isEmpty) return;
-      final shouldContinue = _applyEvolutionRuns(messageId, runs);
-      if (!shouldContinue) {
-        _evolutionPollTimers.remove(messageId)?.cancel();
-      } else if (attempts >= 30) {
-        _evolutionPollTimers.remove(messageId)?.cancel();
-        _updateEvolutionStatusStage(messageId, ChatEvolutionStage.failed);
-      }
-    }
-
-    unawaited(poll());
-    _evolutionPollTimers[messageId] = Timer.periodic(
-      const Duration(seconds: 2),
-      (_) => unawaited(poll()),
-    );
-  }
-
-  bool _applyEvolutionRuns(String messageId, List<sdk.EvolutionRun> runs) {
-    final hasRunning = runs.any((run) => !run.isFinished);
-    final hasFailed = runs.any(
-      (run) => run.status == sdk.EvolutionRunStatus.failed,
-    );
-    final pendingCount = runs.fold<int>(
-      0,
-      (sum, run) => sum + run.pendingCount,
-    );
-    final autoAppliedCount = runs.fold<int>(
-      0,
-      (sum, run) => sum + run.autoAppliedCount,
-    );
-    final reviewTypes = runs.map((run) => run.reviewType).toSet().toList();
-    final stage = hasRunning
-        ? ChatEvolutionStage.reviewing
-        : hasFailed
-        ? ChatEvolutionStage.failed
-        : pendingCount > 0
-        ? ChatEvolutionStage.pending
-        : autoAppliedCount > 0
-        ? ChatEvolutionStage.updated
-        : ChatEvolutionStage.reviewed;
-
-    _updateAssistantMessage(
-      messageId,
-      (message) => message.copyWith(
-        evolutionStatus: ChatEvolutionStatus(
-          runIds: runs.map((run) => run.id).toList(growable: false),
-          reviewTypes: reviewTypes,
-          stage: stage,
-          autoAppliedCount: autoAppliedCount,
-          pendingCount: pendingCount,
-        ),
-      ),
-    );
-    if (stage == ChatEvolutionStage.reviewed) {
-      _scheduleEvolutionStatusHide(messageId);
-    }
-    return hasRunning;
-  }
-
-  void _updateEvolutionStatusStage(String messageId, ChatEvolutionStage stage) {
-    _updateAssistantMessage(messageId, (message) {
-      final status = message.evolutionStatus;
-      if (status == null) return message;
-      return message.copyWith(
-        evolutionStatus: ChatEvolutionStatus(
-          runIds: status.runIds,
-          reviewTypes: status.reviewTypes,
-          stage: stage,
-          autoAppliedCount: status.autoAppliedCount,
-          pendingCount: status.pendingCount,
-        ),
-      );
-    });
-  }
-
-  Future<void> _refreshPendingEvolutionFromSkills() async {
-    final List<Map<String, dynamic>> pending;
-    try {
-      final client = await _getChatClient();
-      pending = await client.listPendingEvolution();
-    } catch (_) {
-      return;
-    }
-    if (!mounted) return;
-
-    final normalizedAgentId = _normalizeSkillGovernanceAgentId(_activeAgentId);
-    final pendingCount = pending
-        .where(
-          (item) =>
-              _normalizeSkillGovernanceAgentId(
-                item['agent_id'] as String? ?? '',
-              ) ==
-              normalizedAgentId,
-        )
-        .length;
-    final pendingMessages = _messages
-        .where(
-          (message) =>
-              message.evolutionStatus?.stage == ChatEvolutionStage.pending,
-        )
-        .map((message) => message.id)
-        .toList();
-
-    for (final messageId in pendingMessages) {
-      _updateAssistantMessage(messageId, (message) {
-        final status = message.evolutionStatus;
-        if (status == null) return message;
-        return message.copyWith(
-          evolutionStatus: ChatEvolutionStatus(
-            runIds: status.runIds,
-            reviewTypes: status.reviewTypes,
-            stage: pendingCount == 0
-                ? ChatEvolutionStage.reviewed
-                : ChatEvolutionStage.pending,
-            autoAppliedCount: status.autoAppliedCount,
-            pendingCount: pendingCount,
-          ),
-        );
-      });
-      if (pendingCount == 0) {
-        _scheduleEvolutionStatusHide(messageId);
-      }
-    }
-  }
-
-  void _scheduleEvolutionStatusHide(String messageId) {
-    _evolutionHideTimers.remove(messageId)?.cancel();
-    _evolutionHideTimers[messageId] = Timer(const Duration(seconds: 4), () {
-      if (!mounted) return;
-      _updateAssistantMessage(
-        messageId,
-        (message) => message.copyWith(clearEvolutionStatus: true),
-      );
-      _evolutionHideTimers.remove(messageId);
-    });
   }
 
   void _markHumanRequestAnswered(String sessionId, String requestId) {
@@ -7228,6 +7702,15 @@ class _ChatScreenState extends State<ChatScreen>
       agentId: agentId,
     );
     _sdkSessions[cacheKey] = session;
+    final projectId = _projectSessionIds[cacheKey];
+    if (projectId != null) {
+      await _movePersistedSession(
+        agentId: agentId,
+        sessionId: sessionId,
+        projectId: projectId,
+        workspacePolicy: sdk.NapaxiWorkspacePolicy.useProjectDefault,
+      );
+    }
     return session;
   }
 
@@ -7284,6 +7767,7 @@ class _ChatScreenState extends State<ChatScreen>
     String sessionId,
     String messageId, {
     required String agentId,
+    DateTime? producedSince,
   }) async {
     final message = _messageById(messageId);
     if (message == null) return;
@@ -7291,6 +7775,11 @@ class _ChatScreenState extends State<ChatScreen>
     if (producedText.trim().isNotEmpty) {
       _appendProducedFileAttachments(sessionId, producedText, agentId: agentId);
     }
+    await _appendRecentApkAttachments(
+      sessionId,
+      agentId: agentId,
+      producedSince: producedSince,
+    );
     await _appendInlineHtmlAttachment(sessionId, messageId);
     _flushPendingAssistantAttachments(sessionId, messageId);
   }
@@ -7311,14 +7800,13 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// Tools whose result reliably names files the assistant actually created or
-  /// modified — these explicitly declare the affected paths in their structured
-  /// result. `shell` is intentionally excluded: its result is plain
-  /// stdout/stderr with no file manifest, so (matching Codex) files written as
-  /// a side effect of shell commands are NOT surfaced as generated attachments.
-  /// This avoids noise like a `python -m venv` run dumping the whole venv tree.
+  /// modified. `shell` is still excluded for generic files because its side
+  /// effects can be huge/noisy (for example a venv or build tree), but APKs get
+  /// a narrow exception: build commands commonly produce an installable APK
+  /// without going through write_file/apply_patch.
   bool _isGeneratedFileTool(String toolName) {
     return switch (_canonicalToolName(toolName)) {
-      'write_file' || 'apply_patch' => true,
+      'write_file' || 'apply_patch' || 'shell' => true,
       _ => false,
     };
   }
@@ -7343,12 +7831,45 @@ class _ChatScreenState extends State<ChatScreen>
     AgentToolCall toolCall,
   ) {
     final canonicalName = _canonicalToolName(toolCall.name);
+    if (canonicalName == 'shell') {
+      _appendApkPathsFromShellToolCall(buffer, toolCall);
+      return;
+    }
     if (canonicalName != 'write_file' && canonicalName != 'apply_patch') {
       return;
     }
     for (final file in _collectWriteFileResults(toolCall)) {
       if (file.action == 'deleted' || file.path.trim().isEmpty) continue;
       buffer.writeln(file.path);
+    }
+  }
+
+  void _appendApkPathsFromShellToolCall(
+    StringBuffer buffer,
+    AgentToolCall toolCall,
+  ) {
+    final text = StringBuffer()
+      ..writeln(toolCall.arguments)
+      ..writeln(toolCall.streamingOutput)
+      ..writeln(toolCall.output ?? '');
+    for (final chunk in toolCall.outputChunks) {
+      text.writeln(chunk.content);
+    }
+    final seen = <String>{};
+    for (final match in RegExp(
+      r'''(?:^|[\s"'`=:\[\](),])([^\s"'`<>|]+\.apk)(?=$|[\s"'`<>|,).])''',
+      caseSensitive: false,
+      multiLine: true,
+    ).allMatches(text.toString())) {
+      final raw = match.group(1)?.trim();
+      if (raw == null || raw.isEmpty) continue;
+      final candidate = raw.replaceAll(RegExp(r'[),.;]+$'), '');
+      if (!candidate.toLowerCase().endsWith('.apk')) continue;
+      if (seen.add(candidate)) buffer.writeln(candidate);
+      if (!candidate.startsWith('/') && !candidate.contains('://')) {
+        final workspaceCandidate = '/workspace/$candidate';
+        if (seen.add(workspaceCandidate)) buffer.writeln(workspaceCandidate);
+      }
     }
   }
 
@@ -7384,6 +7905,76 @@ $candidate
 </body>
 </html>
 ''';
+  }
+
+  Future<void> _appendRecentApkAttachments(
+    String sessionId, {
+    required String agentId,
+    DateTime? producedSince,
+  }) async {
+    if (!sdk.NapaxiFileBridge.isInitialized) return;
+    final since = producedSince?.subtract(const Duration(minutes: 2));
+    if (since == null) return;
+
+    final bridge = sdk.NapaxiFileBridge.instance;
+    final workspaceDir = bridge.workspaceDirScoped(
+      accountId: _activeAccountId,
+      agentId: agentId,
+    );
+    if (!await workspaceDir.exists()) return;
+
+    final attachments = <ChatAttachment>[];
+    var visited = 0;
+    const maxVisited = 30000;
+    const maxApks = 20;
+    try {
+      await for (final entity in workspaceDir.list(
+        recursive: true,
+        followLinks: false,
+      )) {
+        if (++visited > maxVisited || attachments.length >= maxApks) break;
+        if (entity is! File || !entity.path.toLowerCase().endsWith('.apk')) {
+          continue;
+        }
+        DateTime modified;
+        try {
+          modified = await entity.lastModified();
+        } catch (_) {
+          continue;
+        }
+        if (modified.isBefore(since)) continue;
+        final sandboxPath = bridge.realToSandboxScoped(
+          entity.path,
+          accountId: _activeAccountId,
+          agentId: agentId,
+        );
+        if (sandboxPath == null || sandboxPath.trim().isEmpty) continue;
+        attachments.add(
+          ChatAttachment(
+            name: entity.uri.pathSegments.isEmpty
+                ? 'app.apk'
+                : entity.uri.pathSegments.last,
+            path: entity.path,
+            sandboxPath: sandboxPath,
+            type: ChatAttachmentType.file,
+            mimeTypeOverride: 'application/vnd.android.package-archive',
+          ),
+        );
+      }
+    } catch (_) {
+      return;
+    }
+    if (attachments.isEmpty) return;
+    attachments.sort((a, b) {
+      try {
+        return File(
+          b.path,
+        ).lastModifiedSync().compareTo(File(a.path).lastModifiedSync());
+      } catch (_) {
+        return 0;
+      }
+    });
+    _queueAssistantAttachments(sessionId, attachments);
   }
 
   void _appendProducedFileAttachments(
@@ -8222,14 +8813,6 @@ $candidate
     return didUpdate ? List.unmodifiable(steps) : traceSteps;
   }
 
-  void _completeAssistantMessage(String messageId) {
-    _updateAssistantMessage(
-      messageId,
-      (message) =>
-          message.copyWith(isStreaming: false, completedAt: DateTime.now()),
-    );
-  }
-
   String _friendlyError(Object error) {
     final text = error.toString();
     const exceptionPrefix = 'Exception: ';
@@ -8267,6 +8850,21 @@ $candidate
     );
   }
 
+  Future<NapaxiChatClient> _buildProjectFilesClientFuture(
+    _ChatProject project,
+  ) async {
+    final client = await _getChatClient();
+    await client.configureForManagement(
+      capabilitySelection: _activeScenarioCapabilitySelection,
+    );
+    await client.registerProject(
+      projectId: project.id,
+      agentId: project.agentId,
+      name: project.name,
+    );
+    return client;
+  }
+
   Future<NapaxiChatClient> _buildSkillsClientFuture() {
     return _buildContentBrowserClient(
       missingConfigMessage: AppStrings.of(context).configureToViewSkills,
@@ -8300,7 +8898,16 @@ $candidate
       return client;
     }
 
-    throw Exception(missingConfigMessage);
+    // File and skill browsers are local management surfaces. They should stay
+    // usable even before the user configures an LLM profile; otherwise a
+    // restored Files/Skills primary view can create an unhandled startup future
+    // error and terminate the iOS debug app. Chat requests still enforce model
+    // configuration at send time.
+    final client = await _getChatClient();
+    await client.configureForManagement(
+      capabilitySelection: _activeScenarioCapabilitySelection,
+    );
+    return client;
   }
 
   Future<bool> _hasConfiguredCliEngineCredential(String agentId) async {
@@ -9251,79 +9858,6 @@ $candidate
     unawaited(_showSettingsSheet(_SettingsSection.scenarios));
   }
 
-  void _openSkillOrganizeFromChat(ChatMessage message) {
-    final status = message.evolutionStatus;
-    if (status == null || status.stage != ChatEvolutionStage.pending) return;
-    _dismissKeyboard();
-    // Show a unified pending sheet that displays both memory and skill
-    // suggestions. The sheet internally filters by type and shows all items.
-    _showMemoryPendingSheet(message.id);
-  }
-
-  void _showMemoryPendingSheet(String messageId) {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.55,
-        minChildSize: 0.3,
-        maxChildSize: 0.85,
-        expand: false,
-        builder: (context, scrollController) => _MemoryPendingSheet(
-          clientFuture: _getChatClient(),
-          scrollController: scrollController,
-          onApplied: () {
-            unawaited(_refreshEvolutionStatus(messageId));
-          },
-        ),
-      ),
-    );
-  }
-
-  Future<void> _refreshEvolutionStatus(String messageId) async {
-    // Re-query pending count — only clear the badge when nothing is left.
-    final List<Map<String, dynamic>> pending;
-    try {
-      final client = await _getChatClient();
-      pending = await client.listPendingEvolution();
-    } catch (_) {
-      return;
-    }
-    if (!mounted) return;
-    final normalizedAgentId = _normalizeSkillGovernanceAgentId(_activeAgentId);
-    final pendingCount = pending
-        .where(
-          (item) =>
-              _normalizeSkillGovernanceAgentId(
-                item['agent_id'] as String? ?? '',
-              ) ==
-              normalizedAgentId,
-        )
-        .length;
-    if (pendingCount == 0) {
-      _updateEvolutionStatusStage(messageId, ChatEvolutionStage.reviewed);
-      _scheduleEvolutionStatusHide(messageId);
-    } else {
-      _updateAssistantMessage(messageId, (message) {
-        final status = message.evolutionStatus;
-        if (status == null) return message;
-        return message.copyWith(
-          evolutionStatus: ChatEvolutionStatus(
-            runIds: status.runIds,
-            reviewTypes: status.reviewTypes,
-            stage: ChatEvolutionStage.pending,
-            autoAppliedCount: status.autoAppliedCount,
-            pendingCount: pendingCount,
-          ),
-        );
-      });
-    }
-  }
-
   void _closeSessionHistory() {
     if (_isSessionHistorySearching) {
       _handleSessionHistorySearchModeChanged(false);
@@ -9418,9 +9952,16 @@ $candidate
     if (start == null || lastPosition == null) return;
 
     final totalDelta = event.position - start;
-    final isProjectBackGesture =
-        _isActiveProjectChat || _primaryView == _ChatPrimaryView.projectDetail;
-    final horizontalThreshold = isProjectBackGesture ? 56.0 : 8.0;
+    final isAppsDetailBackGesture =
+        _primaryView == _ChatPrimaryView.apps &&
+        (_appsPageKey.currentState?.isShowingDetails ?? false);
+    final isNestedBackGesture =
+        _isActiveProjectChat ||
+        _primaryView == _ChatPrimaryView.projectDetail ||
+        isAppsDetailBackGesture;
+    final horizontalThreshold = isNestedBackGesture
+        ? _projectBackHorizontalDragThreshold
+        : _sessionMenuOpenDragThreshold;
     final isHorizontalOpenDrag =
         totalDelta.dx > horizontalThreshold &&
         totalDelta.dx.abs() > totalDelta.dy.abs() * 1.2;
@@ -9431,7 +9972,7 @@ $candidate
 
     _isOpeningSessionMenuDrag = true;
     _dismissKeyboard();
-    if (isProjectBackGesture) {
+    if (isNestedBackGesture) {
       _chatDragLastPosition = event.position;
       return;
     }
@@ -9448,6 +9989,9 @@ $candidate
         _returnToActiveProject();
       } else if (_primaryView == _ChatPrimaryView.projectDetail) {
         _returnToProjects();
+      } else if (_primaryView == _ChatPrimaryView.apps &&
+          (_appsPageKey.currentState?.isShowingDetails ?? false)) {
+        _appsPageKey.currentState?._closeDetails();
       } else if (_sessionMenuController.value >= 0.25) {
         _sessionMenuController.forward();
       } else {
@@ -9548,6 +10092,13 @@ $candidate
         page = _ProjectDetailPage(
           project: project,
           sessions: sessions,
+          workspaceMismatchSessionIds: {
+            for (final session in sessions)
+              if (_workspaceMismatchSessionKeys.contains(
+                _sessionCacheKey(_activeAgentId, session.id),
+              ))
+                session.id,
+          },
           onBack: _returnToProjects,
           onSessionTap: _openProjectSession,
           onSessionPinToggle: _toggleSessionPin,
@@ -9563,6 +10114,7 @@ $candidate
                 attachments,
                 pinnedSkillNames,
               ),
+          onFiles: () => _openProjectFiles(project),
           chatClient: _chatClient,
           agentId: _activeAgentId,
         );
@@ -9620,6 +10172,41 @@ $candidate
     );
   }
 
+  Widget _buildProjectFilesPrimarySurface() {
+    _ChatProject? selectedProject;
+    for (final project in _chatProjects) {
+      if (project.id == _selectedChatProjectId &&
+          project.agentId == _activeAgentId) {
+        selectedProject = project;
+        break;
+      }
+    }
+    if (selectedProject == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _returnToProjects();
+      });
+      return const SizedBox.shrink();
+    }
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: _handleChatPointerDown,
+      onPointerMove: _handleChatPointerMove,
+      onPointerUp: _handleChatPointerEnd,
+      onPointerCancel: _handleChatPointerEnd,
+      child: _FilesPage(
+        clientFuture: _projectFilesClientFuture ??=
+            _buildProjectFilesClientFuture(selectedProject),
+        agentId: _activeAgentId,
+        projectId: selectedProject.id,
+        projectName: selectedProject.name,
+        onBack: () async {
+          _returnToProjectDetail();
+          return false;
+        },
+      ),
+    );
+  }
+
   Widget _buildSkillsPrimarySurface() {
     return Listener(
       behavior: HitTestBehavior.translucent,
@@ -9630,8 +10217,24 @@ $candidate
       child: _SkillsPage(
         clientFuture: _primarySkillsClientFuture ??= _buildSkillsClientFuture(),
         agentId: _activeAgentId,
-        onPendingEvolutionChanged: _refreshPendingEvolutionFromSkills,
         onMenu: _openSessionHistory,
+      ),
+    );
+  }
+
+  Widget _buildAppsPrimarySurface() {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: _handleChatPointerDown,
+      onPointerMove: _handleChatPointerMove,
+      onPointerUp: _handleChatPointerEnd,
+      onPointerCancel: _handleChatPointerEnd,
+      child: _AppsPage(
+        key: _appsPageKey,
+        clientFuture: _primaryAppsClientFuture ??= _getChatClient(),
+        language: widget.language,
+        onMenu: _openSessionHistory,
+        onConnectedAppsChanged: () => unawaited(_refreshConnectedAgentApps()),
       ),
     );
   }
@@ -9640,8 +10243,10 @@ $candidate
     return switch (_primaryView) {
       _ChatPrimaryView.files => _buildFilesPrimarySurface(),
       _ChatPrimaryView.skills => _buildSkillsPrimarySurface(),
+      _ChatPrimaryView.apps => _buildAppsPrimarySurface(),
       _ChatPrimaryView.projects ||
       _ChatPrimaryView.projectDetail => _buildProjectsPrimarySurface(),
+      _ChatPrimaryView.projectFiles => _buildProjectFilesPrimarySurface(),
       _ChatPrimaryView.chat => const SizedBox.shrink(),
     };
   }
@@ -9729,6 +10334,7 @@ $candidate
                 onProjectSessionRemove: _removeSessionFromProject,
                 onFilesSelected: _showFilesFromMenu,
                 onSkillsSelected: _showSkillsFromMenu,
+                onAppsSelected: _showAppsFromMenu,
                 onProjectsSelected: _showProjectsFromMenu,
                 onSettingsSelected: _showSettingsFromMenu,
                 primaryView: _primaryView,
@@ -9745,7 +10351,6 @@ $candidate
                 onSessionDelete: (sessionId) {
                   unawaited(_confirmDeleteSession(sessionId));
                 },
-                onPendingEvolutionChanged: _refreshPendingEvolutionFromSkills,
               ),
             ),
           ),
@@ -9761,6 +10366,12 @@ $candidate
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
+    if (!_initialStateRestored && !_usesInjectedChatClient) {
+      return const Scaffold(
+        key: Key('chat_root_scaffold'),
+        body: SizedBox.expand(),
+      );
+    }
     final keyboardVisible =
         MediaQuery.viewInsetsOf(context).bottom > 0 &&
         !_isSessionHistorySearching;
@@ -9918,8 +10529,6 @@ $candidate
                                                         _loadFullHistoryToolCall,
                                                     onOpenConfiguration:
                                                         _openModelSettingsPage,
-                                                    onOpenSkillOrganize:
-                                                        _openSkillOrganizeFromChat,
                                                     onCopyUserMessage:
                                                         (message) {
                                                           unawaited(
@@ -9942,6 +10551,8 @@ $candidate
                                                             ),
                                                           );
                                                         },
+                                                    onFocusHumanRequest:
+                                                        _focusHumanRequestAnswer,
                                                     aggregatedAttachmentIdentities:
                                                         generatedIdentities,
                                                   );
@@ -10097,6 +10708,7 @@ $candidate
                                   isSending: _isActiveSessionSending,
                                   isEditing: _editingMessageId != null,
                                   slashCommands: _availableSlashCommands,
+                                  agentApps: _connectedAgentApps,
                                   contextStatus: _activeContextStatus,
                                   isContextStatusLoading:
                                       _isActiveContextStatusLoading,

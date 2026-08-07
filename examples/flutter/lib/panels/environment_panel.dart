@@ -124,12 +124,29 @@ class DemoPresetSkill {
     required this.title,
     required this.description,
     required this.skillContent,
+    this.supportFiles = const {},
   });
 
   final String name;
   final String title;
   final String description;
   final String skillContent;
+  final Map<String, String> supportFiles;
+
+  Object get installPayload {
+    if (supportFiles.isEmpty) return skillContent;
+    return sdk.SkillInstallInput(
+      skillMd: skillContent,
+      extraFiles: supportFiles.entries
+          .map(
+            (entry) => sdk.SkillInstallExtraFile(
+              path: entry.key,
+              bytes: Uint8List.fromList(utf8.encode(entry.value)),
+            ),
+          )
+          .toList(growable: false),
+    );
+  }
 }
 
 class _EnvironmentCommandResult {
@@ -791,6 +808,17 @@ class _PresetSkillTile extends StatelessWidget {
                   height: 1.3,
                 ),
               ),
+              if (skill.supportFiles.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Includes: ${skill.supportFiles.keys.join(', ')}',
+                  style: const TextStyle(
+                    color: _configTextSecondary,
+                    fontSize: 11,
+                    height: 1.25,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -1309,22 +1337,25 @@ List<DemoPresetSkill> _defaultPresetSkills() {
       name: 'android-project-template',
       title: 'Android Project Template',
       description:
-          'Creates a Git-managed Android project instead of HTML when the user asks for an app or APK.',
+          'Creates a Git-managed Android project for native or supported WebView APK apps.',
       skillContent: _androidProjectTemplateSkill,
     ),
     DemoPresetSkill(
       name: 'android-apk-build',
       title: 'Android APK Build',
       description:
-          'Builds, signs, verifies, and optionally installs a small Android APK with the lightweight toolchain.',
-      skillContent: _androidApkBuildSkill,
+          'Builds Provider-ready Android apps with Napaxi\'s core-owned bundled toolchain.',
+      // The complete Provider SDK, templates, and validator are deployed by
+      // Napaxi Core. This entry is descriptive only, so the demo cannot
+      // overwrite the current bundled skill with an older embedded copy.
+      skillContent: '',
     ),
   ];
 }
 
 const String _androidProjectTemplateSkill = r'''---
 name: android-project-template
-description: Create Git-managed Android application projects in the mobile development scenario. Use when the user asks to develop an Android app, APK, tool, demo, or interactive mobile experience and did not explicitly request web, H5, or HTML.
+description: Create Git-managed Android application projects in the mobile development scenario. Use when the user asks to develop an Android app, APK, tool, demo, interactive mobile experience, or explicitly wants a WebView/local HTML wrapper packaged as an installable Android app. Do not trigger for ordinary HTML/H5/webpage/frontend-only requests.
 keywords:
   - android
   - apk
@@ -1343,8 +1374,10 @@ scenario.
 
 Default behavior:
 
-- Create a real Android project, not an HTML/H5 page, unless the user explicitly
-  asks for web output.
+- Create a real Android project that builds to an APK. Do not convert plain web,
+  H5, HTML, or frontend-only requests into APKs by default. Use an Android
+  WebView/local-assets wrapper only when the user explicitly asks for an
+  installable Android app/APK wrapper around web content, and then bundle local web resources into APK assets instead of fixed file paths. Build APKs by running the immutable android-apk-build bundled script with parameters; do not create or edit project-local build.sh files.
 - Use `android_create_project` first. Provide a clear `appName`; choose
   `template: "simple"` for ordinary utilities and `template: "canvas"` for
   simple interactive visual apps.
@@ -1357,45 +1390,6 @@ Default behavior:
 
 When reporting back, mention the project directory, package name, and the next
 useful action such as building the APK.
-''';
-
-const String _androidApkBuildSkill = r'''---
-name: android-apk-build
-description: Build and sign a small Android APK in the mobile Linux environment using the lightweight aapt2, javac, d8, zipalign, and apksigner pipeline. Use after an Android project exists.
-keywords:
-  - android
-  - apk
-  - build
-  - sign
-  - install
-  - aapt2
-  - d8
-  - apksigner
-version: 1.0.0
----
-
-# Android APK Build
-
-Use this skill when the user asks to build, package, sign, verify, or install an
-Android APK for a project created in the mobile development scenario.
-
-Default behavior:
-
-- Prefer `android_build_apk` over ad-hoc shell commands when the project has a
-  `.mobile/build-profile.json` file.
-- Build from the project shown in the Projects workbench, usually `git/<name>`.
-- Reuse `.mobile/debug.keystore` for stable debug signing across builds in this
-  workspace.
-- Let `android_build_apk` update `versionCode` by default. Pass an explicit
-  `versionName` only when the user asks.
-- If the user wants to try the result on the phone, call `android_build_apk`
-  with `install: true`.
-- If the build fails, fix source or environment issues first, then rebuild. Do
-  not replace the Android project with an HTML fallback.
-
-The lightweight build pipeline expects OpenJDK 17, bash, zip/unzip, curl,
-qemu-x86_64, the Android 33 platform jar, Android build-tools 33.0.2, and the
-Ubuntu x86_64 sysroot listed on the Environment page.
 ''';
 
 Future<List<DemoEnvironmentTool>> _loadDemoEnvironmentTools() async {

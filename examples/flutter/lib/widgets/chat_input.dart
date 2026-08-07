@@ -220,6 +220,7 @@ class _ChatInputBar extends StatefulWidget {
     required this.isSending,
     this.isEditing = false,
     required this.slashCommands,
+    this.agentApps = const [],
     required this.contextStatus,
     required this.isContextStatusLoading,
     required this.hasContextSession,
@@ -247,6 +248,7 @@ class _ChatInputBar extends StatefulWidget {
   final bool isSending;
   final bool isEditing;
   final List<_SlashCommandSpec> slashCommands;
+  final List<sdk.AgentAppPackage> agentApps;
   final sdk.ContextStatus? contextStatus;
   final bool isContextStatusLoading;
   final bool hasContextSession;
@@ -255,6 +257,7 @@ class _ChatInputBar extends StatefulWidget {
   final Future<void> Function(
     List<ChatAttachment> attachments, {
     List<String> pinnedSkillNames,
+    sdk.AgentProviderSelection? providerSelection,
   })
   onSend;
   final Future<void> Function() onStop;
@@ -284,9 +287,13 @@ class _ChatInputBarState extends State<_ChatInputBar> {
   final ImagePicker _imagePicker = ImagePicker();
   final ScrollController _inputScrollController = ScrollController();
   final LayerLink _attachmentMenuLink = LayerLink();
+  final LayerLink _agentAppSuggestionsLink = LayerLink();
+  final OverlayPortalController _agentAppSuggestionsController =
+      OverlayPortalController();
   final GlobalKey _attachmentButtonKey = GlobalKey();
 
   bool _hasText = false;
+  sdk.AgentAppPackage? _selectedAgentApp;
 
   bool get _canSend => _hasText || _attachments.isNotEmpty;
 
@@ -320,20 +327,98 @@ class _ChatInputBarState extends State<_ChatInputBar> {
         .toList();
   }
 
+  String? get _agentAppQuery {
+    final text = widget.controller.text;
+    final selection = widget.controller.selection;
+    if (!selection.isCollapsed || selection.baseOffset != text.length) {
+      return null;
+    }
+    final trimmedLeft = text.trimLeft();
+    if (!trimmedLeft.startsWith('@') || trimmedLeft.contains('\n')) return null;
+    final query = trimmedLeft.substring(1);
+    if (query.contains(RegExp(r'\s'))) return null;
+    return query.trim().toLowerCase();
+  }
+
+  List<sdk.AgentAppPackage> get _agentAppSuggestions {
+    final query = _agentAppQuery;
+    if (query == null) return const [];
+    final matches = widget.agentApps
+        .where((package) {
+          final name = package.displayName.trim();
+          if (name.isEmpty) return false;
+          final normalized = name.toLowerCase();
+          return normalized.contains(query);
+        })
+        .toList(growable: false);
+    matches.sort((left, right) {
+      final matchOrder = _agentAppMatchRank(
+        left.displayName,
+        query,
+      ).compareTo(_agentAppMatchRank(right.displayName, query));
+      if (matchOrder != 0) return matchOrder;
+      final recentOrder = _agentAppLastUsed(
+        right,
+      ).compareTo(_agentAppLastUsed(left));
+      if (recentOrder != 0) return recentOrder;
+      final countOrder = right.useCount.compareTo(left.useCount);
+      if (countOrder != 0) return countOrder;
+      final nameOrder = left.displayName.toLowerCase().compareTo(
+        right.displayName.toLowerCase(),
+      );
+      if (nameOrder != 0) return nameOrder;
+      return left.providerId.compareTo(right.providerId);
+    });
+    return matches.take(5).toList(growable: false);
+  }
+
+  Set<String> get _duplicateAgentAppDisplayNames {
+    final counts = <String, int>{};
+    for (final package in widget.agentApps) {
+      final normalized = package.displayName.trim().toLowerCase();
+      if (normalized.isEmpty) continue;
+      counts.update(normalized, (count) => count + 1, ifAbsent: () => 1);
+    }
+    return {
+      for (final entry in counts.entries)
+        if (entry.value > 1) entry.key,
+    };
+  }
+
+  int _agentAppMatchRank(String name, String query) {
+    if (query.isEmpty) return 0;
+    final normalized = name.trim().toLowerCase();
+    if (normalized == query) return 0;
+    if (normalized.startsWith(query)) return 1;
+    return 2;
+  }
+
+  DateTime _agentAppLastUsed(sdk.AgentAppPackage package) {
+    return DateTime.tryParse(package.lastUsedAt)?.toUtc() ??
+        DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+  }
+
   @override
   void initState() {
     super.initState();
     _hasText = widget.controller.text.trim().isNotEmpty;
     widget.controller.addListener(_handleTextChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _syncAgentAppSuggestionsOverlay();
+    });
   }
 
   @override
   void didUpdateWidget(_ChatInputBar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller == widget.controller) return;
-    oldWidget.controller.removeListener(_handleTextChanged);
-    _hasText = widget.controller.text.trim().isNotEmpty;
-    widget.controller.addListener(_handleTextChanged);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_handleTextChanged);
+      _hasText = widget.controller.text.trim().isNotEmpty;
+      widget.controller.addListener(_handleTextChanged);
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _syncAgentAppSuggestionsOverlay();
+    });
   }
 
   @override
@@ -345,11 +430,31 @@ class _ChatInputBarState extends State<_ChatInputBar> {
 
   void _handleTextChanged() {
     final hasText = widget.controller.text.trim().isNotEmpty;
+    final selectedAgentApp = _selectedAgentApp;
+    if (selectedAgentApp != null &&
+        !_startsWithAgentAppMention(
+          widget.controller.text.trimLeft(),
+          selectedAgentApp.displayName,
+        )) {
+      _selectedAgentApp = null;
+    }
+    _syncAgentAppSuggestionsOverlay();
     if (hasText == _hasText) {
       setState(() {});
       return;
     }
     setState(() => _hasText = hasText);
+  }
+
+  void _syncAgentAppSuggestionsOverlay() {
+    if (!mounted) return;
+    final shouldShow = _agentAppSuggestions.isNotEmpty;
+    if (shouldShow == _agentAppSuggestionsController.isShowing) return;
+    if (shouldShow) {
+      _agentAppSuggestionsController.show();
+    } else {
+      _agentAppSuggestionsController.hide();
+    }
   }
 
   void _selectSlashCommand(_SlashCommandSpec command) {
@@ -358,6 +463,23 @@ class _ChatInputBarState extends State<_ChatInputBar> {
       selection: TextSelection.collapsed(offset: command.name.length + 1),
     );
     widget.focusNode.requestFocus();
+  }
+
+  void _selectAgentApp(sdk.AgentAppPackage package) {
+    final name = package.displayName.trim();
+    if (name.isEmpty) return;
+    final text = '@$name ';
+    widget.controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    setState(() => _selectedAgentApp = package);
+    widget.focusNode.requestFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.focusNode.requestFocus();
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.show'));
+    });
   }
 
   Future<void> _pickFile() async {
@@ -421,15 +543,30 @@ class _ChatInputBarState extends State<_ChatInputBar> {
 
   void _send() {
     if (!_canSend) return;
+    final selectedAgentApp = _selectedAgentApp;
     widget.onSend(
       List<ChatAttachment>.unmodifiable(_attachments),
       pinnedSkillNames: List<String>.unmodifiable(_pinnedSkillNames),
+      providerSelection: selectedAgentApp == null
+          ? null
+          : sdk.AgentProviderSelection(providerId: selectedAgentApp.providerId),
     );
     setState(() {
       _attachments.clear();
       _pinnedSkillNames.clear();
       _hasText = false;
+      _selectedAgentApp = null;
     });
+  }
+
+  bool _startsWithAgentAppMention(String text, String displayName) {
+    final name = displayName.trim();
+    if (name.isEmpty) return false;
+    final prefix = '@$name';
+    if (!text.startsWith(prefix)) return false;
+    if (text.length == prefix.length) return true;
+    final next = text.substring(prefix.length, prefix.length + 1);
+    return RegExp(r'\s').hasMatch(next) || next == ':' || next == '：';
   }
 
   void _openAttachmentMenu() {
@@ -548,6 +685,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
     final slashSuggestions = _slashSuggestions;
+    final agentAppSuggestions = _agentAppSuggestions;
     final primaryAction = _canSend
         ? _ChatInputPrimaryAction.send
         : widget.pendingMessageCount > 0 && widget.onRetractPending != null
@@ -572,155 +710,195 @@ class _ChatInputBarState extends State<_ChatInputBar> {
           12,
           12 + MediaQuery.viewInsetsOf(context).bottom,
         ),
-        child: Container(
-          key: const Key('chat_input_container'),
-          decoration: BoxDecoration(
-            color: _appSurfaceColor,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: _appSurfaceBorderColor),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.025),
-                blurRadius: 12,
-                offset: const Offset(0, 3),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (widget.isEditing) ...[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 10, 10, 0),
-                  child: _EditingMessageHeader(
-                    onCancelEdit: widget.onCancelEdit ?? () {},
-                  ),
-                ),
-              ],
-              if (_attachments.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
-                  child: _AttachmentPreviewRow(
-                    attachments: _attachments,
-                    onRemove: _removeAttachment,
-                  ),
-                ),
-              if (_pinnedSkillNames.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-                  child: _PinnedSkillChipsRow(
-                    skills: _pinnedSkillNames,
-                    onRemove: _removePinnedSkill,
-                  ),
-                ),
-              if (slashSuggestions.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-                  child: _SlashCommandSuggestions(
-                    commands: slashSuggestions,
-                    onSelected: _selectSlashCommand,
-                  ),
-                ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 14, 16, 2),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 156),
-                  child: Scrollbar(
-                    controller: _inputScrollController,
-                    child: TextField(
-                      key: widget.inputFieldKey,
-                      controller: widget.controller,
-                      focusNode: widget.focusNode,
-                      scrollController: _inputScrollController,
-                      maxLines: null,
-                      minLines: 1,
-                      textInputAction: TextInputAction.newline,
-                      onTapOutside: (_) => widget.focusNode.unfocus(),
-                      decoration: InputDecoration(
-                        hintText: widget.messageHint ?? strings.messageHint,
-                        hintStyle: const TextStyle(color: Color(0xFF9CA3AF)),
-                        border: InputBorder.none,
-                        contentPadding: EdgeInsets.zero,
-                        isDense: true,
-                      ),
+        child: LayoutBuilder(
+          builder: (context, constraints) => OverlayPortal(
+            controller: _agentAppSuggestionsController,
+            overlayChildBuilder: (context) => Align(
+              alignment: Alignment.topLeft,
+              child: CompositedTransformFollower(
+                link: _agentAppSuggestionsLink,
+                showWhenUnlinked: false,
+                targetAnchor: Alignment.topLeft,
+                followerAnchor: Alignment.bottomLeft,
+                offset: const Offset(0, -8),
+                child: SizedBox(
+                  key: const Key('agent_app_mention_overlay'),
+                  width: constraints.maxWidth,
+                  height: 58,
+                  child: TextFieldTapRegion(
+                    child: _AgentAppMentionOverlay(
+                      apps: agentAppSuggestions,
+                      duplicateDisplayNames: _duplicateAgentAppDisplayNames,
+                      onSelected: _selectAgentApp,
                     ),
                   ),
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(4, 2, 6, 6),
-                child: Row(
+            ),
+            child: CompositedTransformTarget(
+              link: _agentAppSuggestionsLink,
+              child: Container(
+                key: const Key('chat_input_container'),
+                decoration: BoxDecoration(
+                  color: _appSurfaceColor,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: _appSurfaceBorderColor),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.025),
+                      blurRadius: 12,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    CompositedTransformTarget(
-                      link: _attachmentMenuLink,
-                      child: _ToolbarIconButton(
-                        key: _attachmentButtonKey,
-                        semanticKey: const Key('add_attachment_button'),
-                        icon: Icons.add_rounded,
-                        tooltip: strings.addAttachmentTooltip,
-                        onTap: _openAttachmentMenu,
+                    if (widget.isEditing) ...[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 10, 10, 0),
+                        child: _EditingMessageHeader(
+                          onCancelEdit: widget.onCancelEdit ?? () {},
+                        ),
+                      ),
+                    ],
+                    if (_attachments.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                        child: _AttachmentPreviewRow(
+                          attachments: _attachments,
+                          onRemove: _removeAttachment,
+                        ),
+                      ),
+                    if (_pinnedSkillNames.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+                        child: _PinnedSkillChipsRow(
+                          skills: _pinnedSkillNames,
+                          onRemove: _removePinnedSkill,
+                        ),
+                      ),
+                    if (slashSuggestions.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+                        child: _SlashCommandSuggestions(
+                          commands: slashSuggestions,
+                          onSelected: _selectSlashCommand,
+                        ),
+                      ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 2),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 156),
+                        child: Scrollbar(
+                          controller: _inputScrollController,
+                          child: TextField(
+                            key: widget.inputFieldKey,
+                            controller: widget.controller,
+                            focusNode: widget.focusNode,
+                            scrollController: _inputScrollController,
+                            maxLines: null,
+                            minLines: 1,
+                            textInputAction: TextInputAction.newline,
+                            onTapOutside: (_) => widget.focusNode.unfocus(),
+                            decoration: InputDecoration(
+                              hintText:
+                                  widget.messageHint ?? strings.messageHint,
+                              hintStyle: const TextStyle(
+                                color: Color(0xFF9CA3AF),
+                              ),
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.zero,
+                              isDense: true,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-                    if (channelInputsAvailable) ...[
-                      const SizedBox(width: 2),
-                      _ChannelInputButton(
-                        sources: widget.channelInputSources,
-                        busyAccountId: widget.channelInputBusyAccountId,
-                        activeAccountId: widget.channelInputActiveAccountId,
-                        onTap: _openChannelInputPicker,
-                      ),
-                    ],
-                    const Spacer(),
-                    if (widget.showContextStatus) ...[
-                      _ContextStatusButton(
-                        status: widget.contextStatus,
-                        isLoading: widget.isContextStatusLoading,
-                        hasSession: widget.hasContextSession,
-                        onTap: widget.onContextStatusTap,
-                      ),
-                      const SizedBox(width: 6),
-                    ],
-                    SizedBox(
-                      width: 40,
-                      height: 40,
-                      child: IconButton.filled(
-                        key: switch (primaryAction) {
-                          _ChatInputPrimaryAction.send => widget.sendButtonKey,
-                          _ChatInputPrimaryAction.stop => widget.stopButtonKey,
-                          _ChatInputPrimaryAction.retract => const Key(
-                            'retract_queued_messages_button',
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 2, 6, 6),
+                      child: Row(
+                        children: [
+                          CompositedTransformTarget(
+                            link: _attachmentMenuLink,
+                            child: _ToolbarIconButton(
+                              key: _attachmentButtonKey,
+                              semanticKey: const Key('add_attachment_button'),
+                              icon: Icons.add_rounded,
+                              tooltip: strings.addAttachmentTooltip,
+                              onTap: _openAttachmentMenu,
+                            ),
                           ),
-                        },
-                        tooltip: switch (primaryAction) {
-                          _ChatInputPrimaryAction.send => strings.sendTooltip,
-                          _ChatInputPrimaryAction.stop => strings.stopTooltip,
-                          _ChatInputPrimaryAction.retract =>
-                            strings.retractQueuedTooltip,
-                        },
-                        onPressed: switch (primaryAction) {
-                          _ChatInputPrimaryAction.send =>
-                            _canSend ? _send : null,
-                          _ChatInputPrimaryAction.stop => widget.onStop,
-                          _ChatInputPrimaryAction.retract =>
-                            widget.onRetractPending,
-                        },
-                        style: IconButton.styleFrom(
-                          backgroundColor: sendColor,
-                          foregroundColor: Colors.white,
-                        ),
-                        icon: Icon(switch (primaryAction) {
-                          _ChatInputPrimaryAction.send =>
-                            Icons.arrow_upward_rounded,
-                          _ChatInputPrimaryAction.stop => Icons.stop_rounded,
-                          _ChatInputPrimaryAction.retract => Icons.undo_rounded,
-                        }, size: 18),
+                          if (channelInputsAvailable) ...[
+                            const SizedBox(width: 2),
+                            _ChannelInputButton(
+                              sources: widget.channelInputSources,
+                              busyAccountId: widget.channelInputBusyAccountId,
+                              activeAccountId:
+                                  widget.channelInputActiveAccountId,
+                              onTap: _openChannelInputPicker,
+                            ),
+                          ],
+                          const Spacer(),
+                          if (widget.showContextStatus) ...[
+                            _ContextStatusButton(
+                              status: widget.contextStatus,
+                              isLoading: widget.isContextStatusLoading,
+                              hasSession: widget.hasContextSession,
+                              onTap: widget.onContextStatusTap,
+                            ),
+                            const SizedBox(width: 6),
+                          ],
+                          SizedBox(
+                            width: 40,
+                            height: 40,
+                            child: IconButton.filled(
+                              key: switch (primaryAction) {
+                                _ChatInputPrimaryAction.send =>
+                                  widget.sendButtonKey,
+                                _ChatInputPrimaryAction.stop =>
+                                  widget.stopButtonKey,
+                                _ChatInputPrimaryAction.retract => const Key(
+                                  'retract_queued_messages_button',
+                                ),
+                              },
+                              tooltip: switch (primaryAction) {
+                                _ChatInputPrimaryAction.send =>
+                                  strings.sendTooltip,
+                                _ChatInputPrimaryAction.stop =>
+                                  strings.stopTooltip,
+                                _ChatInputPrimaryAction.retract =>
+                                  strings.retractQueuedTooltip,
+                              },
+                              onPressed: switch (primaryAction) {
+                                _ChatInputPrimaryAction.send =>
+                                  _canSend ? _send : null,
+                                _ChatInputPrimaryAction.stop => widget.onStop,
+                                _ChatInputPrimaryAction.retract =>
+                                  widget.onRetractPending,
+                              },
+                              style: IconButton.styleFrom(
+                                backgroundColor: sendColor,
+                                foregroundColor: Colors.white,
+                              ),
+                              icon: Icon(switch (primaryAction) {
+                                _ChatInputPrimaryAction.send =>
+                                  Icons.arrow_upward_rounded,
+                                _ChatInputPrimaryAction.stop =>
+                                  Icons.stop_rounded,
+                                _ChatInputPrimaryAction.retract =>
+                                  Icons.undo_rounded,
+                              }, size: 18),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -836,6 +1014,103 @@ class _SlashCommandSuggestions extends StatelessWidget {
             onPressed: () => onSelected(command),
           );
         },
+      ),
+    );
+  }
+}
+
+class _AgentAppMentionSuggestions extends StatelessWidget {
+  const _AgentAppMentionSuggestions({
+    required this.apps,
+    required this.duplicateDisplayNames,
+    required this.onSelected,
+  });
+
+  final List<sdk.AgentAppPackage> apps;
+  final Set<String> duplicateDisplayNames;
+  final ValueChanged<sdk.AgentAppPackage> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      key: const Key('agent_app_mention_suggestions'),
+      height: 42,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: apps.length,
+        separatorBuilder: (context, index) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final app = apps[index];
+          return Material(
+            color: const Color(0xFFF5F5F5),
+            shape: RoundedRectangleBorder(
+              side: const BorderSide(color: Color(0xFFE5E5E5)),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              key: Key('agent_app_mention_${app.providerId}'),
+              canRequestFocus: false,
+              onTap: () => onSelected(app),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Center(
+                  widthFactor: 1,
+                  child: Text(
+                    _labelFor(app),
+                    style: const TextStyle(
+                      color: Color(0xFF171717),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  String _labelFor(sdk.AgentAppPackage app) {
+    final displayName = app.displayName.trim();
+    if (!duplicateDisplayNames.contains(displayName.toLowerCase())) {
+      return '@$displayName';
+    }
+    return '@$displayName · ${app.providerId}';
+  }
+}
+
+class _AgentAppMentionOverlay extends StatelessWidget {
+  const _AgentAppMentionOverlay({
+    required this.apps,
+    required this.duplicateDisplayNames,
+    required this.onSelected,
+  });
+
+  final List<sdk.AgentAppPackage> apps;
+  final Set<String> duplicateDisplayNames;
+  final ValueChanged<sdk.AgentAppPackage> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: _appSurfaceColor,
+      elevation: 8,
+      shadowColor: Colors.black.withValues(alpha: 0.14),
+      shape: RoundedRectangleBorder(
+        side: const BorderSide(color: _appSurfaceBorderColor),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: _AgentAppMentionSuggestions(
+          apps: apps,
+          duplicateDisplayNames: duplicateDisplayNames,
+          onSelected: onSelected,
+        ),
       ),
     );
   }
@@ -1057,6 +1332,7 @@ class _AttachmentChip extends StatelessWidget {
       'xls' || 'xlsx' => Icons.table_chart_outlined,
       'ppt' || 'pptx' => Icons.slideshow_outlined,
       'zip' || 'rar' || '7z' || 'tar' || 'gz' => Icons.folder_zip_outlined,
+      'apk' => Icons.install_mobile_rounded,
       'mp3' || 'wav' || 'aac' || 'flac' || 'ogg' => Icons.audiotrack_outlined,
       'mp4' || 'mov' || 'avi' || 'mkv' || 'webm' => Icons.videocam_outlined,
       _ => Icons.insert_drive_file_outlined,
@@ -1266,13 +1542,17 @@ class _MessageAttachmentsView extends StatelessWidget {
               attachment.isImage || attachment.isVideo || attachment.isHtml,
         )
         .toList();
+    final apkFiles = attachments
+        .where((attachment) => attachment.isApk)
+        .toList();
     final files = attachments
         .where(
           (attachment) =>
               !attachment.isImage &&
               !attachment.isVideo &&
               !attachment.isHtml &&
-              !attachment.isWebLink,
+              !attachment.isWebLink &&
+              !attachment.isApk,
         )
         .toList();
 
@@ -1293,8 +1573,16 @@ class _MessageAttachmentsView extends StatelessWidget {
             accountId: accountId,
             agentId: agentId,
           ),
-        if ((previewable.isNotEmpty || webLinks.isNotEmpty) && files.isNotEmpty)
+        if ((previewable.isNotEmpty || webLinks.isNotEmpty) &&
+            (apkFiles.isNotEmpty || files.isNotEmpty))
           const SizedBox(height: 8),
+        if (apkFiles.isNotEmpty)
+          _ApkAttachmentsCard(
+            apkFiles: apkFiles,
+            accountId: accountId,
+            agentId: agentId,
+          ),
+        if (apkFiles.isNotEmpty && files.isNotEmpty) const SizedBox(height: 8),
         if (files.isNotEmpty)
           _AttachmentFilesCard(
             files: files,
@@ -1720,6 +2008,176 @@ class _AttachmentTileBody extends StatelessWidget {
   }
 }
 
+class _ApkAttachmentsCard extends StatelessWidget {
+  const _ApkAttachmentsCard({
+    required this.apkFiles,
+    required this.accountId,
+    required this.agentId,
+  });
+
+  final List<ChatAttachment> apkFiles;
+  final String accountId;
+  final String agentId;
+
+  @override
+  Widget build(BuildContext context) {
+    final isChinese =
+        _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    return Container(
+      key: const Key('message_attachment_apk_card'),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0FDF4),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFBBF7D0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 11, 12, 9),
+            child: Row(
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFF86EFAC)),
+                  ),
+                  child: const Icon(
+                    Icons.install_mobile_rounded,
+                    size: 18,
+                    color: Color(0xFF16A34A),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        apkFiles.length == 1
+                            ? (isChinese ? '可安装 APK' : 'Installable APK')
+                            : (isChinese
+                                  ? '可安装 APK（${apkFiles.length} 个）'
+                                  : 'Installable APKs (${apkFiles.length})'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF14532D),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        isChinese
+                            ? '点击后打开系统安装器'
+                            : 'Tap to open the system installer',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF15803D),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, thickness: 1, color: Color(0xFFDCFCE7)),
+          for (var i = 0; i < apkFiles.length; i++) ...[
+            _ApkAttachmentRow(
+              attachment: apkFiles[i],
+              accountId: accountId,
+              agentId: agentId,
+            ),
+            if (i != apkFiles.length - 1)
+              const Divider(
+                height: 1,
+                thickness: 1,
+                color: Color(0xFFDCFCE7),
+                indent: 14,
+                endIndent: 14,
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ApkAttachmentRow extends StatelessWidget {
+  const _ApkAttachmentRow({
+    required this.attachment,
+    required this.accountId,
+    required this.agentId,
+  });
+
+  final ChatAttachment attachment;
+  final String accountId;
+  final String agentId;
+
+  @override
+  Widget build(BuildContext context) {
+    final isChinese =
+        _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    return InkWell(
+      key: Key('message_attachment_apk_${attachment.path.hashCode}'),
+      onTap: () => _openAttachment(
+        context,
+        attachment,
+        accountId: accountId,
+        agentId: agentId,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.android_rounded,
+              size: 20,
+              color: Color(0xFF16A34A),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                attachment.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Color(0xFF052E16),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              isChinese ? '安装' : 'Install',
+              style: const TextStyle(
+                color: Color(0xFF15803D),
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(width: 4),
+            const Icon(
+              Icons.chevron_right_rounded,
+              size: 18,
+              color: Color(0xFF16A34A),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _AttachmentFilesCard extends StatefulWidget {
   const _AttachmentFilesCard({
     required this.files,
@@ -1861,6 +2319,7 @@ class _AttachmentFileListRow extends StatelessWidget {
       'xls' || 'xlsx' => Icons.table_chart_outlined,
       'ppt' || 'pptx' => Icons.slideshow_outlined,
       'zip' || 'rar' || '7z' || 'tar' || 'gz' => Icons.folder_zip_outlined,
+      'apk' => Icons.install_mobile_rounded,
       'mp3' || 'wav' || 'aac' || 'flac' || 'ogg' => Icons.audiotrack_outlined,
       'mp4' || 'mov' || 'avi' || 'mkv' || 'webm' => Icons.videocam_outlined,
       _ => Icons.insert_drive_file_outlined,
@@ -1955,6 +2414,7 @@ Future<void> _openAttachment(
   ChatAttachment attachment, {
   String? accountId,
   String? agentId,
+  Future<NapaxiChatClient> Function()? clientFuture,
 }) async {
   final resolved = _resolveAttachmentForOpen(
     attachment,
@@ -1975,8 +2435,28 @@ Future<void> _openAttachment(
     await _showAttachmentImagePreview(context, resolved);
     return;
   }
+  if (resolved.isApk) {
+    await _installApkAttachment(context, resolved);
+    return;
+  }
   if (resolved.isVideo) {
     await _showVideoAttachmentPreview(context, resolved);
+    return;
+  }
+  final previewItem = _previewItemForAttachment(resolved);
+  if (previewItem != null && previewItem.canPreview) {
+    final client = clientFuture == null ? null : await clientFuture();
+    if (!context.mounted) return;
+    await Navigator.of(context, rootNavigator: true).push<void>(
+      MaterialPageRoute(
+        builder: (context) => _FilePreviewPage(
+          client: client,
+          item: previewItem,
+          agentId: agentId ?? sdk.NapaxiEngine.defaultAgentId,
+          readOnly: true,
+        ),
+      ),
+    );
     return;
   }
   await share.Share.shareXFiles([
@@ -1986,6 +2466,37 @@ Future<void> _openAttachment(
       mimeType: resolved.mimeType,
     ),
   ]);
+}
+
+_FileBrowserItem? _previewItemForAttachment(ChatAttachment attachment) {
+  if (attachment.isWebLink) return null;
+  final path = attachment.path.trim();
+  if (path.isEmpty || !File(path).existsSync()) return null;
+  final file = File(path);
+  int? sizeBytes;
+  DateTime? modified;
+  try {
+    sizeBytes = file.lengthSync();
+    modified = file.lastModifiedSync();
+  } catch (_) {
+    // Best-effort metadata only; preview can still try to open the file.
+  }
+  final item = _FileBrowserItem(
+    source: _FileSource.workspace,
+    path: attachment.sandboxPath?.trim().isNotEmpty == true
+        ? attachment.sandboxPath!.trim()
+        : path,
+    name: attachment.name.trim().isEmpty
+        ? path.split(Platform.pathSeparator).last
+        : attachment.name.trim(),
+    isDirectory: false,
+    realPath: path,
+    mimeType: attachment.mimeType,
+    sizeBytes: sizeBytes,
+    modified: modified,
+  );
+  if (item.isHtml || item.isImage) return null;
+  return item.isTextPreviewable ? item : null;
 }
 
 ChatAttachment? _resolveAttachmentForOpen(
@@ -2045,6 +2556,48 @@ List<String> _attachmentSandboxPathCandidates(
   final unscoped = bridge.sandboxToReal(path);
   if (unscoped != null && unscoped.isNotEmpty) candidates.add(unscoped);
   return candidates.toSet().toList(growable: false);
+}
+
+Future<void> _installApkAttachment(
+  BuildContext context,
+  ChatAttachment attachment,
+) async {
+  final isChinese =
+      _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+  if (!sdk.NapaxiApkInstaller.isSupported) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          isChinese
+              ? 'APK 安装仅支持 Android 设备'
+              : 'APK installation is only supported on Android.',
+        ),
+      ),
+    );
+    return;
+  }
+
+  final result = await sdk.NapaxiApkInstaller.installApk(attachment.path);
+  if (!context.mounted) return;
+  final messenger = ScaffoldMessenger.of(context);
+  messenger.hideCurrentSnackBar();
+  if (result.success || result.installerOpened) {
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(isChinese ? '已打开系统安装器' : 'System installer opened.'),
+      ),
+    );
+    return;
+  }
+  messenger.showSnackBar(
+    SnackBar(
+      content: Text(
+        result.error?.trim().isNotEmpty == true
+            ? result.error!
+            : (isChinese ? '无法安装 APK' : 'Could not install APK.'),
+      ),
+    ),
+  );
 }
 
 Future<void> _showWebAttachmentPreview(

@@ -15,19 +15,25 @@ void main() {
         AgentAppActionManifest(
           actionId: 'provider.order.create',
           toolName: 'app_action_order_create',
+          displayName: 'Create order',
+          localizedDisplayNames: {'zh-CN': '创建订单'},
           description: 'Create order proposal.',
+          localizedDescriptions: {'zh-CN': '在应用中创建一个新订单。'},
           parameters: {
             'type': 'object',
             'properties': {
-              'amount': {'type': 'number'}
+              'amount': {'type': 'number'},
             },
-            'required': ['amount']
+            'required': ['amount'],
           },
           executionModes: ['app_handoff'],
         ),
       ],
       handoff: {'mode': 'app_handoff'},
       result: {'mode': 'callback'},
+      autoInvokeEnabled: true,
+      lastUsedAt: '2026-08-04T07:00:00Z',
+      useCount: 3,
     );
 
     final decoded = AgentAppPackage.fromMap(
@@ -36,8 +42,17 @@ void main() {
 
     expect(decoded.providerId, 'provider');
     expect(decoded.actions.single.toolName, 'app_action_order_create');
+    expect(decoded.actions.single.displayName, 'Create order');
+    expect(decoded.actions.single.localizedDisplayNames['zh-CN'], '创建订单');
+    expect(
+      decoded.actions.single.localizedDescriptions['zh-CN'],
+      '在应用中创建一个新订单。',
+    );
     expect(decoded.actions.single.parameters['properties'], isA<Map>());
     expect(decoded.handoff['mode'], 'app_handoff');
+    expect(decoded.autoInvokeEnabled, isTrue);
+    expect(decoded.lastUsedAt, '2026-08-04T07:00:00Z');
+    expect(decoded.useCount, 3);
   });
 
   test('agent app action request decodes proposal and manifest', () {
@@ -63,7 +78,7 @@ void main() {
         'tool_name': 'app_action_order_create',
         'description': 'Create order proposal.',
       },
-      'package': {'provider_id': 'provider'}
+      'package': {'provider_id': 'provider'},
     });
 
     expect(request.proposal.requestId, 'req');

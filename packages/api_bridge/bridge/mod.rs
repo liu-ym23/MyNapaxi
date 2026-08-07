@@ -7,6 +7,7 @@
 mod wire;
 
 pub mod agent_engine;
+pub mod project;
 
 pub mod init {
     use crate::frb_generated::StreamSink;
@@ -312,6 +313,11 @@ pub mod agent_app {
     #[flutter_rust_bridge::frb(sync)]
     pub fn delete_agent_app_package(handle: i64, agent_id: String) -> bool {
         napaxi_core::api::agent_app::delete_agent_app_package(handle, &agent_id)
+    }
+
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn set_agent_app_auto_invoke(handle: i64, provider_id: String, enabled: bool) -> String {
+        napaxi_core::api::agent_app::set_agent_app_auto_invoke(handle, &provider_id, enabled)
     }
 
     #[flutter_rust_bridge::frb(sync)]
@@ -631,14 +637,14 @@ pub mod session {
         message: String,
         attachments_json: String,
     ) -> bool {
-        napaxi_core::api::engine::inject_message_handle(
+        super::init::runtime().block_on(napaxi_core::api::engine::inject_message_handle(
             handle,
             &config_json,
             &agent_id,
             &session_key_json,
             &message,
             &attachments_json,
-        )
+        ))
     }
     pub fn retract_injected_message(
         handle: i64,

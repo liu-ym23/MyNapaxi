@@ -161,8 +161,9 @@ flows.
 Connected app or backend actions use one generic host-carried capability:
 `napaxi.tool.agent_app_action`. Core owns the capability definition, action
 proposal schema, result schema, persistence lifecycle, and admission checks.
-Specific provider actions are runtime package data scoped to one Agent; they
-are not dynamic native plugins and are not global custom host tools.
+Specific provider actions are runtime package data selected by `provider_id`;
+they are not Agent definitions, dynamic native plugins, or global custom host
+tools. Protocol-v2 `agent_id` fields remain wire-compatibility identities only.
 
 Hosts declare and enable the capability only when they provide an Agent App
 action dispatcher. Action tool names are reserved with the `app_action_`
@@ -172,6 +173,23 @@ prefix so descriptor and invocation admission map them to
 Package/proposal/result APIs live under `api::agent_app` and the Flutter
 `AgentAppApi`. See `docs/agent-app-actions.md` for the runtime flow
 and SDK integration contract.
+
+Each registered package also has host-owned automatic-invocation state. The
+state defaults to disabled and can only be changed through
+`set_agent_app_auto_invoke`; Provider manifest input cannot enable it. Without
+an explicit `@{provider:...}` selection, Core exposes actions only from packages
+whose automatic-invocation state is enabled. Explicit selections and actual
+action dispatches update host-owned `last_used_at` and `use_count` metadata for
+adapter UI ranking. Action execution still passes descriptor/invocation
+admission and Provider-side confirmation unchanged.
+
+Generated Android Agent Apps may additionally expose the trusted runtime
+diagnostics control endpoint described in `docs/agent-provider-protocol.md`.
+This is provider/adapter lifecycle infrastructure, not a Core capability or an
+Agent App action: it is absent from model descriptors and can only be read by
+the bound Host through explicit management UI. It carries bounded crash/ANR
+reports and structured runtime logs; debug-level collection is an explicit
+user-controlled Provider setting.
 
 ## Channel Capabilities
 
@@ -222,11 +240,17 @@ Agent engines are core-owned runtime loop capabilities. The default
 enabled when no Agent definition selects another engine.
 
 `napaxi.agent_engine.codex` is the core-owned Codex app-server engine. The
-capability and adapter API are visible across Flutter, Android, and iOS. The
-first runtime implementation is Android-only: core starts `codex app-server`
-inside the Android Linux sandbox PTY, owns the app-server JSON-RPC session,
-maps Codex events to Napaxi `ChatEvent`s, and persists the Napaxi session to
-Codex native thread mapping. iOS and other platforms return the explicit error
+capability and adapter API are visible across Flutter, Android, and iOS. Mobile
+runtime implementations start `codex app-server` inside a bundled Linux sandbox
+PTY: Android uses the PRoot backend, while iOS uses the
+`napaxi.platform.ios_qemu` backend backed by Napaxi-owned rootfs preparation and
+vendored lower-level QEMU C/static libraries. Both backends share the baked
+Alpine rootfs artifact name (`alpine-rootfs.bin`), the app-server JSON-RPC
+session owner, Codex event mapping to Napaxi `ChatEvent`s, and persisted Napaxi
+session to Codex native thread mapping. On iOS the capability is available only
+when the QEMU runtime is linked, the rootfs resource is packaged, and the host
+enables the required capabilities; otherwise core/adapters report the explicit
+not-ready or disabled state. Other platforms return
 `napaxi.agent_engine.codex is unsupported on this platform` until they provide a
 compatible sandbox runner.
 
@@ -241,7 +265,54 @@ turn repeats this sync from the turn's `config_json`, invalidates stale native
 thread mappings when the configuration fingerprint changes, and refuses to run
 if the model config is missing or invalid. The deprecated raw TOML API is
 retained only for source compatibility and must not be used by host
-applications.
+applications. If a host must route only the sandboxed Codex CLI through a
+network proxy, it may put `http_proxy`, `https_proxy`, `all_proxy`, or
+`no_proxy` under the Codex agent definition's `engine_config.network_env`; core
+validates those values, exports them only for `codex app-server`, and includes
+them in the Codex runtime fingerprint so idle sessions restart when the network
+route changes. This proxy path is Codex-engine scoped and does not mutate the
+Rust-native Napaxi provider configuration.
+
+Codex turns reuse the normal Napaxi prompt and attachment preparation path before
+they enter app-server. The compiled `napaxi_core` runtime instructions are sent
+as Codex app-server `developerInstructions` when a native Codex thread is started
+or resumed, so SDK policies for workspace use, shell/file behavior, skills,
+media handling, response language, and host guidance stay aligned with the
+default engine path without replacing the Rust tool loop. Attachment bytes are
+persisted into the workspace under `/workspace/attachments/<thread>/...`; image
+attachments with workspace sandbox paths are forwarded as Codex app-server
+`localImage` input items, and all attachments are summarized in the text input
+with filename, MIME type, kind, and workspace path when available. Host-local
+picker paths are not passed as `localImage` values because the app-server process
+can only read sandbox-visible workspace files. Non-image file attachments
+continue to be exposed as workspace paths and metadata for Codex to inspect with
+its sandbox tools. The Android integration strict live probe requires the model
+response to reflect both a text-file sentinel and a PNG image sentinel before it
+accepts the attachment path as validated. This does not change the default
+`napaxi_core` engine attachment/history path.
+
+Codex app-server threads also receive Napaxi's currently admitted tool
+descriptors through the app-server experimental `dynamicTools` field on
+`thread/start`. These descriptors are derived from the same capability profile,
+selection, tool registry, and internal handler preflight used by the Rust tool
+loop. When Codex sends an `item/tool/call` request, core executes it through the
+Napaxi tool broker / internal tool-loop path with the same invocation admission,
+policy, workspace context, redaction, and result sanitization used by
+`napaxi_core`. On mobile platforms, core includes the shared platform-tool
+descriptors in this preflight only when a host tool bridge is registered, then
+dispatches calls back through that bridge with workspace context so Android/iOS
+permission, file-resolution, and user-confirmation handling stays in the SDK
+adapter. Platform and device tools such as URL opening, camera, media library,
+clipboard, browser, Git, and host custom tools remain available only when the
+host declares and enables their capabilities and still require any host-side
+permission or user-confirmation UI. Dynamic tools are advertised only
+when a new native Codex thread is started; existing resumed app-server threads
+continue with the tools they were started with, and configuration or dynamic-tool
+fingerprint changes clear the thread mapping before a new thread is opened.
+Approval, extra-permission, MCP elicitation, current-time, and unsupported
+app-server JSON-RPC requests are answered deterministically at the Codex bridge
+boundary so a mobile turn is not left waiting on a Codex-side approval channel;
+user-input requests remain routed through Napaxi's ask-human continuation path.
 
 `CodexAgentEngineConfigResult` reports `success`, `providerAvailable`,
 `modelUsable`, `errorCode`, `error`, `model`, and `configChanged`. Stable errors
@@ -290,10 +361,10 @@ host executor chooses to read them from the turn request.
 
 Flutter v1 can register a host-carried `AgentEngineExecutor` for true external
 engines such as demo CLI integrations. Android and iOS v1 expose the stable wire
-models and explicit unsupported placeholders for host executors. Selecting
+models and explicit unsupported state for host executors. Selecting
 `external_host` or `codex` without the declared and enabled capability is
-rejected by core capability admission; selecting `codex` on a non-Android
-runtime returns the platform unsupported error above.
+rejected by core capability admission; selecting `codex` on a platform without a
+compatible bundled sandbox runner returns the platform unsupported error above.
 
 ## LLM And Media Capabilities
 
@@ -329,6 +400,16 @@ history or own a separate compression pipeline. Flutter, Android, and iOS
 configuration selections may also persist a selection-level `context_engine`;
 hosts should apply it to the active profile so one global context policy follows
 model switches. Profile-level context settings remain readable for migration.
+
+`napaxi.workspace.project` owns the project placement API. `SessionKey` remains an
+immutable conversation identity; its single display project and runtime
+workspace are stored independently in libsql. A normal move uses the target
+project's default workspace, while `keep_current` supports Codex-style moves
+where the conversation is displayed in project B but keeps running in workspace
+A. The runtime workspace is snapshotted before each turn and cannot change
+during an active turn. Project files are listed through the same core workspace
+record used by tools, so the Files surface cannot accidentally browse another
+project's root. See [Project session workspaces](project-session-workspaces.md).
 
 ## Shell Command Safety
 

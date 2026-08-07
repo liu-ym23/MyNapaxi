@@ -239,6 +239,7 @@ async fn chat_config_includes_workspace_host_time_and_shell_context() {
             has_shell_tool: true,
             has_browser_tool: false,
             is_group_context: false,
+            include_first_run_bootstrap: true,
         },
     )
     .await;
@@ -294,6 +295,7 @@ async fn chat_config_includes_enabled_scene_guidance() {
             has_shell_tool: false,
             has_browser_tool: false,
             is_group_context: false,
+            include_first_run_bootstrap: true,
         },
     )
     .await;
@@ -698,8 +700,8 @@ fn engine_handle_owns_config_tools_agents_and_workspace() {
     let _ = unsafe { super::handle_consume(handle) };
 }
 
-#[test]
-fn failed_interjection_does_not_persist_user_message() {
+#[tokio::test]
+async fn failed_interjection_does_not_persist_user_message() {
     let dir = tempfile::tempdir().unwrap();
     let files_dir = dir.path().to_str().unwrap();
     let config_json = serde_json::to_string(&config()).unwrap();
@@ -713,14 +715,17 @@ fn failed_interjection_does_not_persist_user_message() {
     let session_key_json =
         crate::session::create_session(files_dir, "napaxi", "app", "user-a", None);
 
-    assert!(!super::inject_message_handle(
-        handle,
-        &config_json,
-        "napaxi",
-        &session_key_json,
-        "late follow-up",
-        "[]",
-    ));
+    assert!(
+        !super::inject_message_handle(
+            handle,
+            &config_json,
+            "napaxi",
+            &session_key_json,
+            "late follow-up",
+            "[]",
+        )
+        .await
+    );
 
     let thread_id = crate::turn::session_thread_id(&session_key_json).unwrap();
     assert_eq!(crate::session::get_history(files_dir, &thread_id), "[]");

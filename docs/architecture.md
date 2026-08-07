@@ -9,7 +9,7 @@ Mobile App
   -> Napaxi Core API (`crates/core/src/api`)
   -> Runtime core (`crates/core`)
   -> Feature domain crates (`crates/features/*`)
-  -> Android proot / iOS iSH platform environments where enabled
+  -> Android PRoot / iOS QEMU platform environments where enabled
 ```
 
 Demo apps consume SDK adapters through public integration surfaces only.
@@ -131,12 +131,14 @@ mapping. Platform tool names, parameter schemas, risk, and permission
 requirements remain core contracts shared by all adapters.
 
 Agent App actions are a specialized host-carried tool capability:
-`napaxi.tool.agent_app_action`. Agent App packages live in the agent domain,
-generate or update an `AgentDefinition`, and expose only that Agent's action
-manifest as tools during its turns. Core creates persisted proposals and
-brokers results, while the connected app or backend owns confirmation, risk
-checks, execution, and trusted result return. The detailed contract lives in
-`docs/agent-app-actions.md`.
+`napaxi.tool.agent_app_action`. Provider packages live in an independent
+`provider_id` registry and never generate a switchable `AgentDefinition`.
+Explicit one-turn selection exposes only that Provider's action manifest while
+leaving Agent/session/memory identity unchanged. Core creates persisted
+proposals and brokers results, while the connected app or backend owns
+confirmation, risk checks, execution, and trusted result return. Protocol-v2
+`agent_id` values remain wire-compatibility fields. The detailed contract lives
+in `docs/agent-app-actions.md`.
 
 Policy capabilities are core gates, not optional side modules. Descriptor
 admission, invocation admission, provider admission, agent-engine admission,
@@ -161,7 +163,7 @@ fails if a duplicate gate appears somewhere unexpected.
 
 `napaxi-core` exposes SDK-facing runtime behavior through `napaxi_core::api`.
 Adapter packages must not import implementation modules such as `mobile_*`,
-`android_assets`, `android_linux_env`, or `ios_ish_env` directly.
+`android_assets`, `android_linux_env`, or iOS sandbox implementation modules directly.
 
 `mobile_*` module names are legacy implementation names and should not be
 reintroduced. New adapter-facing behavior must first be implemented as

@@ -4,12 +4,16 @@ class _FilesPage extends StatefulWidget {
   const _FilesPage({
     required this.clientFuture,
     required this.agentId,
+    this.projectId,
+    this.projectName,
     this.onBack,
     this.onMenu,
   });
 
   final Future<NapaxiChatClient> clientFuture;
   final String agentId;
+  final String? projectId;
+  final String? projectName;
   final Future<bool> Function()? onBack;
   final VoidCallback? onMenu;
 
@@ -121,7 +125,13 @@ class _FilesPageState extends State<_FilesPage> {
               ),
             )
           : Text(
-              strings.filesTitle,
+              widget.projectName == null
+                  ? strings.filesTitle
+                  : _projectCopy(
+                      context,
+                      english: '${widget.projectName} files',
+                      chinese: '${widget.projectName} · 文件',
+                    ),
               key: const ValueKey('files_page_title'),
               style: const TextStyle(fontWeight: FontWeight.w600),
             ),
@@ -193,6 +203,7 @@ class _FilesPageState extends State<_FilesPage> {
           return _FilesBrowser(
             client: snapshot.data!,
             agentId: widget.agentId,
+            projectId: widget.projectId,
             searchQuery: _searchQuery,
             onCloseSearch: _closeSearch,
           );
@@ -206,18 +217,31 @@ class _FilesBrowser extends StatelessWidget {
   const _FilesBrowser({
     required this.client,
     required this.agentId,
+    this.projectId,
     required this.searchQuery,
     required this.onCloseSearch,
   });
 
   final NapaxiChatClient client;
   final String agentId;
+  final String? projectId;
   final String searchQuery;
   final VoidCallback onCloseSearch;
 
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
+
+    if (projectId != null) {
+      return _FileSourceView(
+        client: client,
+        source: _FileSource.workspace,
+        agentId: agentId,
+        projectId: projectId,
+        searchQuery: searchQuery,
+        onCloseSearch: onCloseSearch,
+      );
+    }
 
     return DefaultTabController(
       length: 3,
@@ -313,6 +337,7 @@ class _FileSourceView extends StatefulWidget {
     required this.client,
     required this.source,
     required this.agentId,
+    this.projectId,
     required this.searchQuery,
     required this.onCloseSearch,
   });
@@ -320,6 +345,7 @@ class _FileSourceView extends StatefulWidget {
   final NapaxiChatClient client;
   final _FileSource source;
   final String agentId;
+  final String? projectId;
   final String searchQuery;
   final VoidCallback onCloseSearch;
 
@@ -344,6 +370,12 @@ class _FileSourceViewState extends State<_FileSourceView> {
   @override
   void didUpdateWidget(covariant _FileSourceView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.projectId != widget.projectId) {
+      _selectedItemKeys.clear();
+      _currentDirectory = '';
+      _filesFuture = _loadFiles();
+      return;
+    }
     final searchStarted =
         oldWidget.searchQuery.trim().isEmpty && _hasSearchQuery;
     final searchEnded =
@@ -411,6 +443,7 @@ class _FileSourceViewState extends State<_FileSourceView> {
     final searching = _hasSearchQuery;
     final files = await widget.client.listSandboxWorkspaceFiles(
       agentId: widget.agentId,
+      projectId: widget.projectId,
       subdir: searching || _currentDirectory.isEmpty ? null : _currentDirectory,
       recursive: searching,
     );
@@ -497,6 +530,7 @@ class _FileSourceViewState extends State<_FileSourceView> {
           client: widget.client,
           item: item,
           agentId: widget.agentId,
+          readOnly: widget.projectId != null,
         ),
       ),
     );
@@ -601,6 +635,7 @@ class _FileSourceViewState extends State<_FileSourceView> {
             selectedItems.isNotEmpty &&
             selectedItems.every((item) => !item.isDirectory);
         final canDeleteSelected =
+            widget.projectId == null &&
             selectedItems.isNotEmpty &&
             selectedItems.every((item) => item.canDelete);
         if (allFiles.isEmpty &&
@@ -954,7 +989,7 @@ class _FileTile extends StatelessWidget {
 
 Future<bool> _performFileAction({
   required BuildContext context,
-  required NapaxiChatClient client,
+  required NapaxiChatClient? client,
   required String agentId,
   required List<_FileBrowserItem> items,
   required _FileAction action,
@@ -967,6 +1002,7 @@ Future<bool> _performFileAction({
       await _shareFiles(context, client, agentId, items);
       return false;
     case _FileAction.delete:
+      if (client == null) throw StateError('File client is unavailable');
       return _deleteFiles(context, client, agentId, items);
   }
 }
@@ -1007,15 +1043,17 @@ Future<String> _readJournalText(
 }
 
 Future<Uint8List> _readFileBytes(
-  NapaxiChatClient client,
+  NapaxiChatClient? client,
   String agentId,
   _FileBrowserItem item,
 ) async {
   if (item.source == _FileSource.memory) {
+    if (client == null) throw StateError('File client is unavailable');
     final file = await client.readMemoryFile(item.path, agentId: agentId);
     return Uint8List.fromList(utf8.encode(file?.content ?? ''));
   }
   if (item.source == _FileSource.journal) {
+    if (client == null) throw StateError('File client is unavailable');
     return Uint8List.fromList(
       utf8.encode(await _readJournalText(client, agentId, item.path)),
     );
@@ -1030,7 +1068,7 @@ Future<Uint8List> _readFileBytes(
 
 Future<void> _downloadFiles(
   BuildContext context,
-  NapaxiChatClient client,
+  NapaxiChatClient? client,
   String agentId,
   List<_FileBrowserItem> items,
 ) async {
@@ -1049,7 +1087,7 @@ Future<void> _downloadFiles(
 
 Future<void> _shareFiles(
   BuildContext context,
-  NapaxiChatClient client,
+  NapaxiChatClient? client,
   String agentId,
   List<_FileBrowserItem> items,
 ) async {
@@ -1236,11 +1274,13 @@ class _FilePreviewPage extends StatefulWidget {
     required this.client,
     required this.item,
     required this.agentId,
+    this.readOnly = false,
   });
 
-  final NapaxiChatClient client;
+  final NapaxiChatClient? client;
   final _FileBrowserItem item;
   final String agentId;
+  final bool readOnly;
 
   @override
   State<_FilePreviewPage> createState() => _FilePreviewPageState();
@@ -1259,14 +1299,18 @@ class _FilePreviewPageState extends State<_FilePreviewPage> {
   Future<String> _readText() async {
     final item = widget.item;
     if (item.source == _FileSource.memory) {
-      final file = await widget.client.readMemoryFile(
+      final client = widget.client;
+      if (client == null) throw StateError('File client is unavailable');
+      final file = await client.readMemoryFile(
         item.path,
         agentId: widget.agentId,
       );
       return file?.content ?? '';
     }
     if (item.source == _FileSource.journal) {
-      return _readJournalText(widget.client, widget.agentId, item.path);
+      final client = widget.client;
+      if (client == null) throw StateError('File client is unavailable');
+      return _readJournalText(client, widget.agentId, item.path);
     }
 
     final realPath = item.realPath;
@@ -1274,11 +1318,11 @@ class _FilePreviewPageState extends State<_FilePreviewPage> {
       throw StateError('Workspace file path is unavailable');
     }
     final file = File(realPath);
-    final size = await file.length();
+    final size = file.lengthSync();
     if (size > _maxTextPreviewBytes) {
       return 'Preview skipped: file is larger than 1 MB.';
     }
-    return file.readAsString();
+    return file.readAsStringSync();
   }
 
   Future<WebViewController> _createHtmlPreviewController() async {
@@ -1358,15 +1402,16 @@ class _FilePreviewPageState extends State<_FilePreviewPage> {
             icon: Icons.send_rounded,
             onPressed: () => _handlePreviewAction(context, _FileAction.share),
           ),
-          _FilePreviewActionButton(
-            tooltip: item.isProtectedMemoryFile
-                ? strings.protectedMemoryFile
-                : strings.deleteFile,
-            icon: Icons.delete_outline_rounded,
-            onPressed: item.canDelete
-                ? () => _handlePreviewAction(context, _FileAction.delete)
-                : null,
-          ),
+          if (!widget.readOnly)
+            _FilePreviewActionButton(
+              tooltip: item.isProtectedMemoryFile
+                  ? strings.protectedMemoryFile
+                  : strings.deleteFile,
+              icon: Icons.delete_outline_rounded,
+              onPressed: item.canDelete
+                  ? () => _handlePreviewAction(context, _FileAction.delete)
+                  : null,
+            ),
         ],
       ),
       body: !item.canPreview

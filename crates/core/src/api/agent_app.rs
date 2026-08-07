@@ -10,14 +10,19 @@ pub fn list_agent_app_packages(handle: i64) -> String {
     crate::agents::agent_app::list_packages_json_handle(handle)
 }
 
-/// Fetch a single agent app action package by agent id as JSON.
-pub fn get_agent_app_package(handle: i64, agent_id: &str) -> String {
-    crate::agents::agent_app::get_package_json_handle(handle, agent_id)
+/// Fetch a Provider package by provider id; legacy agent ids remain accepted.
+pub fn get_agent_app_package(handle: i64, provider_or_agent_id: &str) -> String {
+    crate::agents::agent_app::get_package_json_handle(handle, provider_or_agent_id)
 }
 
-/// Delete an agent app action package by agent id; returns whether it existed.
-pub fn delete_agent_app_package(handle: i64, agent_id: &str) -> bool {
-    crate::agents::agent_app::delete_package_handle(handle, agent_id)
+/// Delete a Provider package by provider id; legacy agent ids remain accepted.
+pub fn delete_agent_app_package(handle: i64, provider_or_agent_id: &str) -> bool {
+    crate::agents::agent_app::delete_package_handle(handle, provider_or_agent_id)
+}
+
+/// Enable or disable model-selected invocation for a registered Provider.
+pub fn set_agent_app_auto_invoke(handle: i64, provider_or_agent_id: &str, enabled: bool) -> String {
+    crate::agents::agent_app::set_auto_invoke_handle(handle, provider_or_agent_id, enabled)
 }
 
 /// Submit the result of an executed agent app action back to the engine.
@@ -58,6 +63,7 @@ mod tests {
         assert!(is_error_json(&register_agent_app_package(bad, "{}")));
         assert!(is_error_json(&submit_agent_app_action_result(bad, "{}")));
         assert!(is_error_json(&accept_agent_app_trigger(bad, "{}")));
+        assert!(is_error_json(&set_agent_app_auto_invoke(bad, "any", true)));
 
         // Read operations gracefully degrade: list → empty array, get → error
         // or null, delete → false. This is by design — callers show "no data"
@@ -134,16 +140,26 @@ mod tests {
             list.contains("test.agent"),
             "list should include the package"
         );
+        assert!(
+            !crate::agents::list_definitions_handle(handle).contains("test.agent"),
+            "Provider registration must not create a switchable AgentDefinition"
+        );
 
-        // Get by agent id.
+        // Provider id is canonical; the legacy agent id remains readable.
+        let get_by_provider = get_agent_app_package(handle, "test.provider");
+        assert!(get_by_provider.contains("test.agent"));
         let get = get_agent_app_package(handle, "test.agent");
         assert!(
             get.contains("test.agent"),
             "get should return the package: {get}"
         );
 
+        let automatic = set_agent_app_auto_invoke(handle, "test.provider", true);
+        let automatic_value: serde_json::Value = serde_json::from_str(&automatic).unwrap();
+        assert_eq!(automatic_value["auto_invoke_enabled"], true);
+
         // Delete.
-        assert!(delete_agent_app_package(handle, "test.agent"));
+        assert!(delete_agent_app_package(handle, "test.provider"));
         let list_after = list_agent_app_packages(handle);
         assert!(
             !list_after.contains("test.agent"),

@@ -1,7 +1,4 @@
-//! Internal bridge method routing for the C API. Split out of
-//! `c_api.rs`: maps (namespace, method, payload) to napaxi_core::api
-//! calls. The `#[no_mangle]` FFI entrypoints and shared helpers stay in
-//! `c_api/mod.rs`.
+//! Internal C API bridge routing from namespaced methods to `napaxi_core::api`.
 
 use serde_json::Value;
 
@@ -30,17 +27,19 @@ pub(super) fn dispatch(handle: i64, namespace: &str, method: &str, payload: &Val
     {
         return response;
     }
+    if namespace == "project"
+        && let Some(response) = super::project_dispatch::dispatch_project(handle, method, payload)
+    {
+        return response;
+    }
+    if namespace == "agent_engine"
+        && let Some(response) =
+            super::agent_engine_dispatch::dispatch_agent_engine(handle, method, payload)
+    {
+        return response;
+    }
 
     match (namespace, method) {
-        ("agent_engine", "run_event") => ok_raw(napaxi_core::api::agent_engine::run_event_json(
-            &get_string(payload, "request_json"),
-        )),
-        ("agent_engine", "configure_codex") => ok_raw(
-            napaxi_core::api::agent_engine::configure_codex_agent_engine_json(
-                handle,
-                &get_string(payload, "request_json"),
-            ),
-        ),
         ("capability", "list_definitions") => {
             ok_raw(napaxi_core::api::capability::list_capability_definitions_json())
         }
@@ -183,6 +182,16 @@ pub(super) fn dispatch(handle: i64, namespace: &str, method: &str, payload: &Val
                 &get_string(payload, "agent_id"),
             )
         )),
+        ("agent_app", "set_auto_invoke") => {
+            ok_raw(napaxi_core::api::agent_app::set_agent_app_auto_invoke(
+                handle,
+                &get_string(payload, "provider_id"),
+                payload
+                    .get("enabled")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            ))
+        }
         ("agent_app", "submit_action_result") => {
             ok_raw(napaxi_core::api::agent_app::submit_agent_app_action_result(
                 handle,
@@ -329,16 +338,16 @@ pub(super) fn dispatch(handle: i64, namespace: &str, method: &str, payload: &Val
             &get_string(payload, "config_json"),
             &get_string(payload, "thread_id"),
         )),
-        ("session", "inject_message") => {
-            ok(json!(napaxi_core::api::engine::inject_message_handle(
+        ("session", "inject_message") => ok(json!(crate::bridge::init::runtime().block_on(
+            napaxi_core::api::engine::inject_message_handle(
                 handle,
                 &get_string(payload, "config_json"),
                 &get_string(payload, "agent_id"),
                 &get_string(payload, "session_key_json"),
                 &get_string(payload, "message"),
                 &get_string(payload, "attachments_json"),
-            )))
-        }
+            ),
+        ))),
         ("session", "retract_injected_message") => ok(json!(
             napaxi_core::api::engine::retract_injected_message_handle(
                 handle,

@@ -593,6 +593,18 @@ class ModelsTest {
     }
 
     @Test
+    fun sessionKeyRoundTripsImmutableIdentity() {
+        val key = SessionKey(
+            channelType = "app",
+            accountId = "user",
+            threadId = "thread",
+        )
+
+        assertEquals(key, SessionKey.fromJson(key.toJson()))
+        assertEquals(false, key.toJsonObject().has("workspace_scope"))
+    }
+
+    @Test
     fun sessionHistoryModelsExposeFlutterStableFields() {
         val message = ChatMessage(
             """
@@ -2068,7 +2080,10 @@ class ModelsTest {
         val manifest = AgentAppActionManifest(
             actionId = "create_event",
             toolName = "app_action_create_event",
+            displayName = "Create event",
+            localizedDisplayNames = mapOf("zh-CN" to "创建日程"),
             description = "Create event",
+            localizedDescriptions = mapOf("zh-CN" to "在日历中创建一个新日程。"),
             parameters = JSONObject("""{"type":"object"}"""),
             executionModes = listOf("activity"),
             timeoutSeconds = 300,
@@ -2077,7 +2092,10 @@ class ModelsTest {
             mapOf(
                 "action_id" to "create_event",
                 "tool_name" to "app_action_create_event",
+                "display_name" to "Create event",
+                "localized_display_names" to mapOf("zh-CN" to "创建日程"),
                 "description" to "Create event",
+                "localized_descriptions" to mapOf("zh-CN" to "在日历中创建一个新日程。"),
                 "parameters" to mapOf("type" to "object"),
                 "execution_modes" to listOf("activity"),
                 "timeout_seconds" to 300,
@@ -2095,7 +2113,10 @@ class ModelsTest {
                 {
                   "action_id":"create_event",
                   "tool_name":"app_action_create_event",
+                  "display_name":"Create event",
+                  "localized_display_names":{"zh-CN":"创建日程"},
                   "description":"Create event",
+                  "localized_descriptions":{"zh-CN":"在日历中创建一个新日程。"},
                   "parameters":{"type":"object"},
                   "result_schema":{"type":"object"},
                   "risk":"high",
@@ -2129,6 +2150,9 @@ class ModelsTest {
                 "background_trigger_supported":true,
                 "host_background_trigger_service":"TriggerService"
               },
+              "auto_invoke_enabled":true,
+              "last_used_at":"2030-01-02T12:00:00Z",
+              "use_count":7,
               "created_at":"2030-01-01T00:00:00Z",
               "updated_at":"2030-01-02T00:00:00Z"
             }
@@ -2169,6 +2193,17 @@ class ModelsTest {
             }
             """.trimIndent(),
         )
+        val bindingFailure = AgentAppActionResult(
+            """
+            {
+              "request_id":"request-binding",
+              "status":"failed",
+              "result":{},
+              "error":{"code":"host_not_bound","message":"Binding missing","phase":"pre_execution"},
+              "completed_at":"2030-01-01T00:01:00Z"
+            }
+            """.trimIndent(),
+        )
         val record = AgentAppActionRecord(
             """
             {
@@ -2187,6 +2222,9 @@ class ModelsTest {
         assertEquals(true, packageDef.result.getBoolean("installed"))
         assertEquals("activity", packageDef.handoff.getString("mode"))
         assertEquals("create_event", packageDef.actions.single().actionId)
+        assertEquals("Create event", packageDef.actions.single().displayName)
+        assertEquals("创建日程", packageDef.actions.single().localizedDisplayNames["zh-CN"])
+        assertEquals("在日历中创建一个新日程。", packageDef.actions.single().localizedDescriptions["zh-CN"])
         assertEquals("object", packageDef.actions.single().parameters.getString("type"))
         assertEquals(listOf("activity"), packageDef.actions.single().executionModes)
         assertEquals(300, packageDef.actions.single().timeoutSeconds)
@@ -2194,9 +2232,14 @@ class ModelsTest {
         assertEquals("ios.bundle", packageDef.installBinding?.iosBundleId)
         assertEquals("napaxi", packageDef.installBinding?.hostCallbackScheme)
         assertEquals(true, packageDef.installBinding?.backgroundTriggerSupported)
+        assertEquals(true, packageDef.autoInvokeEnabled)
+        assertEquals("2030-01-02T12:00:00Z", packageDef.lastUsedAt)
+        assertEquals(7L, packageDef.useCount)
         assertEquals("2030-01-02T00:00:00Z", packageDef.updatedAt)
         assertEquals(packageDef.rawJson, packageDef.toJsonString())
         assertEquals("create_event", manifest.actionId)
+        assertEquals("Create event", manifest.displayName)
+        assertEquals("创建日程", manifest.localizedDisplayNames["zh-CN"])
         assertEquals("provider_required", manifest.confirmationPolicy)
         assertEquals("object", manifest.parameters.getString("type"))
         assertEquals("activity", manifestFromMap.executionModes.single())
@@ -2217,6 +2260,9 @@ class ModelsTest {
         assertEquals("trace-1", result.providerTraceId)
         assertEquals("result-sig", result.signature)
         assertEquals(result.rawJson, result.toJsonString())
+        assertEquals("host_not_bound", bindingFailure.errorCode)
+        assertEquals("host_not_bound: Binding missing", bindingFailure.error)
+        assertTrue(bindingFailure.isHostBindingMissing)
 
         assertEquals("request-1", record.proposal.requestId)
         assertEquals("succeeded", record.status)
@@ -2256,6 +2302,9 @@ class ModelsTest {
             handoff = JSONObject("""{"mode":"activity"}"""),
             result = JSONObject("""{"installed":true}"""),
             installBinding = packageDef.installBinding,
+            autoInvokeEnabled = true,
+            lastUsedAt = "2030-01-02T12:00:00Z",
+            useCount = 7,
             createdAt = "2030-01-01T00:00:00Z",
             updatedAt = "2030-01-02T00:00:00Z",
         )
@@ -2273,6 +2322,8 @@ class ModelsTest {
         assertEquals("Calendar Agent", constructedPackage.displayName)
         assertEquals("create_event", constructedPackage.actions.single().actionId)
         assertEquals("host.app", constructedPackage.installBinding?.hostPackageName)
+        assertEquals(true, constructedPackage.autoInvokeEnabled)
+        assertEquals(7L, constructedPackage.useCount)
         assertEquals("event-2", constructedRecord.result?.result?.getString("event_id"))
         val bindingFromJson = AgentAppInstallBinding.fromJsonObject(packageDef.installBinding!!.toJsonObject())
         val bindingFromMap = AgentAppInstallBinding.fromMap(
@@ -2281,6 +2332,9 @@ class ModelsTest {
                 "app_package_name" to "provider.app",
                 "activity_name" to "ProviderActivity",
                 "signing_cert_sha256" to "abc",
+                "app_version_code" to 7,
+                "app_last_update_time_ms" to 123456L,
+                "trusted_refresh_supported" to true,
                 "installed_at" to "2030-01-01T00:00:00Z",
                 "install_request_id" to "install-2",
                 "host_package_name" to "host.app",
@@ -2291,6 +2345,9 @@ class ModelsTest {
         assertEquals("ProviderActivity", bindingFromJson.activityName)
         assertEquals("host.app", bindingFromJson.hostPackageName)
         assertEquals("install-2", bindingFromMap.installRequestId)
+        assertEquals(7L, bindingFromMap.appVersionCode)
+        assertEquals(123456L, bindingFromMap.appLastUpdateTimeMs)
+        assertEquals(true, bindingFromMap.trustedRefreshSupported)
         assertEquals(1, bindingFromMap.protocolVersion)
         assertEquals(true, bindingFromMap.backgroundTriggerSupported)
         assertEquals("TriggerService", bindingFromMap.hostBackgroundTriggerService)
@@ -2308,6 +2365,8 @@ class ModelsTest {
         assertEquals(false, minimalBindingJson.has("host_shared_secret"))
         assertEquals(false, minimalBindingJson.has("background_trigger_supported"))
         assertEquals(false, minimalBindingJson.has("host_background_trigger_service"))
+        assertEquals(false, minimalBindingJson.has("app_version_code"))
+        assertEquals(false, minimalBindingJson.has("trusted_refresh_supported"))
         assertEquals("request-2", AgentAppActionProposal.fromJsonObject(constructedProposal.toJsonObject()).requestId)
         assertEquals(
             "provider.app",

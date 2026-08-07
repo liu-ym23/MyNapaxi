@@ -65,6 +65,32 @@ fn session_crud_and_history_work() {
 }
 
 #[test]
+fn existing_thread_keeps_its_original_identity_and_owner() {
+    let files_dir = temp_files_dir("immutable-key");
+    let created_json = create_session(&files_dir, "agent-a", "app", "user-a", None);
+    let created: SessionKey = serde_json::from_str(&created_json).unwrap();
+
+    let reopened_json = create_session(
+        &files_dir,
+        "agent-a",
+        "other-channel",
+        "user-a",
+        Some(&created.thread_id),
+    );
+    let reopened: SessionKey = serde_json::from_str(&reopened_json).unwrap();
+    assert_eq!(reopened, created);
+
+    let wrong_owner = create_session(
+        &files_dir,
+        "agent-b",
+        "app",
+        "user-b",
+        Some(&created.thread_id),
+    );
+    assert!(wrong_owner.contains("different owner"));
+}
+
+#[test]
 fn llm_history_keeps_trailing_user_message_for_current_turn() {
     let files_dir = temp_files_dir("trailing-user");
     let key_json = create_session(&files_dir, "agent-a", "app", "user-a", None);
@@ -226,6 +252,10 @@ fn trace_messages_are_persisted_for_ui_and_replayed_for_llm_context() {
     let raw = crate::llm::openai_messages_from_mobile_history(&context_history);
     assert_eq!(raw[0]["role"].as_str(), Some("user"));
     assert_eq!(raw[1]["role"].as_str(), Some("assistant"));
+    assert_eq!(
+        raw[1]["reasoning_content"].as_str(),
+        Some("I should inspect the workspace.")
+    );
     assert_eq!(raw[1]["tool_calls"][0]["id"].as_str(), Some("call_1"));
     assert_eq!(
         raw[1]["tool_calls"][0]["function"]["name"].as_str(),
@@ -235,6 +265,44 @@ fn trace_messages_are_persisted_for_ui_and_replayed_for_llm_context() {
     assert_eq!(raw[2]["tool_call_id"].as_str(), Some("call_1"));
     assert_eq!(raw[2]["content"].as_str(), Some("README.md"));
     assert_eq!(raw[3]["role"].as_str(), Some("assistant"));
+}
+
+#[test]
+fn llm_context_does_not_attach_reasoning_across_turn_boundaries() {
+    let files_dir = temp_files_dir("trace_turn_boundary");
+    let key_json = create_session(&files_dir, "agent-a", "app", "user-a", None);
+    let key: SessionKey = serde_json::from_str(&key_json).unwrap();
+
+    assert!(append_messages(
+        &files_dir,
+        &key_json,
+        &[
+            SessionAppendMessage {
+                role: "reasoning".to_string(),
+                content: "unrelated reasoning".to_string(),
+                interrupted: false,
+                turn_id: Some("turn-a".to_string()),
+            },
+            SessionAppendMessage {
+                role: "tool_calls".to_string(),
+                content: serde_json::json!({
+                    "calls": [{
+                        "call_id": "call_1",
+                        "name": "shell",
+                        "arguments": "{}",
+                        "result": "ok"
+                    }]
+                })
+                .to_string(),
+                interrupted: false,
+                turn_id: Some("turn-b".to_string()),
+            },
+        ]
+    ));
+
+    let context_history = llm_context_history_all(&files_dir, &key.thread_id);
+    let raw = crate::llm::openai_messages_from_mobile_history(&context_history);
+    assert!(raw[0].get("reasoning_content").is_none());
 }
 
 #[test]

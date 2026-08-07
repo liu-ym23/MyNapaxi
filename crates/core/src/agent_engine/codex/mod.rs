@@ -1,24 +1,30 @@
 //! Core-owned Codex app-server agent engine.
 //!
 //! The public engine id is `napaxi.agent_engine.codex`; Android runs it inside
-//! the Napaxi Linux sandbox PTY. Other platforms keep the same API surface and
-//! return an explicit unsupported error.
+//! the Napaxi Linux sandbox PTY and iOS runs it through the vendored QEMU PTY
+//! backend. Other platforms keep the same API surface and return an explicit
+//! unsupported error.
 
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(target_os = "android", target_os = "ios", test))]
 mod config;
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod configure;
+#[cfg(any(target_os = "android", target_os = "ios", test))]
+mod dynamic_tools;
+#[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
+mod env;
+#[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
 mod events;
 mod history;
 mod process;
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
 mod protocol;
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
 mod state;
 
+pub(crate) use configure::configure_codex_agent_engine_json;
 #[cfg(test)]
 pub(crate) use events::map_app_server_message;
 pub(crate) use process::answer_human_request;
-pub(crate) use process::configure_codex_agent_engine_json;
 pub(crate) use process::run_codex_turn;
 pub(crate) use state::register_android_native_library_dir;
 
@@ -132,16 +138,24 @@ mod tests {
     }
 
     #[test]
-    fn maps_final_app_server_error_and_ignores_retry_notice() {
+    fn maps_final_app_server_error_and_surfaces_retry_notice() {
         let retry = map_app_server_message(&json!({
             "jsonrpc": "2.0",
             "method": "error",
             "params": {
-                "error": {"message": "Reconnecting... 2/5"},
+                "error": {
+                    "message": "Reconnecting... 2/5",
+                    "additionalDetails": "stream disconnected before completion"
+                },
                 "willRetry": true
             }
         }));
-        assert!(retry.event.is_none());
+        assert!(matches!(
+            retry.event,
+            Some(ChatEvent::StreamReset { reason })
+                if reason.contains("Reconnecting... 2/5")
+                    && reason.contains("stream disconnected before completion")
+        ));
         assert!(!retry.completed);
 
         let final_error = map_app_server_message(&json!({
@@ -499,6 +513,7 @@ mod tests {
         let state = super::state::CodexSessionState {
             native_thread_id: Some("thread".to_string()),
             config_fingerprint: String::new(),
+            dynamic_tools_fingerprint: String::new(),
         };
         let line =
             super::protocol::turn_start_request(&mut rpc, &test_turn_request("hello"), &state);
@@ -516,6 +531,7 @@ mod tests {
         let state = super::state::CodexSessionState {
             native_thread_id: Some("thread".to_string()),
             config_fingerprint: String::new(),
+            dynamic_tools_fingerprint: String::new(),
         };
         let line = super::protocol::turn_start_request(
             &mut rpc,
@@ -539,6 +555,66 @@ mod tests {
                 "name": "android-apk-build",
                 "path": "/skills/android-apk-build/SKILL.md"
             })
+        );
+    }
+
+    #[test]
+    fn turn_start_input_includes_android_apk_build_for_plain_app_creation() {
+        let mut rpc = super::protocol::JsonRpcClient::new();
+        let state = super::state::CodexSessionState {
+            native_thread_id: Some("thread".to_string()),
+            config_fingerprint: String::new(),
+            dynamic_tools_fingerprint: String::new(),
+        };
+        let line = super::protocol::turn_start_request(
+            &mut rpc,
+            &test_turn_request("帮我写一个简单记账 app，可以安装到手机上"),
+            &state,
+        );
+        let payload: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let input = payload["params"]["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[1]["name"], "android-apk-build");
+
+        let terse_line =
+            super::protocol::turn_start_request(&mut rpc, &test_turn_request("写app"), &state);
+        let terse_payload: serde_json::Value = serde_json::from_str(&terse_line).unwrap();
+        assert_eq!(
+            terse_payload["params"]["input"].as_array().unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn turn_start_input_allows_web_wrappers_but_not_flutter_apps() {
+        let mut rpc = super::protocol::JsonRpcClient::new();
+        let state = super::state::CodexSessionState {
+            native_thread_id: Some("thread".to_string()),
+            config_fingerprint: String::new(),
+            dynamic_tools_fingerprint: String::new(),
+        };
+
+        let web_line = super::protocol::turn_start_request(
+            &mut rpc,
+            &test_turn_request("帮我做一个 web app 的登录页"),
+            &state,
+        );
+        let web_payload: serde_json::Value = serde_json::from_str(&web_line).unwrap();
+        assert_eq!(web_payload["params"]["input"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            web_payload["params"]["input"].as_array().unwrap()[1]["name"],
+            "android-apk-build"
+        );
+
+        let flutter_line = super::protocol::turn_start_request(
+            &mut rpc,
+            &test_turn_request("创建一个 Flutter app 页面"),
+            &state,
+        );
+        let flutter_payload: serde_json::Value = serde_json::from_str(&flutter_line).unwrap();
+        assert_eq!(
+            flutter_payload["params"]["input"].as_array().unwrap().len(),
+            1
         );
     }
 }

@@ -12,6 +12,15 @@ final class AgentProviderHostTests: XCTestCase {
         super.tearDown()
     }
 
+    func testProviderSelectionEncodesOneTurnCanonicalMarker() throws {
+        let selection = AgentProviderSelection(providerId: "demo.notes")
+
+        XCTAssertEqual(
+            try selection.applyToMessage("  create a note"),
+            "@{provider:demo.notes} create a note"
+        )
+    }
+
     func testProviderDescriptorFromURL() {
         let host = NapaxiAgentProviderHost(callbackScheme: "napaxi-test")
         let url = URL(string: "napaxi-test://provider?install_url=https%3A%2F%2Fwallet.example%2Finstall&action_url=https%3A%2F%2Fwallet.example%2Faction&label=Wallet&ios_bundle_id=com.example.wallet&ios_team_id=TEAM")!
@@ -28,6 +37,23 @@ final class AgentProviderHostTests: XCTestCase {
         XCTAssertEqual(descriptor?.iosBundleId, "com.example.wallet")
         XCTAssertEqual(descriptor?.iosTeamId, "TEAM")
         XCTAssertNil(host.consumePendingProviderInstall())
+    }
+
+    func testInstallRequestsReuseStableHostInstanceId() {
+        let bundleId = "napaxi.host.stable-id-test"
+        let key = "napaxi.agent_provider.host_instance_id.\(bundleId).v1"
+        UserDefaults.standard.removeObject(forKey: key)
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        let host = NapaxiAgentProviderHost(
+            hostInfo: NapaxiAgentProviderHostInfo(bundleId: bundleId)
+        )
+
+        let first = host.createInstallRequest()
+        let second = host.createInstallRequest()
+
+        XCTAssertFalse(first.hostInstanceId.isEmpty)
+        XCTAssertEqual(first.hostInstanceId, second.hostInstanceId)
+        XCTAssertNotEqual(first.hostSharedSecret, second.hostSharedSecret)
     }
 
     func testProviderInstallPendingGetAndClearMirrorFlutterChannelLifecycle() {
@@ -103,7 +129,10 @@ final class AgentProviderHostTests: XCTestCase {
             packageName: "com.example.wallet",
             installActivityName: "InstallActivity",
             activityName: "InstallActivity",
-            label: ""
+            label: "",
+            packageVersionCode: 7,
+            packageLastUpdateTimeMs: 123456,
+            trustedRefreshSupported: true
         )
         let descriptor = try JSONDecoder().decode(
             NapaxiAgentProviderDescriptor.self,
@@ -117,6 +146,11 @@ final class AgentProviderHostTests: XCTestCase {
         XCTAssertEqual(descriptor.activityName, "InstallActivity")
         XCTAssertEqual(descriptor.label, "")
         XCTAssertEqual(descriptor.signingCertSha256, "")
+        XCTAssertEqual(constructed.packageVersionCode, 7)
+        XCTAssertEqual(constructed.packageLastUpdateTimeMs, 123456)
+        XCTAssertTrue(constructed.trustedRefreshSupported)
+        XCTAssertEqual(descriptor.packageVersionCode, 0)
+        XCTAssertFalse(descriptor.trustedRefreshSupported)
         XCTAssertEqual(descriptor.installUrl, "")
         XCTAssertEqual(descriptor.iosBundleId, "")
     }

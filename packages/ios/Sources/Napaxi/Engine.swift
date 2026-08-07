@@ -265,6 +265,7 @@ public final class NapaxiEngine: @unchecked Sendable {
     public var channelAgents: NapaxiChannelAgentAPI { NapaxiChannelAgentAPI(rawAPI: api) }
     public var qqbotProtocol: NapaxiQqBotProtocolAPI { NapaxiQqBotProtocolAPI(rawAPI: api) }
     public var workspace: NapaxiWorkspaceAPI { NapaxiWorkspaceAPI(rawAPI: api, engine: self) }
+    public var projects: NapaxiProjectAPI { NapaxiProjectAPI(rawAPI: api) }
     public var fileBridge: NapaxiFileBridgeAPI { NapaxiFileBridgeAPI(rawAPI: api, filesDir: filesDir) }
     public var mcp: NapaxiMcpAPI { NapaxiMcpAPI(rawAPI: api, defaultUserId: NapaxiEngine.defaultAccountId) }
     public var background: NapaxiBackgroundAPI { NapaxiBackgroundAPI(controller: backgroundController) }
@@ -417,7 +418,11 @@ public final class NapaxiEngine: @unchecked Sendable {
         enableAgentProviderActions: Bool = false,
         openAgentProviderURL: NapaxiAgentProviderHost.URLOpener? = nil
     ) throws -> NapaxiEngine {
-        let ishRootfsAvailable = NapaxiIshSupport.registerBundledRootfsArchive()
+        let iosQemuRootfsAvailable = NapaxiIosQemuSandboxSupport.isBundledRootfsAvailable
+        let iosQemuRuntimeLinked = NapaxiIosQemuSandboxSupport.isRuntimeLinked
+        if iosQemuRootfsAvailable && iosQemuRuntimeLinked {
+            NapaxiIosQemuSandboxSupport.registerBundledRootfsArchive()
+        }
         let automationEnabled = resolveAutomationEnabled(
             enableAutomation: enableAutomation,
             backgroundConfig: backgroundConfig
@@ -452,18 +457,23 @@ public final class NapaxiEngine: @unchecked Sendable {
             hasBrowserController: resolvedBrowserController != nil,
             enablePlatformTools: enablePlatformTools,
             enableAutomation: automationEnabled,
-            ishRootfsAvailable: ishRootfsAvailable
+            iosQemuRootfsAvailable: iosQemuRootfsAvailable,
+            iosQemuRuntimeLinked: iosQemuRuntimeLinked
         )
         let selection = capabilitySelection ?? NapaxiCapabilitySelection(
             enabledCapabilities: [
                 NapaxiChannelCapability.im,
                 NapaxiChannelCapability.device,
                 resolvedToolExecutor == nil ? nil : "napaxi.tool.custom_host",
-                "napaxi.agent_engine.codex",
+                iosQemuRootfsAvailable && iosQemuRuntimeLinked ? NapaxiIosQemuSandboxSupport.sandboxCapabilityId : nil,
                 resolvedAgentAppActionExecutor == nil ? nil : "napaxi.tool.agent_app_action",
                 resolvedBrowserController == nil ? nil : NapaxiBrowserToolProvider.capabilityId,
                 automationEnabled ? "napaxi.service.automation" : nil,
-            ].compactMap { $0 }
+            ].compactMap { $0 },
+            disabledCapabilities: NapaxiIosQemuSandboxSupport.disabledCapabilities(
+                rootfsAvailable: iosQemuRootfsAvailable,
+                runtimeLinked: iosQemuRuntimeLinked
+            )
         )
         let platformContext = try NapaxiPlatformContextResolver.resolve(
             filesDir: resolvedFilesDir,
@@ -643,7 +653,7 @@ public final class NapaxiEngine: @unchecked Sendable {
         _ request: [String: NapaxiJSONValue]
     ) throws -> NapaxiCodexAgentEngineHistoryResult {
         try ensureNotDisposed()
-        let raw = try configureCodexAgentEngineJson(
+        let raw = try queryCodexAgentEngineHistoryJson(
             handle: handle,
             requestJson: request.jsonString()
         )
@@ -663,14 +673,15 @@ public final class NapaxiEngine: @unchecked Sendable {
     public func send(
         _ message: String,
         attachments: [NapaxiAttachment] = [],
-        maxIterations: Int = NapaxiChatDefaults.maxIterations
+        maxIterations: Int = NapaxiChatDefaults.maxIterations,
+        providerSelection: NapaxiAgentProviderSelection? = nil
     ) async throws -> NapaxiJSONValue {
         try ensureNotDisposed()
         let attachmentsJSON = try attachmentsJSON(attachments)
         return try NapaxiNativeBridge.sendMessage(
             handle: handle,
             configJSON: config.jsonString(),
-            message: message,
+            message: try providerSelection?.applyToMessage(message) ?? message,
             attachmentsJSON: attachmentsJSON,
             maxIterations: NapaxiChatDefaults.bridgeMaxIterations(maxIterations)
         )
@@ -679,13 +690,14 @@ public final class NapaxiEngine: @unchecked Sendable {
     public func sendStream(
         _ message: String,
         attachments: [NapaxiAttachment] = [],
-        maxIterations: Int = NapaxiChatDefaults.maxIterations
+        maxIterations: Int = NapaxiChatDefaults.maxIterations,
+        providerSelection: NapaxiAgentProviderSelection? = nil
     ) throws -> AsyncThrowingStream<NapaxiChatEvent, Error> {
         try ensureNotDisposed()
         let rawStream = NapaxiNativeBridge.sendMessageStream(
             handle: handle,
             configJSON: try config.jsonString(),
-            message: message,
+            message: try providerSelection?.applyToMessage(message) ?? message,
             attachmentsJSON: try attachmentsJSON(attachments),
             maxIterations: NapaxiChatDefaults.bridgeMaxIterations(maxIterations)
         )
@@ -697,7 +709,8 @@ public final class NapaxiEngine: @unchecked Sendable {
         sessionKey: NapaxiSessionKey,
         message: String,
         attachments: [NapaxiAttachment] = [],
-        maxIterations: Int = NapaxiChatDefaults.maxIterations
+        maxIterations: Int = NapaxiChatDefaults.maxIterations,
+        providerSelection: NapaxiAgentProviderSelection? = nil
     ) async throws -> NapaxiJSONValue {
         try ensureNotDisposed()
         let run = try sessionRunTracker.start(agentId: agentId, key: sessionKey)
@@ -708,7 +721,7 @@ public final class NapaxiEngine: @unchecked Sendable {
                 configJSON: config.jsonString(),
                 agentId: agentId,
                 sessionKeyJSON: sessionKeyJSON,
-                message: message,
+                message: try providerSelection?.applyToMessage(message) ?? message,
                 attachmentsJSON: attachmentsJSON(attachments),
                 maxIterations: NapaxiChatDefaults.bridgeMaxIterations(maxIterations)
             )
@@ -725,14 +738,16 @@ public final class NapaxiEngine: @unchecked Sendable {
         _ message: String,
         attachments: [NapaxiAttachment] = [],
         maxIterations: Int = NapaxiChatDefaults.maxIterations,
-        agentId: String = NapaxiEngine.defaultAgentId
+        agentId: String = NapaxiEngine.defaultAgentId,
+        providerSelection: NapaxiAgentProviderSelection? = nil
     ) async throws -> NapaxiJSONValue {
         try await sendToSession(
             agentId: agentId,
             sessionKey: sessionKey,
             message: message,
             attachments: attachments,
-            maxIterations: maxIterations
+            maxIterations: maxIterations,
+            providerSelection: providerSelection
         )
     }
 
@@ -741,7 +756,8 @@ public final class NapaxiEngine: @unchecked Sendable {
         sessionKey: NapaxiSessionKey,
         message: String,
         attachments: [NapaxiAttachment] = [],
-        maxIterations: Int = NapaxiChatDefaults.maxIterations
+        maxIterations: Int = NapaxiChatDefaults.maxIterations,
+        providerSelection: NapaxiAgentProviderSelection? = nil
     ) throws -> AsyncThrowingStream<NapaxiChatEvent, Error> {
         try ensureNotDisposed()
         let startedRun = try sessionRunTracker.start(agentId: agentId, key: sessionKey)
@@ -751,7 +767,7 @@ public final class NapaxiEngine: @unchecked Sendable {
             configJSON: try config.jsonString(),
             agentId: agentId,
             sessionKeyJSON: sessionKeyJSON,
-            message: message,
+            message: try providerSelection?.applyToMessage(message) ?? message,
             attachmentsJSON: try attachmentsJSON(attachments),
             maxIterations: NapaxiChatDefaults.bridgeMaxIterations(maxIterations)
         )
@@ -763,14 +779,16 @@ public final class NapaxiEngine: @unchecked Sendable {
         _ message: String,
         attachments: [NapaxiAttachment] = [],
         maxIterations: Int = NapaxiChatDefaults.maxIterations,
-        agentId: String = NapaxiEngine.defaultAgentId
+        agentId: String = NapaxiEngine.defaultAgentId,
+        providerSelection: NapaxiAgentProviderSelection? = nil
     ) throws -> AsyncThrowingStream<NapaxiChatEvent, Error> {
         try sendToSessionStream(
             agentId: agentId,
             sessionKey: sessionKey,
             message: message,
             attachments: attachments,
-            maxIterations: maxIterations
+            maxIterations: maxIterations,
+            providerSelection: providerSelection
         )
     }
 
@@ -1544,7 +1562,8 @@ public final class NapaxiEngine: @unchecked Sendable {
         hasBrowserController: Bool,
         enablePlatformTools: Bool,
         enableAutomation: Bool,
-        ishRootfsAvailable: Bool
+        iosQemuRootfsAvailable: Bool,
+        iosQemuRuntimeLinked: Bool
     ) -> NapaxiCapabilityProfile {
         NapaxiCapabilityProfile(
             platform: "ios",
@@ -1552,13 +1571,16 @@ public final class NapaxiEngine: @unchecked Sendable {
                 NapaxiChannelCapability.im,
                 NapaxiChannelCapability.device,
                 hasCustomToolExecutor ? "napaxi.tool.custom_host" : nil,
-                "napaxi.agent_engine.codex",
+                iosQemuRootfsAvailable && iosQemuRuntimeLinked ? NapaxiIosQemuSandboxSupport.sandboxCapabilityId : nil,
                 hasAgentAppActionExecutor ? "napaxi.tool.agent_app_action" : nil,
                 enablePlatformTools ? "napaxi.platform_tool.*" : nil,
                 hasBrowserController ? "napaxi.tool.browser" : nil,
                 enableAutomation ? "napaxi.service.automation" : nil,
             ].compactMap { $0 },
-            disabledCapabilities: NapaxiIshSupport.disabledCapabilities(rootfsAvailable: ishRootfsAvailable)
+            disabledCapabilities: NapaxiIosQemuSandboxSupport.disabledCapabilities(
+                rootfsAvailable: iosQemuRootfsAvailable,
+                runtimeLinked: iosQemuRuntimeLinked
+            )
         )
     }
 

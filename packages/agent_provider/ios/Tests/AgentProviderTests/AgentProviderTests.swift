@@ -11,6 +11,9 @@ final class AgentProviderTests: XCTestCase {
 
         XCTAssertEqual(parsed.providerId, "wallet.provider")
         XCTAssertEqual(parsed.actions.first?.toolName, "app_action_wallet_payment_pay")
+        XCTAssertEqual(parsed.actions.first?.displayName, "Pay")
+        XCTAssertEqual(parsed.actions.first?.localizedDisplayNames["zh-CN"], "付款")
+        XCTAssertEqual(parsed.actions.first?.localizedDescriptions["zh-CN"], "完成一笔虚拟付款。")
     }
 
     func testInstallRequestAndResultUrlRoundTrip() throws {
@@ -53,7 +56,7 @@ final class AgentProviderTests: XCTestCase {
     func testTrustedValidationAcceptsSignedProposalAndRejectsReplay() {
         let defaults = UserDefaults(suiteName: "AgentProviderTests.\(UUID().uuidString)")!
         let store = TrustedHostStore(defaults: defaults, namespace: "test")
-        store.saveBinding(sampleBinding())
+        XCTAssertTrue(store.saveBinding(sampleBinding()))
         let proposal = signedSampleProposal()
 
         let trusted = AgentProvider.validateTrustedProposal(
@@ -77,7 +80,7 @@ final class AgentProviderTests: XCTestCase {
     func testTrustedValidationRejectsMissingAndInvalidSignature() {
         let defaults = UserDefaults(suiteName: "AgentProviderTests.\(UUID().uuidString)")!
         let store = TrustedHostStore(defaults: defaults, namespace: "test")
-        store.saveBinding(sampleBinding())
+        XCTAssertTrue(store.saveBinding(sampleBinding()))
 
         let missing = AgentProvider.validateTrustedProposal(
             proposal: sampleProposal(signature: nil),
@@ -136,7 +139,10 @@ private func samplePackage() -> AgentPackage {
             AgentAction(
                 actionId: "wallet.payment.pay",
                 toolName: "app_action_wallet_payment_pay",
-                description: "Create a virtual payment."
+                description: "Create a virtual payment.",
+                displayName: "Pay",
+                localizedDisplayNames: ["zh-CN": "付款"],
+                localizedDescriptions: ["zh-CN": "完成一笔虚拟付款。"]
             ),
         ]
     )

@@ -14,6 +14,7 @@ public typealias SessionRunApi = NapaxiSessionRunAPI
 public typealias AgentAppApi = NapaxiAgentAppAPI
 public typealias AgentApi = NapaxiAgentAPI
 public typealias SessionApi = NapaxiSessionAPI
+public typealias ProjectApi = NapaxiProjectAPI
 public typealias SkillApi = NapaxiSkillAPI
 public typealias EvolutionApi = NapaxiEvolutionAPI
 public typealias GroupApi = NapaxiGroupAPI
@@ -200,6 +201,7 @@ public typealias McpServerActionResult = NapaxiMcpServerActionResult
 public typealias McpOAuthStartResult = NapaxiMcpOAuthStartResult
 
 public typealias AgentProviderDescriptor = NapaxiAgentProviderDescriptor
+public typealias AgentProviderSelection = NapaxiAgentProviderSelection
 public typealias AgentInstallRequest = NapaxiAgentInstallRequest
 public typealias AgentTriggerRequest = NapaxiAgentTriggerRequest
 public typealias AcceptedAgentTrigger = NapaxiAcceptedAgentTrigger

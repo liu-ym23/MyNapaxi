@@ -11,6 +11,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppActionManifestTag 
         actionId: String,
         toolName: String,
         description: String,
+        displayName: String = "",
+        localizedDisplayNames: [String: String] = [:],
+        localizedDescriptions: [String: String] = [:],
         parameters: [String: NapaxiJSONValue] = ["type": .string("object"), "properties": .object([:])],
         resultSchema: [String: NapaxiJSONValue] = ["type": .string("object")],
         risk: String = "high",
@@ -22,6 +25,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppActionManifestTag 
             "action_id": .string(actionId),
             "tool_name": .string(toolName),
             "description": .string(description),
+            "display_name": .string(displayName),
+            "localized_display_names": .object(localizedDisplayNames.mapValues { .string($0) }),
+            "localized_descriptions": .object(localizedDescriptions.mapValues { .string($0) }),
             "parameters": .object(parameters),
             "result_schema": .object(resultSchema),
             "risk": .string(risk),
@@ -40,6 +46,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppActionManifestTag 
             actionId: map.string("action_id") ?? "",
             toolName: map.string("tool_name") ?? "",
             description: map.string("description") ?? "",
+            displayName: map.string("display_name") ?? "",
+            localizedDisplayNames: map.object("localized_display_names")?.compactMapValues { $0.stringValue } ?? [:],
+            localizedDescriptions: map.object("localized_descriptions")?.compactMapValues { $0.stringValue } ?? [:],
             parameters: map.object("parameters") ?? ["type": .string("object"), "properties": .object([:])],
             resultSchema: map.object("result_schema") ?? ["type": .string("object")],
             risk: map.string("risk") ?? "high",
@@ -54,6 +63,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppActionManifestTag 
             "action_id": .string(actionId),
             "tool_name": .string(toolName),
             "description": .string(description),
+            "display_name": .string(displayName),
+            "localized_display_names": .object(localizedDisplayNames.mapValues { .string($0) }),
+            "localized_descriptions": .object(localizedDescriptions.mapValues { .string($0) }),
             "parameters": .object(parameters),
             "result_schema": .object(resultSchema),
             "risk": .string(risk),
@@ -66,6 +78,15 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppActionManifestTag 
     var actionId: String { string("action_id") ?? string("actionId") ?? "" }
     var toolName: String { string("tool_name") ?? string("toolName") ?? "" }
     var description: String { string("description") ?? "" }
+    var displayName: String { string("display_name") ?? string("displayName") ?? "" }
+    var localizedDisplayNames: [String: String] {
+        (raw.object("localized_display_names") ?? raw.object("localizedDisplayNames"))?
+            .compactMapValues { $0.stringValue } ?? [:]
+    }
+    var localizedDescriptions: [String: String] {
+        (raw.object("localized_descriptions") ?? raw.object("localizedDescriptions"))?
+            .compactMapValues { $0.stringValue } ?? [:]
+    }
     var parameters: [String: NapaxiJSONValue] { raw.object("parameters") ?? ["type": .string("object"), "properties": .object([:])] }
     var resultSchema: [String: NapaxiJSONValue] { raw.object("result_schema") ?? raw.object("resultSchema") ?? ["type": .string("object")] }
     var risk: String { string("risk") ?? "high" }
@@ -80,6 +101,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppInstallBindingTag 
         appPackageName: String,
         activityName: String,
         signingCertSha256: String,
+        appVersionCode: Int = 0,
+        appLastUpdateTimeMs: Int = 0,
+        trustedRefreshSupported: Bool = false,
         installedAt: String,
         installRequestId: String,
         protocolVersion: Int,
@@ -108,6 +132,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppInstallBindingTag 
             "protocol_version": .number(Double(protocolVersion)),
         ]
         raw.setNonEmpty("host_package_name", hostPackageName)
+        if appVersionCode > 0 { raw["app_version_code"] = .number(Double(appVersionCode)) }
+        if appLastUpdateTimeMs > 0 { raw["app_last_update_time_ms"] = .number(Double(appLastUpdateTimeMs)) }
+        if trustedRefreshSupported { raw["trusted_refresh_supported"] = .bool(true) }
         raw.setNonEmpty("host_signing_cert_sha256", hostSigningCertSha256)
         raw.setNonEmpty("host_instance_id", hostInstanceId)
         raw.setNonEmpty("host_shared_secret", hostSharedSecret)
@@ -134,6 +161,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppInstallBindingTag 
             appPackageName: map.string("app_package_name") ?? "",
             activityName: map.string("activity_name") ?? "",
             signingCertSha256: map.string("signing_cert_sha256") ?? "",
+            appVersionCode: map.int("app_version_code") ?? 0,
+            appLastUpdateTimeMs: map.int("app_last_update_time_ms") ?? 0,
+            trustedRefreshSupported: map.bool("trusted_refresh_supported") ?? false,
             installedAt: map.string("installed_at") ?? "",
             installRequestId: map.string("install_request_id") ?? "",
             protocolVersion: map.int("protocol_version") ?? 1,
@@ -165,6 +195,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppInstallBindingTag 
             "protocol_version": .number(Double(protocolVersion)),
         ]
         object.setNonEmpty("host_package_name", hostPackageName)
+        if appVersionCode > 0 { object["app_version_code"] = .number(Double(appVersionCode)) }
+        if appLastUpdateTimeMs > 0 { object["app_last_update_time_ms"] = .number(Double(appLastUpdateTimeMs)) }
+        if trustedRefreshSupported { object["trusted_refresh_supported"] = .bool(true) }
         object.setNonEmpty("host_signing_cert_sha256", hostSigningCertSha256)
         object.setNonEmpty("host_instance_id", hostInstanceId)
         object.setNonEmpty("host_shared_secret", hostSharedSecret)
@@ -185,6 +218,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppInstallBindingTag 
     var appPackageName: String { string("app_package_name") ?? string("appPackageName") ?? "" }
     var activityName: String { string("activity_name") ?? string("activityName") ?? "" }
     var signingCertSha256: String { string("signing_cert_sha256") ?? string("signingCertSha256") ?? "" }
+    var appVersionCode: Int { raw.int("app_version_code") ?? raw.int("appVersionCode") ?? 0 }
+    var appLastUpdateTimeMs: Int { raw.int("app_last_update_time_ms") ?? raw.int("appLastUpdateTimeMs") ?? 0 }
+    var trustedRefreshSupported: Bool { bool("trusted_refresh_supported") ?? bool("trustedRefreshSupported") ?? false }
     var installedAt: String { string("installed_at") ?? string("installedAt") ?? "" }
     var installRequestId: String { string("install_request_id") ?? string("installRequestId") ?? "" }
     var protocolVersion: Int { raw.int("protocol_version") ?? raw.int("protocolVersion") ?? 1 }
@@ -215,6 +251,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppPackageTag {
         handoff: [String: NapaxiJSONValue] = [:],
         result: [String: NapaxiJSONValue] = [:],
         installBinding: NapaxiAgentAppInstallBinding? = nil,
+        autoInvokeEnabled: Bool = false,
+        lastUsedAt: String = "",
+        useCount: Int = 0,
         createdAt: String = "",
         updatedAt: String = ""
     ) {
@@ -229,6 +268,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppPackageTag {
             "result": .object(result),
         ]
         if let installBinding { raw["install_binding"] = .object(installBinding.raw) }
+        raw["auto_invoke_enabled"] = .bool(autoInvokeEnabled)
+        raw.setNonEmpty("last_used_at", lastUsedAt)
+        if useCount > 0 { raw["use_count"] = .number(Double(useCount)) }
         raw.setNonEmpty("created_at", createdAt)
         raw.setNonEmpty("updated_at", updatedAt)
         self.init(raw: raw)
@@ -266,6 +308,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppPackageTag {
             handoff: map.object("handoff") ?? [:],
             result: map.object("result") ?? [:],
             installBinding: installBinding,
+            autoInvokeEnabled: map.bool("auto_invoke_enabled") ?? false,
+            lastUsedAt: map.string("last_used_at") ?? "",
+            useCount: map.int("use_count") ?? 0,
             createdAt: map.string("created_at") ?? "",
             updatedAt: map.string("updated_at") ?? ""
         )
@@ -283,6 +328,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppPackageTag {
             "result": .object(result),
         ]
         if let installBinding { object["install_binding"] = .object(installBinding.toJson()) }
+        object["auto_invoke_enabled"] = .bool(autoInvokeEnabled)
+        object.setNonEmpty("last_used_at", lastUsedAt)
+        if useCount > 0 { object["use_count"] = .number(Double(useCount)) }
         object.setNonEmpty("created_at", createdAt)
         object.setNonEmpty("updated_at", updatedAt)
         return object
@@ -301,6 +349,9 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppPackageTag {
     var handoff: [String: NapaxiJSONValue] { raw.object("handoff") ?? [:] }
     var result: [String: NapaxiJSONValue] { raw.object("result") ?? [:] }
     var installBinding: NapaxiAgentAppInstallBinding? { raw.model("install_binding") ?? raw.model("installBinding") }
+    var autoInvokeEnabled: Bool { bool("auto_invoke_enabled") ?? bool("autoInvokeEnabled") ?? false }
+    var lastUsedAt: String { string("last_used_at") ?? string("lastUsedAt") ?? "" }
+    var useCount: Int { raw.int("use_count") ?? raw.int("useCount") ?? 0 }
     var createdAt: String { string("created_at") ?? string("createdAt") ?? "" }
     var updatedAt: String { string("updated_at") ?? string("updatedAt") ?? "" }
 }
@@ -442,11 +493,25 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppActionResultTag {
     }
 
     static func fromMap(_ map: [String: NapaxiJSONValue]) -> Self {
+        let error: String?
+        if let structured = map.object("error") {
+            let code = structured.string("code")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let message = structured.string("message")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !code.isEmpty && !message.isEmpty {
+                error = "\(code): \(message)"
+            } else if !code.isEmpty {
+                error = code
+            } else {
+                error = map.displayString("error")
+            }
+        } else {
+            error = map.displayString("error")
+        }
         return Self(
             requestId: map.string("request_id") ?? "",
             status: map.string("status") ?? "",
             result: map.object("result") ?? [:],
-            error: map.displayString("error"),
+            error: error,
             providerTraceId: map.string("provider_trace_id"),
             completedAt: map.string("completed_at") ?? "",
             signature: map.string("signature")
@@ -474,6 +539,20 @@ public extension NapaxiStableModel where Tag == NapaxiAgentAppActionResultTag {
     var status: String { string("status") ?? "" }
     var result: [String: NapaxiJSONValue] { raw.object("result") ?? [:] }
     var error: String? { raw.displayString("error") }
+    var errorCode: String? {
+        if let code = raw.object("error")?.string("code"), !code.isEmpty {
+            return code
+        }
+        guard let value = error?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        let candidate = value.split(separator: ":", maxSplits: 1).first.map(String.init) ?? value
+        let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let allowed = normalized.unicodeScalars.allSatisfy {
+            CharacterSet.lowercaseLetters.union(.decimalDigits).union(CharacterSet(charactersIn: "_")).contains($0)
+        }
+        return allowed && normalized.first?.isLetter == true ? normalized : nil
+    }
+    var isHostBindingMissing: Bool { status == "failed" && errorCode == "host_not_bound" }
     var providerTraceId: String? { string("provider_trace_id") ?? string("providerTraceId") }
     var completedAt: String { string("completed_at") ?? string("completedAt") ?? "" }
     var signature: String? { string("signature") }

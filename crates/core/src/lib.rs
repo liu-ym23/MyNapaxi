@@ -82,6 +82,10 @@ mod workspace;
 #[path = "session/mod.rs"]
 mod session;
 
+/// Project display membership and runtime-workspace placement.
+#[path = "project/mod.rs"]
+mod project;
+
 /// Minimal HTTP LLM adapter for the standalone mobile SDK runtime.
 #[path = "llm/mod.rs"]
 mod llm;
@@ -211,10 +215,10 @@ mod android_linux_env;
 #[path = "platform/android_assets.rs"]
 mod android_assets;
 
-/// iOS iSH Linux environment setup and command execution.
+/// iOS QEMU Linux environment setup and command execution.
 #[cfg(target_os = "ios")]
-#[path = "platform/ios_ish_env.rs"]
-mod ios_ish_env;
+#[path = "platform/ios_qemu_env.rs"]
+mod ios_qemu_env;
 
 /// Shared SSRF guards for LLM-reachable outbound HTTP.
 mod net;

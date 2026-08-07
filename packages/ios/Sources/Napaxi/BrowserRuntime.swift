@@ -95,6 +95,8 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
                     result = try await open(params)
                 case "browser_snapshot":
                     result = try await snapshotResult(action: "snapshot", params: params)
+                case "browser_get_text":
+                    result = try await getText(params)
                 case "browser_click":
                     result = try await click(params)
                 case "browser_type":
@@ -324,6 +326,29 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
             }
         }
         return try await snapshotResult(action: "wait")
+    }
+
+    private func getText(_ params: [String: NapaxiJSONValue]) async throws -> [String: NapaxiJSONValue] {
+        guard currentHasPage else {
+            return error(action: "get_text", message: "browser session is not open")
+        }
+        let selector = params["selector"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var result = jsonObject(fromJavaScriptResult: try await safeJavaScript(Self.getTextScript(selector: selector)))
+        if result["success"]?.boolValue == false {
+            return mergeResult(action: "get_text", result: result)
+        }
+        let backendURL = try await backend.currentURL()
+        let backendTitle = try await backend.title()
+        currentURL = result["url"]?.stringValue ?? backendURL ?? currentURL
+        currentTitle = result["title"]?.stringValue ?? backendTitle ?? currentTitle
+        result["success"] = .bool(true)
+        result["action"] = .string("get_text")
+        result["browser_mode"] = .string(currentBrowserMode.rawValue)
+        if let userAgent = Self.userAgent(for: currentBrowserMode) {
+            result["user_agent"] = .string(userAgent)
+        }
+        result["loading"] = .bool(currentLoading)
+        return result
     }
 
     private func findText(_ params: [String: NapaxiJSONValue]) async throws -> [String: NapaxiJSONValue] {
@@ -794,7 +819,7 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
           const submit = \(javascriptLiteral(.bool(submit)));
           const clearFirst = \(javascriptLiteral(.bool(clearFirst)));
           \(browserRuntimeScript)
-          return JSON.stringify(window.__napaxiBrowser.runTarget(params, action, {text, submit, clearFirst}));
+          return JSON.stringify(window.__napaxiBrowser.runTarget(params, action, {text, submit, clearFirst, submitSelector: params.submit_selector || ''}));
         })()
         """
     }
@@ -846,6 +871,65 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
             el.setAttribute('data-napaxi-debug-highlight', risk ? 'risk' : 'normal');
           });
           return true;
+        })()
+        """
+    }
+
+    private static func getTextScript(selector: String?) -> String {
+        """
+        (function() {
+          const __napaxiGetText = true;
+          const selector = \(selector.map { javascriptLiteral(.string($0)) } ?? "null");
+          try {
+            let target = document.body;
+            if (selector && String(selector).trim()) {
+              target = document.querySelector(selector);
+              if (!target) {
+                return JSON.stringify({success:false,error:'Element not found: ' + selector,failure_code:'element_not_found',url:location.href,title:document.title});
+              }
+            }
+            const inner = target ? (target.innerText || '') : '';
+            const textContent = target ? (target.textContent || '') : '';
+            const text = inner || textContent || '';
+            const body = document.body || document.documentElement;
+            const allEls = body ? body.querySelectorAll('*') : [];
+            let visibleSample = 0;
+            let hiddenSample = 0;
+            for (let i = 0; i < Math.min(allEls.length, 500); i++) {
+              const style = window.getComputedStyle(allEls[i]);
+              if (style.display === 'none' || style.visibility === 'hidden') hiddenSample++;
+              else visibleSample++;
+            }
+            const max = 10000;
+            return JSON.stringify({
+              success: true,
+              text: text.substring(0, max),
+              length: text.length,
+              truncated: text.length > max,
+              url: location.href,
+              title: document.title,
+              debug: {
+                selector: selector || null,
+                tag: target ? target.tagName : null,
+                id: target ? (target.id || null) : null,
+                className: target && target.className ? String(target.className).split(' ').slice(0, 3).join(' ') : null,
+                readyState: document.readyState,
+                innerTextLength: inner.length,
+                textContentLength: textContent.length,
+                innerTextPreview: inner.substring(0, 200),
+                textContentPreview: textContent.replace(/\\s+/g, ' ').trim().substring(0, 200),
+                bodyInnerTextLength: (document.body && document.body.innerText || '').length,
+                bodyTextContentLength: (document.body && document.body.textContent || '').length,
+                scrollHeight: document.documentElement ? document.documentElement.scrollHeight : (document.body ? document.body.scrollHeight : 0),
+                viewportHeight: window.innerHeight,
+                domElementCount: allEls.length,
+                visibleSample: visibleSample,
+                hiddenSample: hiddenSample
+              }
+            });
+          } catch (error) {
+            return JSON.stringify({success:false,error:String(error),failure_code:'javascript_error',url:location.href,title:document.title});
+          }
         })()
         """
     }
@@ -1216,6 +1300,7 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
         return {
           index, element_id: elementId, role: fingerprint.role, kind, tag: fingerprint.tag,
           type: fingerprint.type, name: fingerprint.name, label: fingerprint.label, text: fingerprint.text,
+          href: fingerprint.tag === 'a' ? (el.href || el.getAttribute('href') || '') : '',
           value_hint: sensitive ? '[redacted sensitive field]' : (('value' in el) ? compact(el.value).slice(0, 120) : ''),
           enabled: !(el.disabled || el.getAttribute('aria-disabled') === 'true'),
           visible: visible(el),
@@ -1313,9 +1398,201 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
         if (overlays.length) diagnostics.push('overlay_or_fixed_layer_present');
         return diagnostics;
       }
-      function snapshot() {
+        function searchResultRecords() {
+          const results = [];
+          const seenUrls = new Set();
+          function isBingSearchPage() {
+            try {
+              const url = new URL(location.href);
+              const host = url.host.toLowerCase();
+              return (host === 'bing.com' || host.endsWith('.bing.com') || host === 'bing.net' || host.endsWith('.bing.net')) && url.pathname.toLowerCase().startsWith('/search');
+            } catch (_) {
+              return false;
+            }
+          }
+          if (!isBingSearchPage()) return results;
+          function urlParts(href) {
+            try {
+              const url = new URL(href, location.href);
+              return {href: url.href, host: url.host.replace(/^www\./, ''), path: url.pathname};
+            } catch (_) {
+              return {href, host: '', path: ''};
+            }
+          }
+          function isSearchInternalUrl(href) {
+            try {
+              const url = new URL(href, location.href);
+              const host = url.host.toLowerCase();
+              const path = url.pathname.toLowerCase();
+              const value = url.href.toLowerCase();
+              return host === 'bing.com' ||
+                host.endsWith('.bing.com') ||
+                host === 'bing.net' ||
+                host.endsWith('.bing.net') ||
+                host.endsWith('microsoft.com') ||
+                value.includes('/search?') ||
+                path.includes('/images/search') ||
+                path.includes('/videos/search') ||
+                path.includes('/maps') ||
+                path.includes('/ck/a');
+            } catch (_) {
+              return false;
+            }
+          }
+          function hostLabels(href) {
+            const parts = urlParts(href);
+            const labels = [];
+            if (parts.host) {
+              const host = parts.host.toLowerCase();
+              labels.push(host);
+              labels.push(host.replace(/\.[^.]+$/, '').toLowerCase());
+              const segments = host.split('.').filter(Boolean);
+              if (segments.length > 2) {
+                const rootDomain = segments.slice(-2).join('.');
+                labels.push(rootDomain);
+                labels.push(rootDomain.replace(/\.[^.]+$/, '').toLowerCase());
+              }
+            }
+            return labels.filter(Boolean);
+          }
+          function rawTextLines(text) {
+            return String(text || '')
+              .split(/[\n\r]+|\s{2,}/)
+              .map(compact)
+              .filter(Boolean);
+          }
+          function firstHttpUrl(text) {
+            const match = String(text || '').match(/https?:\/\/[^\s›>，,；;。]+/i);
+            return match ? match[0].replace(/\/$/, '') : '';
+          }
+          function looksLikeDomain(value) {
+            const token = compact(value).replace(/\/$/, '').toLowerCase();
+            return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(token) && !token.includes('/');
+          }
+          function visibleTextResultUrl(text) {
+            const direct = firstHttpUrl(text);
+            if (direct) return direct;
+            const token = compact(text).split(/\s+/)[0] || '';
+            if (looksLikeDomain(token)) return `https://${token.replace(/\/$/, '')}`;
+            return '';
+          }
+          function isRepeatedGenericLabel(text) {
+            const parts = compact(text).split(/\s+/).filter(Boolean);
+            if (parts.length === 2 && parts[0] === parts[1]) return true;
+            if (parts.length > 2 && parts.length % 2 === 0) {
+              const half = parts.length / 2;
+              if (parts.slice(0, half).join(' ') === parts.slice(half).join(' ')) return true;
+            }
+            return false;
+          }
+          function isBreadcrumbText(text, href) {
+            const value = compact(text);
+            if (!value) return true;
+            const lower = value.toLowerCase();
+            const parts = urlParts(href);
+            const host = parts.host.toLowerCase();
+            if (lower.startsWith('http://') || lower.startsWith('https://')) return true;
+            if (visibleTextResultUrl(value)) return true;
+            if (isRepeatedGenericLabel(value)) return true;
+            if (host && lower === host) return true;
+            if (host && lower.includes(host) && (lower.includes('›') || lower.includes('>'))) return true;
+            if (/^(网页|图片|视频|资讯|地图|Web|国内版|国际版)$/i.test(value)) return true;
+            return false;
+          }
+          function cleanResultTitle(text, href) {
+            let candidate = compact(text);
+            candidate = candidate.replace(/^(网页|Web)\s+/i, '').trim();
+            candidate = candidate.replace(/\s+https?:\/\/.*$/i, '').trim();
+            candidate = candidate.replace(/\s+[\w.-]+\.[a-z]{2,}\s*[›>].*$/i, '').trim();
+            if (candidate.length >= 2 && !isBreadcrumbText(candidate, href)) return candidate;
+            return '';
+          }
+          function candidateAnchors(root) {
+            const anchors = [];
+            const preferred = [
+              'h1 a[href]', 'h2 a[href]', 'h3 a[href]', 'h4 a[href]',
+              '[role="heading"] a[href]',
+              'a[href] h1', 'a[href] h2', 'a[href] h3', 'a[href] h4'
+            ].join(',');
+            try {
+              for (const node of Array.from(root.querySelectorAll(preferred))) {
+                const anchor = node.tagName && node.tagName.toLowerCase() === 'a' ? node : node.closest('a[href]');
+                if (anchor && !anchors.includes(anchor)) anchors.push(anchor);
+              }
+            } catch (_) {}
+            try {
+              for (const anchor of Array.from(root.querySelectorAll('a[href]'))) {
+                if (!anchors.includes(anchor)) anchors.push(anchor);
+              }
+            } catch (_) {}
+            return anchors;
+          }
+          function resultHref(root) {
+            for (const anchor of candidateAnchors(root)) {
+              const href = anchor.href || anchor.getAttribute('href') || '';
+              if (/^https?:\/\//i.test(href) && !isSearchInternalUrl(href)) return href;
+            }
+            return '';
+          }
+          function visibleTitleFor(root, href) {
+            const lines = rawTextLines(root.innerText || root.textContent || '');
+            const urlLineIndex = lines.findIndex((line) => visibleTextResultUrl(line));
+            const start = urlLineIndex >= 0 ? urlLineIndex + 1 : 0;
+            for (let i = start; i < Math.min(lines.length, start + 8); i++) {
+              const cleaned = cleanResultTitle(lines[i], href);
+              if (cleaned) return cleaned;
+            }
+            try {
+              const heading = root.querySelector('h1,h2,h3,h4,[role="heading"]');
+              const cleaned = heading ? cleanResultTitle(heading.innerText || heading.textContent || '', href) : '';
+              if (cleaned) return cleaned;
+            } catch (_) {}
+            return '';
+          }
+          function visibleSnippetFor(root, title, href) {
+            const lines = rawTextLines(root.innerText || root.textContent || '');
+            const titleIndex = lines.findIndex((line) => compact(line) === compact(title));
+            const start = titleIndex >= 0 ? titleIndex + 1 : 0;
+            for (let i = start; i < Math.min(lines.length, start + 6); i++) {
+              const line = lines[i];
+              if (!line || line === title || isBreadcrumbText(line, href)) continue;
+              if (line.length >= 8) return line.length > 420 ? line.slice(0, 420).trim() : line;
+            }
+            return '';
+          }
+          function pushRoot(root) {
+            if (!root || root.closest('header,nav,footer') || !visible(root)) return false;
+            const href = resultHref(root);
+            if (!href || seenUrls.has(href)) return false;
+            const title = visibleTitleFor(root, href);
+            const snippet = visibleSnippetFor(root, title, href);
+            if (!title && !snippet) return false;
+            seenUrls.add(href);
+            results.push({
+              index: results.length,
+              title: title.slice(0, 240),
+              url: href,
+              snippet,
+              source: 'bing_visible_result_text',
+              container_tag: root.tagName ? root.tagName.toLowerCase() : ''
+            });
+            return true;
+          }
+          const scope = document.querySelector('#b_results') || document.querySelector('main') || document.body;
+          const resultRoots = Array.from(scope.querySelectorAll('li.b_algo,.b_algo,li[class*="b_algo"]'));
+          for (const root of resultRoots) {
+            pushRoot(root);
+            if (results.length >= 80) break;
+          }
+          return results;
+        }
         const elements = interactiveElements().map(elementRecord);
+        const links = allElements()
+          .filter((el) => el.tagName && el.tagName.toLowerCase() === 'a' && (el.href || el.getAttribute('href')))
+          .slice(0, 240)
+          .map((el, index) => elementRecord(el, index));
         const pageText = compact(document.body ? document.body.innerText : '').slice(0, 10000);
+        const searchResults = searchResultRecords();
         const viewportMap = viewportObservation(elements);
         const pageChangeToken = hash(JSON.stringify({
           url: location.href,
@@ -1331,10 +1608,12 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
           scroll: {x: Math.round(window.scrollX || 0), y: Math.round(window.scrollY || 0), max_y: Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0)},
           text: pageText,
           elements,
+          links,
+          search_results: searchResults,
           viewport_map: viewportMap,
           page_change_token: pageChangeToken
         };
-        return {url: pageState.url, title: pageState.title, text: pageText, elements, viewport_map: viewportMap, page_change_token: pageChangeToken, page_state: pageState};
+        return {url: pageState.url, title: pageState.title, text: pageText, elements, links, search_results: searchResults, viewport_map: viewportMap, page_change_token: pageChangeToken, page_state: pageState};
       }
       function scoreElement(el, target) {
         const fp = target || {};
@@ -1406,7 +1685,20 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
         }
         return fallback;
       }
-      function findTarget(params) {
+      function editableForTyping(el) {
+        return !!el && (('value' in el) || el.isContentEditable);
+      }
+      function editableDescendantForTyping(el) {
+        if (!el) return null;
+        if (editableForTyping(el)) return el;
+        try {
+          return Array.from(el.querySelectorAll('input,textarea,[contenteditable=""],[contenteditable="true"]'))
+            .find((item) => editableForTyping(item) && (visible(item) || item.offsetParent !== null)) || null;
+        } catch (_) {
+          return null;
+        }
+      }
+      function findTarget(params, action) {
         let el = null;
         if (params.click_point) {
           const point = params.click_point;
@@ -1423,13 +1715,20 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
         }
         if (params.selector) {
           try { el = queryFirst(params.selector); } catch (_) {}
-          if (el && visible(el)) return {el, method: 'selector'};
+          if (el) {
+            if (action === 'type') {
+              const editable = editableDescendantForTyping(el);
+              if (editable) return {el: editable, method: editable === el ? (visible(el) ? 'selector' : 'selector_hidden_editable') : 'selector_editable_descendant'};
+            } else if (visible(el)) {
+              return {el, method: 'selector'};
+            }
+          }
         }
         const candidates = interactiveElements();
         if (Number.isInteger(params.index) && candidates[params.index]) {
           return {el: candidates[params.index], method: 'index'};
         }
-        if (params.text) {
+        if (action !== 'type' && params.text) {
           const wanted = norm(params.text);
           el = candidates.find((item) => norm(item.innerText || item.textContent || item.value).includes(wanted));
           if (el) return {el, method: 'text'};
@@ -1439,7 +1738,12 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
             if (el && visible(el)) return {el, method: 'text_ancestor'};
           }
         }
-        if (params.label) {
+        if (action === 'type' && params.label) {
+          const wantedLabel = norm(params.label);
+          el = allElements().find((item) => editableForTyping(item) && norm(explicitLabel(item)).includes(wantedLabel));
+          if (el) return {el, method: visible(el) ? 'label' : 'label_hidden_editable'};
+        }
+        if (action !== 'type' && params.label) {
           const wanted = norm(params.label);
           el = candidates.find((item) => norm(explicitLabel(item)).includes(wanted));
           if (el) return {el, method: 'label'};
@@ -1524,11 +1828,65 @@ public final class NapaxiBrowserRuntimeController: @unchecked Sendable, NapaxiBr
         } else {
           return {success: false, failure_code: 'not_editable', error: 'target element is not editable'};
         }
-        if (options.submit) sendKeys('Enter');
+        if (options.submit) {
+          submitEditable(el, options);
+        }
         return {success: true};
       }
+      function submitEditable(el, options) {
+        const before = location.href;
+        sendKeys('Enter');
+        const explicitSelector = options.submitSelector || '';
+        let form = null;
+        let submitter = null;
+        if (explicitSelector) {
+          try {
+            const explicit = queryFirst(explicitSelector);
+            if (explicit && explicit.tagName && explicit.tagName.toLowerCase() === 'form') {
+              form = explicit;
+            } else if (explicit && typeof explicit.click === 'function') {
+              explicit.click();
+              return;
+            }
+          } catch (_) {}
+        }
+        form = form || el.form || (el.closest ? el.closest('form') : null);
+        if (form) {
+          try {
+            submitter = form.querySelector('input[type="submit"],button[type="submit"],button:not([type]),label[for="sb_form_go"],#search_icon');
+            if (submitter && typeof submitter.click === 'function') {
+              submitter.click();
+            }
+          } catch (_) {}
+          try {
+            if (typeof form.requestSubmit === 'function') {
+              form.requestSubmit(submitter && submitter.tagName && submitter.tagName.toLowerCase() !== 'label' ? submitter : undefined);
+            }
+          } catch (_) {}
+          try {
+            if (typeof form.submit === 'function') {
+              HTMLFormElement.prototype.submit.call(form);
+            }
+          } catch (_) {}
+          setTimeout(() => {
+            try {
+              if (location.href !== before) return;
+              const method = (form.getAttribute('method') || 'get').toLowerCase();
+              const action = form.getAttribute('action') || location.href;
+              if (method !== 'get') return;
+              const target = new URL(action, location.href);
+              const data = new FormData(form);
+              if (el.name && ('value' in el)) data.set(el.name, el.value);
+              for (const [key, value] of data.entries()) {
+                if (typeof value === 'string') target.searchParams.set(key, value);
+              }
+              location.assign(target.toString());
+            } catch (_) {}
+          }, 250);
+        }
+      }
       function runTarget(params, action, options) {
-        const found = findTarget(params || {});
+        const found = findTarget(params || {}, action);
         if (!found.el) {
           const textCandidates = textActionCandidates((params && (params.text || params.label)) || '');
           return {

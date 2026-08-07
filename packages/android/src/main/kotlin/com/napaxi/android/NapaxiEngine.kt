@@ -38,6 +38,7 @@ public class NapaxiEngine private constructor(
     public val sessionRuns: SessionRunApi = SessionRunApi(this)
     public val agents: AgentApi = AgentApi(this)
     public val workspace: WorkspaceApi = WorkspaceApi(this)
+    public val projects: ProjectApi = ProjectApi(this)
     public val skills: SkillApi = SkillApi(this)
     public val evolution: EvolutionApi = EvolutionApi(this)
     public val groups: GroupApi = GroupApi(this)
@@ -555,6 +556,7 @@ public class NapaxiEngine private constructor(
         listener: ChatEventListener,
         sandboxPaths: List<String>? = null,
         requestConfig: LlmConfig = config,
+        providerSelection: AgentProviderSelection? = null,
     ) {
         checkNotDisposed()
         val configJson = requestConfig.toJson()
@@ -567,7 +569,7 @@ public class NapaxiEngine private constructor(
                     configJson,
                     agentId,
                     sessionJson,
-                    message,
+                    providerSelection?.applyToMessage(message) ?: message,
                     attachmentsJson,
                     maxIterations,
                     object : NativeStreamCallback {
@@ -594,9 +596,17 @@ public class NapaxiEngine private constructor(
         message: String,
         attachments: List<McAttachment> = emptyList(),
         maxIterations: Int = 0,
+        providerSelection: AgentProviderSelection? = null,
     ): Flow<ChatEvent> {
         val session = createSession()
-        return sendToSessionFlow(session, message, DEFAULT_AGENT_ID, attachments, maxIterations)
+        return sendToSessionFlow(
+            session = session,
+            message = message,
+            agentId = DEFAULT_AGENT_ID,
+            attachments = attachments,
+            maxIterations = maxIterations,
+            providerSelection = providerSelection,
+        )
     }
 
     public fun sendToSessionFlow(
@@ -607,6 +617,7 @@ public class NapaxiEngine private constructor(
         maxIterations: Int = 0,
         sandboxPaths: List<String>? = null,
         requestConfig: LlmConfig = config,
+        providerSelection: AgentProviderSelection? = null,
     ): Flow<ChatEvent> {
         check(!hasActiveSessionRun(session, agentId)) { "Session is already running: ${session.threadId}" }
         return callbackFlow {
@@ -651,6 +662,7 @@ public class NapaxiEngine private constructor(
                 },
                 sandboxPaths = sandboxPaths,
                 requestConfig = requestConfig,
+                providerSelection = providerSelection,
             )
             awaitClose {}
         }
@@ -738,6 +750,7 @@ public class NapaxiEngine private constructor(
         maxIterations: Int = 0,
         sandboxPaths: List<String>? = null,
         requestConfig: LlmConfig = config,
+        providerSelection: AgentProviderSelection? = null,
     ): List<ChatEvent> {
         checkNotDisposed()
         val rawJson = NapaxiNative.sendToSession(
@@ -745,7 +758,7 @@ public class NapaxiEngine private constructor(
             requestConfig.toJson(),
             agentId,
             session.toJson(),
-            message,
+            providerSelection?.applyToMessage(message) ?: message,
             attachments.toJsonArrayString(sandboxPaths),
             maxIterations,
         )

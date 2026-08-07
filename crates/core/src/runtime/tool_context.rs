@@ -70,13 +70,52 @@ pub(super) fn prepare_session_tool_context_with_config_and_thread(
     llm_config: PlatformLlmConfig,
     current_thread_id: Option<String>,
 ) -> SessionToolContext {
+    prepare_session_tool_context_with_config_thread_and_provider(
+        engine,
+        account_id,
+        agent_id,
+        llm_config,
+        current_thread_id,
+        None,
+    )
+}
+
+pub(super) fn prepare_session_tool_context_with_config_thread_and_provider(
+    engine: &Engine,
+    account_id: &str,
+    agent_id: &str,
+    llm_config: PlatformLlmConfig,
+    current_thread_id: Option<String>,
+    selected_provider_id: Option<&str>,
+) -> SessionToolContext {
+    prepare_session_tool_context_with_config_thread_provider_and_workspace(
+        engine,
+        account_id,
+        agent_id,
+        llm_config,
+        current_thread_id,
+        selected_provider_id,
+        None,
+    )
+}
+
+fn prepare_session_tool_context_with_config_thread_provider_and_workspace(
+    engine: &Engine,
+    account_id: &str,
+    agent_id: &str,
+    llm_config: PlatformLlmConfig,
+    current_thread_id: Option<String>,
+    selected_provider_id: Option<&str>,
+    workspace_files_dir: Option<String>,
+) -> SessionToolContext {
     let account_id = if account_id.trim().is_empty() {
         DEFAULT_ACCOUNT_ID.to_string()
     } else {
         account_id.to_string()
     };
     let agent_id = normalize_agent_id(agent_id);
-    let workspace_files_dir = default_engine_workspace_files_dir(engine.files_dir());
+    let workspace_files_dir = workspace_files_dir
+        .unwrap_or_else(|| default_engine_workspace_files_dir(engine.files_dir()));
     let (mcp_tools, mcp_handler) =
         crate::builtin_tools::mcp_tools_and_handler(engine.files_dir(), &account_id);
     let tool_bridge = engine
@@ -84,9 +123,10 @@ pub(super) fn prepare_session_tool_context_with_config_and_thread(
         .request_bridge()
         .or_else(|| tool_request_dispatcher().map(ToolRequestBridge::process_scoped));
     let (mut app_action_tools, app_action_handler) =
-        crate::agents::agent_app::action_tools_and_handler(
+        crate::agents::agent_app::action_tools_and_handler_for_provider(
             engine.files_dir(),
             &agent_id,
+            selected_provider_id,
             tool_bridge.clone(),
             mcp_handler,
         );
@@ -124,19 +164,42 @@ pub(crate) fn prepare_session_tool_context_with_config_for_core(
     prepare_session_tool_context_with_config(engine, account_id, agent_id, llm_config)
 }
 
-pub(crate) fn prepare_session_tool_context_with_config_and_thread_for_core(
+pub(crate) fn prepare_session_tool_context_with_workspace_for_core(
     engine: &Engine,
     account_id: &str,
     agent_id: &str,
     llm_config: PlatformLlmConfig,
     current_thread_id: Option<String>,
+    workspace_files_dir: String,
 ) -> SessionToolContext {
-    prepare_session_tool_context_with_config_and_thread(
+    prepare_session_tool_context_with_config_thread_provider_and_workspace(
         engine,
         account_id,
         agent_id,
         llm_config,
         current_thread_id,
+        None,
+        Some(workspace_files_dir),
+    )
+}
+
+pub(crate) fn prepare_session_tool_context_with_workspace_and_provider_for_core(
+    engine: &Engine,
+    account_id: &str,
+    agent_id: &str,
+    llm_config: PlatformLlmConfig,
+    current_thread_id: Option<String>,
+    selected_provider_id: Option<&str>,
+    workspace_files_dir: String,
+) -> SessionToolContext {
+    prepare_session_tool_context_with_config_thread_provider_and_workspace(
+        engine,
+        account_id,
+        agent_id,
+        llm_config,
+        current_thread_id,
+        selected_provider_id,
+        Some(workspace_files_dir),
     )
 }
 

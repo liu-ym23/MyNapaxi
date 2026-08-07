@@ -77,6 +77,16 @@ mod registry {
                 .iter()
                 .any(|definition| definition.id == "napaxi.service.scenario_registry")
         );
+
+        let ios_qemu = definitions
+            .iter()
+            .find(|definition| definition.id == "napaxi.platform.ios_qemu")
+            .expect("iOS QEMU sandbox capability should be registered");
+        assert_eq!(ios_qemu.kind, CapabilityKind::Service);
+        assert_eq!(ios_qemu.risk, CapabilityRisk::Critical);
+        assert_eq!(ios_qemu.activation, CapabilityActivation::Host);
+        assert_eq!(ios_qemu.platforms, vec!["ios".to_string()]);
+        assert!(!ios_qemu.default_enabled);
     }
 
     #[test]
@@ -91,6 +101,22 @@ mod registry {
             assert_eq!(definition.kind, CapabilityKind::PlatformTool);
             assert_eq!(definition.config_schema, descriptor.parameters);
         }
+    }
+
+    #[test]
+    fn platform_tool_capability_ids_accept_bare_names_and_capability_ids() {
+        assert_eq!(
+            platform_tool_capability_id("open_url"),
+            "napaxi.platform_tool.open_url"
+        );
+        assert_eq!(
+            platform_tool_capability_id("napaxi.platform_tool.open_url"),
+            "napaxi.platform_tool.open_url"
+        );
+        assert_eq!(
+            tool_capability_id("napaxi.platform_tool.open_url").as_deref(),
+            Some("napaxi.platform_tool.open_url")
+        );
     }
 
     #[test]

@@ -55,11 +55,13 @@ pub fn builtin_tools_and_handler(
         handlers::skill_handler(&context, mcp_management_handler);
     let (mut memory_tools, memory_handler) = handlers::memory_handler(&context, skill_handler);
     let (mut file_tools, file_handler) = handlers::file_handler(&context, memory_handler);
-    let (mut web_tools, web_handler) = handlers::web_search_handler(file_handler);
-    let (mut fetch_tools, fetch_handler) = handlers::web_fetch_handler(web_handler);
+    let (mut web_tools, web_handler) = handlers::web_search_handler(&context, file_handler);
+    let (mut fetch_tools, fetch_handler) = handlers::web_fetch_handler(&context, web_handler);
     let (mut http_tools, http_handler) = handlers::http_handler(&context, fetch_handler);
     let (mut media_tools, media_handler) = handlers::media_handler(&context, http_handler);
-    let (mut shell_tools, handler) = shell::shell_handler(&context, media_handler);
+    let (mut platform_tools, platform_handler) =
+        handlers::platform_handler(&context, media_handler);
+    let (mut shell_tools, handler) = shell::shell_handler(&context, platform_handler);
     skill_tools.append(&mut mcp_management_tools);
     skill_tools.push(crate::human_loop::descriptor());
     skill_tools.append(&mut memory_tools);
@@ -68,6 +70,7 @@ pub fn builtin_tools_and_handler(
     skill_tools.append(&mut fetch_tools);
     skill_tools.append(&mut http_tools);
     skill_tools.append(&mut media_tools);
+    skill_tools.append(&mut platform_tools);
     skill_tools.append(&mut shell_tools);
     skill_tools.append(&mut extra_tools);
     (skill_tools, handler)
