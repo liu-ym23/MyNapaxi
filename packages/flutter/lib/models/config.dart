@@ -2,6 +2,52 @@ import 'dart:convert';
 
 import 'capability.dart';
 
+/// On-device local LLM configuration. Mirrors the Rust `LocalLlmConfig`. Only
+/// consulted when `provider == "local"`; cloud providers ignore it entirely.
+class LocalLlmConfig {
+  final String? modelPath;
+  final String? tokenizerPath;
+  final double temperature;
+  final int maxNewTokens;
+  final int seed;
+  final double repeatPenalty;
+  final int repeatLastN;
+
+  const LocalLlmConfig({
+    this.modelPath,
+    this.tokenizerPath,
+    this.temperature = 0.1,
+    this.maxNewTokens = 96,
+    this.seed = 0,
+    this.repeatPenalty = 1.1,
+    this.repeatLastN = 64,
+  });
+
+  Map<String, dynamic> toMap() => {
+        if (modelPath != null && modelPath!.trim().isNotEmpty)
+          'model_path': modelPath,
+        if (tokenizerPath != null && tokenizerPath!.trim().isNotEmpty)
+          'tokenizer_path': tokenizerPath,
+        'temperature': temperature,
+        'max_new_tokens': maxNewTokens,
+        'seed': seed,
+        'repeat_penalty': repeatPenalty,
+        'repeat_last_n': repeatLastN,
+      };
+
+  factory LocalLlmConfig.fromMap(Map<String, dynamic> map) {
+    return LocalLlmConfig(
+      modelPath: map['model_path'] as String?,
+      tokenizerPath: map['tokenizer_path'] as String?,
+      temperature: (map['temperature'] as num?)?.toDouble() ?? 0.1,
+      maxNewTokens: map['max_new_tokens'] as int? ?? 96,
+      seed: map['seed'] as int? ?? 0,
+      repeatPenalty: (map['repeat_penalty'] as num?)?.toDouble() ?? 1.1,
+      repeatLastN: map['repeat_last_n'] as int? ?? 64,
+    );
+  }
+}
+
 /// Per-turn scene prompt injection configuration.
 class ScenePromptConfig {
   final bool enabled;
@@ -346,6 +392,9 @@ class LlmConfig {
   /// (structured tools vs. native sandbox `git`) and optional commit identity.
   final GitConfig? git;
 
+  /// On-device local LLM settings. Only used when [provider] is `"local"`.
+  final LocalLlmConfig localLlm;
+
   const LlmConfig({
     required this.provider,
     required this.apiKey,
@@ -369,6 +418,7 @@ class LlmConfig {
     this.shellSecurity = const ShellSecurityConfig(),
     this.capabilitySelection,
     this.git,
+    this.localLlm = const LocalLlmConfig(),
   });
 
   LlmConfig copyWith({
@@ -394,6 +444,7 @@ class LlmConfig {
     ShellSecurityConfig? shellSecurity,
     NapaxiCapabilitySelection? capabilitySelection,
     GitConfig? git,
+    LocalLlmConfig? localLlm,
   }) {
     return LlmConfig(
       provider: provider ?? this.provider,
@@ -418,6 +469,7 @@ class LlmConfig {
       shellSecurity: shellSecurity ?? this.shellSecurity,
       capabilitySelection: capabilitySelection ?? this.capabilitySelection,
       git: git ?? this.git,
+      localLlm: localLlm ?? this.localLlm,
     );
   }
 
@@ -454,6 +506,7 @@ class LlmConfig {
       if (capabilitySelection != null)
         'capability_selection': capabilitySelection!.toJson(),
       if (git != null) 'git': git!.toMap(),
+      'local_llm': localLlm.toMap(),
     });
   }
 
@@ -510,6 +563,11 @@ class LlmConfig {
       git: map['git'] is Map
           ? GitConfig.fromMap(Map<String, dynamic>.from(map['git'] as Map))
           : null,
+      localLlm: map['local_llm'] is Map
+          ? LocalLlmConfig.fromMap(
+              Map<String, dynamic>.from(map['local_llm'] as Map),
+            )
+          : const LocalLlmConfig(),
     );
   }
 }

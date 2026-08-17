@@ -48,6 +48,7 @@ pub fn provider_capability_id(provider: &str) -> Option<&'static str> {
         }
         "anthropic" => Some("napaxi.llm.anthropic"),
         "gemini" => Some("napaxi.llm.gemini"),
+        "local" => Some("napaxi.llm.local"),
         _ => None,
     }
 }
@@ -92,6 +93,7 @@ pub fn resolve_llm_provider(provider: &str) -> Result<LlmProviderRoute, String> 
         }
         "anthropic" => Ok(LlmProviderRoute::Anthropic),
         "gemini" => Ok(LlmProviderRoute::Gemini),
+        "local" => Ok(LlmProviderRoute::Local),
         other => Err(format!("Unsupported mobile LLM provider: {other}")),
     }
 }

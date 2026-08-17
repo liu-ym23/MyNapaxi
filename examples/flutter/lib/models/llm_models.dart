@@ -108,7 +108,11 @@ class LlmModelProfile {
 
   String get model => selectedModel(ModelCapability.chat) ?? _defaultChatModel;
 
-  bool get hasModel => model.trim().isNotEmpty;
+  /// Whether this profile drives the on-device local model (`provider ==
+  /// "local"`). A local profile needs no api key / cloud model id.
+  bool get isLocal => provider.trim().toLowerCase() == 'local';
+
+  bool get hasModel => isLocal || model.trim().isNotEmpty;
 
   bool supports(ModelCapability capability) {
     if (capability == ModelCapability.chat) return hasModel;
@@ -152,6 +156,24 @@ extension LlmModelProfileSdkConfig on LlmModelProfile {
     String responseLanguage = 'en',
     String? userTimezone,
   }) {
+    // On-device local model: no api key, no cloud model id, no capability
+    // routing. The Rust dispatch routes `provider == "local"` to the candle
+    // backend and ignores apiKey/model.
+    if (isLocal) {
+      return sdk.LlmConfig(
+        provider: 'local',
+        apiKey: '',
+        model: 'local',
+        systemPrompt: systemPrompt.trim().isEmpty
+            ? _defaultSystemPrompt(responseLanguage)
+            : systemPrompt.trim(),
+        responseLanguage: _normalizedResponseLanguage(responseLanguage),
+        maxTokens: maxTokens,
+        userTimezone:
+            userTimezone?.trim().isEmpty == true ? null : userTimezone?.trim(),
+        localLlm: const sdk.LocalLlmConfig(),
+      );
+    }
     final imageAnalysisModel = selectedModel(ModelCapability.imageAnalysis);
     final imageModel = selectedModel(ModelCapability.imageGeneration);
     final videoModel = selectedModel(ModelCapability.videoGeneration);
@@ -241,6 +263,7 @@ extension LlmModelProfileSdkConfig on LlmModelProfile {
       'zhipu' ||
       'bigmodel' ||
       'nearai' => normalized,
+      'local' => 'local',
       '' => '',
       _ => 'openai_compatible',
     };
@@ -369,6 +392,19 @@ LlmProviderOption? _optionForProvider(String provider) {
   return null;
 }
 
+/// Synthetic profile used when local-LLM mode is enabled. The sentinel api key
+/// keeps the existing cloud-shaped readiness gates passing; `toSdkConfig`
+/// emits `provider: "local"` and an empty key for the Rust runtime (which
+/// ignores both for the Local route).
+const LlmModelProfile localModelProfile = LlmModelProfile(
+  id: '__local__',
+  name: '本地推理',
+  provider: 'local',
+  apiKey: '__local__',
+  model: 'local',
+  isUserEditable: false,
+);
+
 class LlmConfigState {
   const LlmConfigState({
     this.profiles = const [],
@@ -377,6 +413,7 @@ class LlmConfigState {
     this.systemPrompt = '',
     this.maxToolIterations = 50,
     this.contextEngine = const sdk.ContextEngineConfig(),
+    this.localLlmEnabled = false,
   });
 
   final List<LlmModelProfile> profiles;
@@ -385,6 +422,22 @@ class LlmConfigState {
   final String systemPrompt;
   final int maxToolIterations;
   final sdk.ContextEngineConfig contextEngine;
+
+  /// When true, the app runs on the on-device local model and ignores cloud
+  /// profiles for chat. Toggled from the models settings page.
+  final bool localLlmEnabled;
+
+  LlmConfigState copyWith({bool? localLlmEnabled}) {
+    return LlmConfigState(
+      profiles: profiles,
+      selectedProfileId: selectedProfileId,
+      selectedProfileIdByCapability: selectedProfileIdByCapability,
+      systemPrompt: systemPrompt,
+      maxToolIterations: maxToolIterations,
+      contextEngine: contextEngine,
+      localLlmEnabled: localLlmEnabled ?? this.localLlmEnabled,
+    );
+  }
 
   LlmModelProfile? profileById(String? profileId) {
     final id = profileId?.trim();
@@ -396,6 +449,12 @@ class LlmConfigState {
   }
 
   LlmModelProfile? selectedProfileFor(ModelCapability capability) {
+    // Local mode bypasses cloud profiles entirely for chat. The synthetic
+    // profile carries a sentinel api key so the existing cloud-shaped
+    // readiness gates (hasModel && apiKey.isNotEmpty) pass unchanged.
+    if (localLlmEnabled && capability == ModelCapability.chat) {
+      return localModelProfile;
+    }
     final selectedCapabilityProfileId =
         selectedProfileIdByCapability[capability]?.trim();
     if (selectedCapabilityProfileId != null &&

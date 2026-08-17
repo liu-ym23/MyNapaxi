@@ -106,6 +106,10 @@ pub(crate) fn prompt_cache_policy(
             let _ = (&provider, &host); // kept for future provider-specific tuning
             CachePolicy::off()
         }
+
+        // On-device model: no transport, no prompt-cache markers. (candle
+        // re-prefills each call today; KV-cache reuse is a future optimization.)
+        LlmProviderRoute::Local => CachePolicy::off(),
     }
 }
 

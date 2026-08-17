@@ -1,0 +1,56 @@
+[workspace]
+members = [
+    "candle-core",
+    "candle-nn",
+    "candle-transformers",
+    "candle-qwen",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.11.0"
+edition = "2021"
+description = "Minimalist ML framework."
+repository = "https://github.com/huggingface/candle"
+keywords = ["blas", "tensor", "machine-learning"]
+categories = ["science"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+anyhow = { version = "1", features = ["backtrace"] }
+byteorder = "1.4.3"
+candle = { path = "./candle-core", package = "candle-core", version = "0.11.0" }
+candle-nn = { path = "./candle-nn", version = "0.11.0" }
+candle-transformers = { path = "./candle-transformers", version = "0.11.0" }
+clap = { version = "4.2.4", features = ["derive"] }
+criterion = { version = "0.8", default-features = false }
+gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
+hf-hub = "0.5.0"
+half = { version = "2.5.0", features = [
+    "num-traits",
+    "use-intrinsics",
+    "rand_distr",
+    "zerocopy"
+] }
+float8 = { version = "0.7.0", features = ["num-traits", "rand_distr"] }
+libc = { version = "0.2.147" }
+libm = { version = "0.2.15" }
+log = "0.4"
+memmap2 = { version = "0.9.3", features = ["stable_deref_trait"] }
+num_cpus = "1.15.0"
+num-traits = "0.2.15"
+rand = "0.9.0"
+rand_distr = "0.5.1"
+rayon = "1.7.0"
+safetensors = "0.8.0"
+serde = { version = "1.0.171", features = ["derive"] }
+thiserror = "2"
+tokenizers = { version = "0.22.0", default-features = false }
+tracing = "0.1.37"
+yoke = { version = "0.8.1", features = ["derive"] }
+zip = { version = "8.6.0", default-features = false }
+zerocopy = "0.8"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true

@@ -5,6 +5,12 @@ members = [
     "crates/features/skills",
     "packages/api_bridge",
 ]
+# `vendor/candle` is its own Cargo workspace (candle-core/-nn/-transformers/
+# -qwen with shared `[workspace.dependencies]`). Exclude it so this workspace
+# doesn't try to absorb its members; `candle-qwen` is pulled in explicitly by
+# `crates/core` as a path dependency and resolves its `workspace = true` deps
+# against `vendor/candle/Cargo.toml`.
+exclude = ["vendor/candle"]
 resolver = "2"
 
 # Workspace-wide lint policy. `cargo clippy --workspace --all-targets -- -D

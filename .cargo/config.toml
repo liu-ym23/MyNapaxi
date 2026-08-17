@@ -1,0 +1,11 @@
+# Target-specific build flags.
+#
+# Enable ARM dot-product (SDOT) instructions for the Android arm64 build so
+# candle's quantized Q4_K fast-path (`#[cfg(target_feature = "dotprod")]` in
+# candle-core) compiles in — a large matmul speedup for on-device LLM inference.
+# This requires the device CPU to advertise `asimddp` (ARM v8.2-a dotprod:
+# Cortex-A78/A715+, Snapdragon 855+, Kirin 985+, etc.). All current-gen phones
+# qualify; only pre-2018 arm64 devices would SIGILL. Host (x86_64) builds and
+# other targets are unaffected.
+[target.aarch64-linux-android]
+rustflags = ["-C", "target-feature=+dotprod"]

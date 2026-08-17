@@ -87,6 +87,9 @@ pub enum LlmProviderRoute {
     OpenAiCompatible,
     Anthropic,
     Gemini,
+    /// On-device CPU inference (vendored candle / Qwen2 GGUF). No api key, no
+    /// transport; routed through `llm::local_qwen`.
+    Local,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -2064,6 +2064,69 @@ class _SettingsActionRow extends StatelessWidget {
   }
 }
 
+class _LocalLlmSwitchRow extends StatelessWidget {
+  const _LocalLlmSwitchRow({
+    required this.chinese,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final bool chinese;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 58),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            Icon(
+              value ? Icons.memory_rounded : Icons.memory_outlined,
+              color: _configTextPrimary,
+              size: 22,
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    chinese ? '本地推理' : 'On-device inference',
+                    style: const TextStyle(
+                      color: _configTextPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    value
+                        ? (chinese
+                              ? '已启用设备端 Qwen 模型'
+                              : 'On-device Qwen model enabled')
+                        : (chinese
+                              ? '开启后使用设备端模型，无需配置云端'
+                              : 'Use the on-device model; no cloud config needed'),
+                    style: const TextStyle(
+                      color: _configTextSecondary,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Switch(value: value, onChanged: onChanged),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _AboutActionButton extends StatelessWidget {
   const _AboutActionButton({
     super.key,
@@ -2744,6 +2807,7 @@ class _SettingsPageState extends State<_SettingsPage>
         onLanguageChanged: _handleLanguageChanged,
         onOpenFeedback: () => _setSection(_SettingsSection.feedback),
         onOpenAbout: () => _setSection(_SettingsSection.about),
+        onConfigChanged: _handleConfigChanged,
       ),
       _SettingsSection.connectedApps => _ConnectedAppsSettingsPage(
         clientFuture: widget.createNearbyClientFuture(),
@@ -6245,6 +6309,7 @@ class _SettingsListPage extends StatelessWidget {
     required this.onLanguageChanged,
     required this.onOpenFeedback,
     required this.onOpenAbout,
+    required this.onConfigChanged,
   });
 
   final LlmConfigState config;
@@ -6257,6 +6322,7 @@ class _SettingsListPage extends StatelessWidget {
   final ValueChanged<AppLanguage> onLanguageChanged;
   final VoidCallback onOpenFeedback;
   final VoidCallback onOpenAbout;
+  final ValueChanged<LlmConfigState> onConfigChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -6269,44 +6335,52 @@ class _SettingsListPage extends StatelessWidget {
         _SettingsGroupTitle(title: chinese ? '模型' : 'Models'),
         _SettingsGroupCard(
           children: [
-            _ModelSlotRow(
-              capability: ModelCapability.chat,
-              icon: Icons.chat_bubble_outline_rounded,
-              title: chinese ? '主力推理' : 'Primary reasoning',
-              config: config,
-              onSelected: onSelectModel,
-              onAddModel: onAddModel,
+            _LocalLlmSwitchRow(
+              chinese: chinese,
+              value: config.localLlmEnabled,
+              onChanged: (value) =>
+                  onConfigChanged(config.copyWith(localLlmEnabled: value)),
             ),
-            _ModelSlotRow(
-              capability: ModelCapability.imageAnalysis,
-              icon: Icons.image_search_outlined,
-              title: chinese ? '图片理解' : 'Image understanding',
-              config: config,
-              onSelected: onSelectModel,
-              onAddModel: onAddModel,
-            ),
-            _ModelSlotRow(
-              capability: ModelCapability.imageGeneration,
-              icon: Icons.brush_outlined,
-              title: chinese ? '图片生成' : 'Image generation',
-              config: config,
-              onSelected: onSelectModel,
-              onAddModel: onAddModel,
-            ),
-            _ModelSlotRow(
-              capability: ModelCapability.videoGeneration,
-              icon: Icons.video_camera_back_outlined,
-              title: chinese ? '视频生成' : 'Video generation',
-              config: config,
-              onSelected: onSelectModel,
-              onAddModel: onAddModel,
-            ),
-            _SettingsActionRow(
-              key: const Key('settings_model_management_item'),
-              icon: Icons.tune_rounded,
-              title: chinese ? '模型管理' : 'Model management',
-              onTap: onOpenModelManagement,
-            ),
+            if (!config.localLlmEnabled) ...[
+              _ModelSlotRow(
+                capability: ModelCapability.chat,
+                icon: Icons.chat_bubble_outline_rounded,
+                title: chinese ? '主力推理' : 'Primary reasoning',
+                config: config,
+                onSelected: onSelectModel,
+                onAddModel: onAddModel,
+              ),
+              _ModelSlotRow(
+                capability: ModelCapability.imageAnalysis,
+                icon: Icons.image_search_outlined,
+                title: chinese ? '图片理解' : 'Image understanding',
+                config: config,
+                onSelected: onSelectModel,
+                onAddModel: onAddModel,
+              ),
+              _ModelSlotRow(
+                capability: ModelCapability.imageGeneration,
+                icon: Icons.brush_outlined,
+                title: chinese ? '图片生成' : 'Image generation',
+                config: config,
+                onSelected: onSelectModel,
+                onAddModel: onAddModel,
+              ),
+              _ModelSlotRow(
+                capability: ModelCapability.videoGeneration,
+                icon: Icons.video_camera_back_outlined,
+                title: chinese ? '视频生成' : 'Video generation',
+                config: config,
+                onSelected: onSelectModel,
+                onAddModel: onAddModel,
+              ),
+              _SettingsActionRow(
+                key: const Key('settings_model_management_item'),
+                icon: Icons.tune_rounded,
+                title: chinese ? '模型管理' : 'Model management',
+                onTap: onOpenModelManagement,
+              ),
+            ],
           ],
         ),
         const SizedBox(height: 26),

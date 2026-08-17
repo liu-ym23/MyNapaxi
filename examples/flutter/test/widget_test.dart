@@ -4109,9 +4109,23 @@ void main() {
           .value,
       AppLanguage.chinese,
     );
+    // The on-device LLM switch row above the model slots pushes the language
+    // row out of the 800x600 test viewport; scroll it into view first.
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('settings_language_dropdown')),
+      120,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('settings_language_dropdown')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('English').last);
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Models'),
+      -120,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.pumpAndSettle();
     expect(find.text('Models'), findsOneWidget);
     expect(find.text('App settings'), findsOneWidget);
@@ -4119,6 +4133,12 @@ void main() {
     expect(find.text('应用设置'), findsNothing);
     expect(find.text('获取帮助'), findsNothing);
     expect(find.byKey(const Key('settings_bottom_sheet')), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('settings_language_dropdown')),
+      120,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('settings_language_dropdown')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('简体中文').last);

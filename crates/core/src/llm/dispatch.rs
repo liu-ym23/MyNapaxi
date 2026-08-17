@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::provider::resolve_provider_route;
 use super::sse::{STREAM_RETRY_ATTEMPTS, is_retryable_transport_error, stream_retry_delay_for};
-use super::{LlmStreamEvent, LlmTurn, anthropic, gemini, openai_compatible};
+use super::{LlmStreamEvent, LlmTurn, anthropic, gemini, local_qwen, openai_compatible};
 use crate::capabilities::LlmProviderRoute;
 use crate::session::SessionMessage;
 use crate::tool_registry::ToolDescriptor;
@@ -107,6 +107,13 @@ pub async fn complete_with_history(
     if is_test_noop(config) {
         return Ok(String::new());
     }
+    let route = resolve_provider_route(config)?;
+    // Local on-device model: no api_key / cloud model id, no transport, no retry.
+    if route == LlmProviderRoute::Local {
+        let messages = super::openai_messages_from_mobile_history(messages);
+        let turn = local_qwen::complete_raw(config, &messages, &[]).await?;
+        return Ok(turn.content);
+    }
     if config.api_key.trim().is_empty() {
         anyhow::bail!("LLM API key is required");
     }
@@ -114,7 +121,6 @@ pub async fn complete_with_history(
         anyhow::bail!("LLM model is required");
     }
 
-    let route = resolve_provider_route(config)?;
     with_retry(|| async move {
         match route {
             LlmProviderRoute::Anthropic => anthropic::complete(config, messages).await,
@@ -122,6 +128,7 @@ pub async fn complete_with_history(
             LlmProviderRoute::OpenAiCompatible => {
                 openai_compatible::complete(config, messages).await
             }
+            LlmProviderRoute::Local => unreachable!("local route handled before retry path"),
         }
     })
     .await
@@ -136,6 +143,13 @@ pub async fn complete_turn_with_raw_messages(
     if is_test_noop(config) {
         return Ok(next_scripted_turn().unwrap_or_else(test_noop_turn));
     }
+    let route = resolve_provider_route(config)?;
+    // Local on-device model: no api_key / cloud model id, no transport, no retry.
+    // Resolving the route first keeps local behind the same capability admission
+    // gate as every cloud provider.
+    if route == LlmProviderRoute::Local {
+        return local_qwen::complete_raw(config, messages, tools).await;
+    }
     if config.api_key.trim().is_empty() {
         anyhow::bail!("LLM API key is required");
     }
@@ -143,7 +157,6 @@ pub async fn complete_turn_with_raw_messages(
         anyhow::bail!("LLM model is required");
     }
 
-    let route = resolve_provider_route(config)?;
     with_retry(|| async move {
         match route {
             LlmProviderRoute::OpenAiCompatible => {
@@ -151,6 +164,8 @@ pub async fn complete_turn_with_raw_messages(
             }
             LlmProviderRoute::Anthropic => anthropic::complete_raw(config, messages, tools).await,
             LlmProviderRoute::Gemini => gemini::complete_raw(config, messages, tools).await,
+            // Pre-filtered above; local has no transport to retry.
+            LlmProviderRoute::Local => unreachable!("local route handled before retry path"),
         }
     })
     .await
@@ -171,6 +186,12 @@ where
     if is_test_noop(config) {
         return Ok(next_scripted_turn().unwrap_or_else(test_noop_turn));
     }
+    let route = resolve_provider_route(config)?;
+    // Local on-device model: no api_key / cloud model id, no transport.
+    if route == LlmProviderRoute::Local {
+        return local_qwen::stream_raw_cancelable(config, messages, tools, on_event, should_cancel)
+            .await;
+    }
     if config.api_key.trim().is_empty() {
         anyhow::bail!("LLM API key is required");
     }
@@ -181,7 +202,7 @@ where
         anyhow::bail!("Chat cancelled");
     }
 
-    match resolve_provider_route(config)? {
+    match route {
         LlmProviderRoute::OpenAiCompatible => {
             openai_compatible::stream_raw_cancelable(
                 config,
@@ -198,6 +219,7 @@ where
         LlmProviderRoute::Gemini => {
             gemini::stream_raw_cancelable(config, messages, tools, on_event, should_cancel).await
         }
+        LlmProviderRoute::Local => unreachable!("local route handled before cloud streaming path"),
     }
 }
 
@@ -215,6 +237,15 @@ where
     if is_test_noop(config) {
         return Ok(String::new());
     }
+    let route = resolve_provider_route(config)?;
+    // Local on-device model: no api_key / cloud model id, no transport.
+    if route == LlmProviderRoute::Local {
+        let messages = super::openai_messages_from_mobile_history(messages);
+        let turn =
+            local_qwen::stream_raw_cancelable(config, &messages, &[], on_event, should_cancel)
+                .await?;
+        return Ok(turn.content);
+    }
     if config.api_key.trim().is_empty() {
         anyhow::bail!("LLM API key is required");
     }
@@ -225,7 +256,7 @@ where
         anyhow::bail!("Chat cancelled");
     }
 
-    match resolve_provider_route(config)? {
+    match route {
         LlmProviderRoute::OpenAiCompatible => {
             openai_compatible::stream_cancelable(config, messages, on_event, should_cancel).await
         }
@@ -235,5 +266,6 @@ where
         LlmProviderRoute::Gemini => {
             gemini::stream_cancelable(config, messages, on_event, should_cancel).await
         }
+        LlmProviderRoute::Local => unreachable!("local route handled before cloud streaming path"),
     }
 }

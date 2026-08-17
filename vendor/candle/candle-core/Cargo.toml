@@ -1,0 +1,44 @@
+[package]
+name = "candle-core"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+readme = "README.md"
+
+[dependencies]
+byteorder = { workspace = true }
+gemm = { workspace = true }
+half = { workspace = true, features = ["zerocopy"] }
+float8 = { workspace = true }
+libc = { workspace = true }
+libm = { workspace = true }
+memmap2 = { workspace = true }
+num-traits = { workspace = true }
+num_cpus = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+rayon = { workspace = true }
+safetensors = { workspace = true }
+thiserror = { workspace = true }
+yoke = { workspace = true }
+zerocopy = { workspace = true }
+zip = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokenizers = { workspace = true, features = ["onig"] }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+criterion = { workspace = true }
+
+[features]
+default = []
+
+[[bench]]
+name = "bench_main"
+harness = false

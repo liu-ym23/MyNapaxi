@@ -7,6 +7,64 @@ const String _debugHotReloadTargetFromEnvironment = String.fromEnvironment(
 const String _seenConnectedAppPackagesKey =
     'napaxi.connected_apps.seen_packages.v1';
 
+/// Top overlay shown while the on-device LLM weights are being sideloaded
+/// from the host (first launch after install). Closes automatically when the
+/// transfer completes.
+class _LocalModelDownloadBanner extends StatelessWidget {
+  const _LocalModelDownloadBanner({required this.progress});
+
+  final int progress;
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese =
+        _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    return SafeArea(
+      child: Card(
+        key: const Key('local_model_download_banner'),
+        margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        color: Theme.of(context).colorScheme.secondaryContainer,
+        elevation: 4,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2.4),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      chinese ? '正在准备本地模型…' : 'Preparing on-device model…',
+                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    LinearProgressIndicator(
+                      value: progress / 100,
+                      minHeight: 4,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                '$progress%',
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Hot-reload-friendly debug target.
 ///
 /// Edit the fallback literal while `flutter run` is active, then press `r` to
@@ -804,6 +862,7 @@ class _ChatScreenState extends State<ChatScreen>
       'napaxi_demo.assistant_attachments.v1';
   static const String _seenAttachmentsKey = 'napaxi_demo.seen_attachments.v1';
   static const String _activeScenarioKey = 'napaxi_demo.active_scenario.v1';
+  static const String _localLlmEnabledKey = 'napaxi_demo.local_llm_enabled.v1';
   static const double _sessionMenuFlingVelocity = 650;
   static const double _sessionMenuOpenDragThreshold = 35;
   static const double _projectBackHorizontalDragThreshold = 56;
@@ -938,6 +997,10 @@ class _ChatScreenState extends State<ChatScreen>
   int _channelInputRefreshSerial = 0;
   int _channelInputLoopSerial = 0;
   bool _initialStateRestored = false;
+
+  /// Local-LLM model sideload progress: -1 = not downloading, 0..99 =
+  /// downloading (percent), 100 = done. Drives the top overlay banner.
+  int _localModelDownloadProgress = -1;
   Future<void>? _restorePersistedStateFuture;
   bool _isCheckingForUpdate = false;
   List<DemoChannelInputSource> _channelInputSources = const [];
@@ -2666,9 +2729,41 @@ class _ChatScreenState extends State<ChatScreen>
     unawaited(task);
   }
 
+  /// Sideload hook: fetch the on-device LLM GGUF from the host over
+  /// `adb reverse`, showing a top overlay with the transfer progress while it
+  /// runs. No-op (silently) when no host server is mapped, so it is safe to
+  /// attempt on every restore while local-LLM mode is enabled. This is the
+  /// only way to stage the multi-hundred-MB weights: `adb push` puts them
+  /// where the FUSE layer hides them from this app.
+  Future<void> _maybeFetchLocalLlmModel() async {
+    if (!Platform.isAndroid) return;
+    const channel = MethodChannel('com.napa.app.test/local_llm_tooling');
+    channel.setMethodCallHandler((call) async {
+      if (call.method == 'onProgress') {
+        final pct = (call.arguments as num?)?.toInt() ?? 0;
+        if (mounted) setState(() => _localModelDownloadProgress = pct);
+      }
+      return null;
+    });
+    try {
+      if (mounted) setState(() => _localModelDownloadProgress = 0);
+      await channel.invokeMethod<void>('downloadLocalLlmModel', {
+        'url': 'http://127.0.0.1:8888/model.gguf',
+        'filename': 'qwen2.5-0_5b-instruct-q4_k_m.gguf',
+      });
+      debugPrint('local llm model fetched from host');
+    } catch (_) {
+      // No host server mapped (normal standalone use) — the Rust side will
+      // surface a clear error if the files are missing at inference time.
+    } finally {
+      if (mounted) setState(() => _localModelDownloadProgress = -1);
+    }
+  }
+
   Future<void> _restorePersistedState() async {
     final revision = _configRevision;
     try {
+      unawaited(_maybeFetchLocalLlmModel());
       final profiles = await widget.configStore.loadProfiles();
       final selection = await widget.configStore.loadSelection();
       final preferences = await SharedPreferences.getInstance();
@@ -2704,6 +2799,7 @@ class _ChatScreenState extends State<ChatScreen>
           selection,
           restoredProfiles,
         ),
+        localLlmEnabled: preferences.getBool(_localLlmEnabledKey) ?? false,
       );
       if (!mounted || revision != _configRevision) return;
       setState(() {
@@ -2785,6 +2881,7 @@ class _ChatScreenState extends State<ChatScreen>
           selection,
           restoredProfiles,
         ),
+        localLlmEnabled: false,
       );
       setState(() {
         _config = restoredConfig;
@@ -4673,6 +4770,8 @@ class _ChatScreenState extends State<ChatScreen>
       );
     }
     await widget.configStore.saveSelection(_storedSelectionFromConfig(config));
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(_localLlmEnabledKey, config.localLlmEnabled);
     if (revision != _configRevision) return;
     await _enqueueCodexConfigSync(
       config,
@@ -5798,7 +5897,7 @@ class _ChatScreenState extends State<ChatScreen>
 
     try {
       final client = await _getChatClient();
-      if (agentId != 'engine.cc') {
+        if (agentId != 'engine.cc') {
         await client.configure(
           selectedProfile!,
           responseLanguage: _responseLanguageCode,
@@ -10821,6 +10920,15 @@ $candidate
                 onMinimize: _minimizeBrowserPanel,
               ),
             ),
+            if (_localModelDownloadProgress >= 0 && _localModelDownloadProgress < 100)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: _LocalModelDownloadBanner(
+                  progress: _localModelDownloadProgress,
+                ),
+              ),
         ],
       ),
     );

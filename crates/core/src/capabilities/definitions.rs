@@ -104,6 +104,20 @@ pub fn definitions() -> Vec<CapabilityDefinition> {
                 "required": ["api_key", "model"]
             }),
         ),
+        llm_provider_definition(
+            "napaxi.llm.local",
+            "local",
+            // No api_key / cloud model — the on-device GGUF + tokenizer files are
+            // resolved from `local_llm` config or the files-dir fallback.
+            &["local_model_file", "local_tokenizer_file"],
+            json!({
+                "type": "object",
+                "properties": {
+                    "model_path": {"type": "string"},
+                    "tokenizer_path": {"type": "string"}
+                }
+            }),
+        ),
         tool_definition(
             "napaxi.tool.custom_host",
             CapabilityKind::Tool,

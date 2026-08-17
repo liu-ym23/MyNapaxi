@@ -85,7 +85,74 @@ mod android {
         unsafe { AAsset_close(asset) };
         Ok(result)
     }
+
+    /// Stream an Android asset straight to `dest` without buffering the entire
+    /// payload in memory. Skips work (returns `Ok(())`) when `dest` already
+    /// exists, so it is safe to call on every load — the multi-hundred-MB
+    /// extraction only happens once. Writes to a sibling `<dest>.part` first,
+    /// then atomically renames, so an interrupted extraction never leaves a
+    /// half-written `dest`. Used to materialize bundled on-device LLM weights
+    /// / tokenizer into the app's files dir on first use.
+    pub fn extract_asset_to_file(name: &str, dest: &std::path::Path) -> anyhow::Result<()> {
+        use std::io::Write;
+
+        if dest.exists() {
+            return Ok(());
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let manager = ASSET_MANAGER
+            .lock()
+            .map_err(|e| anyhow::anyhow!("asset manager lock poisoned: {}", e))?
+            .ok_or_else(|| anyhow::anyhow!("Android AssetManager not registered"))?
+            as *mut AAssetManager;
+        let cname = CString::new(name)?;
+        // SAFETY: same rationale as `read_asset` — `manager` is a registered,
+        // non-null `AAssetManager` and `cname` is a valid NUL-terminated string.
+        let asset = unsafe { AAssetManager_open(manager, cname.as_ptr(), AASSET_MODE_STREAMING) };
+        if asset.is_null() {
+            anyhow::bail!("Android asset not found: {}", cname.to_string_lossy());
+        }
+
+        let mut tmp = dest.as_os_str().to_owned();
+        tmp.push(".part");
+        let tmp = std::path::PathBuf::from(tmp);
+
+        let result = (|| -> anyhow::Result<()> {
+            let mut file = std::fs::File::create(&tmp)?;
+            let mut buffer = [0u8; 65536];
+            loop {
+                // SAFETY: `asset` is a non-null, open `AAsset` (checked above,
+                // not yet closed); `buffer` is a live local array.
+                let read =
+                    unsafe { AAsset_read(asset, buffer.as_mut_ptr() as *mut c_void, buffer.len()) };
+                if read < 0 {
+                    anyhow::bail!("failed to read Android asset: {}", cname.to_string_lossy());
+                }
+                if read == 0 {
+                    break;
+                }
+                file.write_all(&buffer[..read as usize])?;
+            }
+            file.sync_all()?;
+            std::fs::rename(&tmp, dest)?;
+            Ok(())
+        })();
+        // SAFETY: close exactly once, regardless of read outcome. On failure the
+        // `.part` file is left behind and overwritten on the next attempt.
+        unsafe { AAsset_close(asset) };
+        result
+    }
 }
 
 #[cfg(target_os = "android")]
-pub use android::{read_asset, register_asset_manager};
+pub use android::{extract_asset_to_file, read_asset, register_asset_manager};
+
+#[cfg(not(target_os = "android"))]
+/// No-op stub: asset extraction is only available on Android. Host builds (and
+/// tests) resolve on-device LLM files directly from configured paths or the
+/// files-dir fallback instead.
+pub fn extract_asset_to_file(_name: &str, _dest: &std::path::Path) -> anyhow::Result<()> {
+    anyhow::bail!("Android asset extraction is only available on Android")
+}

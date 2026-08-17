@@ -121,6 +121,7 @@ class _LlmConfigPageState extends State<_LlmConfigPage> {
   late Map<ModelCapability, String> _selectedProfileIdByCapability;
   late final TextEditingController _systemPromptController;
   late final TextEditingController _maxToolIterationsController;
+  late bool _localLlmEnabled;
 
   @override
   void initState() {
@@ -136,6 +137,7 @@ class _LlmConfigPageState extends State<_LlmConfigPage> {
     _maxToolIterationsController = TextEditingController(
       text: widget.initialConfig.maxToolIterations.toString(),
     );
+    _localLlmEnabled = widget.initialConfig.localLlmEnabled;
   }
 
   @override
@@ -156,6 +158,7 @@ class _LlmConfigPageState extends State<_LlmConfigPage> {
         systemPrompt: _systemPromptController.text.trim(),
         maxToolIterations: _configuredMaxToolIterations,
         contextEngine: widget.initialConfig.contextEngine,
+        localLlmEnabled: _localLlmEnabled,
       ),
     );
   }
@@ -314,7 +317,19 @@ class _LlmConfigPageState extends State<_LlmConfigPage> {
             _EmbeddedSettingsHeader(title: strings.llmConfigurationTitle),
             const SizedBox(height: 12),
           ],
-          _SettingsSectionHeader(title: strings.savedModelsTitle),
+          _LocalLlmToggle(
+            value: _localLlmEnabled,
+            onChanged: (value) {
+              setState(() => _localLlmEnabled = value);
+              _emitConfigChanged();
+            },
+          ),
+          const SizedBox(height: 16),
+          if (_localLlmEnabled) ...[
+            _LocalLlmStatus(),
+            const SizedBox(height: 24),
+          ] else ...[
+            _SettingsSectionHeader(title: strings.savedModelsTitle),
           const SizedBox(height: 12),
           Align(
             alignment: Alignment.centerLeft,
@@ -386,6 +401,7 @@ class _LlmConfigPageState extends State<_LlmConfigPage> {
             onChanged: (_) => _emitConfigChanged(),
           ),
           const SizedBox(height: 24),
+          ],
           _SettingsSectionHeader(
             title: strings.languageTitle,
             description: strings.languageDescription,
@@ -428,6 +444,107 @@ class _EmptyModelList extends StatelessWidget {
               color: _configTextPrimary,
               fontSize: 15,
               fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LocalLlmToggle extends StatelessWidget {
+  const _LocalLlmToggle({required this.value, required this.onChanged});
+
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese = _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    return Container(
+      key: const Key('local_llm_toggle'),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        color: _configSurface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _configBorderFaint),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            value ? Icons.memory_rounded : Icons.memory_outlined,
+            color: _configTextSecondary,
+            size: 22,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  chinese ? '启用本地 LLM' : 'Enable on-device LLM',
+                  style: const TextStyle(
+                    color: _configTextPrimary,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  chinese
+                      ? '开启后使用设备端 Qwen 模型，无需配置云端模型。'
+                      : 'Run the on-device Qwen model; no cloud model required.',
+                  style: const TextStyle(
+                    color: _configTextSecondary,
+                    fontSize: 13,
+                    height: 1.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(value: value, onChanged: onChanged),
+        ],
+      ),
+    );
+  }
+}
+
+class _LocalLlmStatus extends StatelessWidget {
+  const _LocalLlmStatus();
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese = _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    return Container(
+      key: const Key('local_llm_status'),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _configSurface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _configBorderFaint),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            chinese ? '设备端推理已启用' : 'On-device inference enabled',
+            style: const TextStyle(
+              color: _configTextPrimary,
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            chinese
+                ? '使用内置 Qwen2.5-0.5B 模型（CPU 推理）。请将 GGUF 模型文件放入应用内部目录的 local-llm/ 子目录。'
+                : 'Using the bundled Qwen2.5-0.5B model (CPU inference). Place the '
+                    'GGUF model file under the app internal local-llm/ directory.',
+            style: const TextStyle(
+              color: _configTextSecondary,
+              fontSize: 13,
+              height: 1.35,
             ),
           ),
         ],

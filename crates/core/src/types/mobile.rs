@@ -86,6 +86,10 @@ pub struct PlatformLlmConfig {
     /// the interrupt path, so deriving Default is preferred over a manual impl.
     #[serde(default = "default_interrupt_marker_enabled")]
     pub interrupt_marker_enabled: bool,
+    /// On-device local LLM settings. Only consulted when `provider == "local"`
+    /// (a first-class provider route); cloud providers ignore this entirely.
+    #[serde(default)]
+    pub local_llm: LocalLlmConfig,
 }
 
 fn default_response_language() -> String {
@@ -94,6 +98,71 @@ fn default_response_language() -> String {
 
 fn default_interrupt_marker_enabled() -> bool {
     true
+}
+
+/// On-device local LLM configuration (CPU-only Qwen2 GGUF via vendored candle).
+///
+/// Selected by setting the provider to `"local"` on `PlatformLlmConfig`; this
+/// struct then carries the model/tokenizer locations and generation knobs.
+/// `model_path` / `tokenizer_path` are optional explicit overrides — when unset
+/// or pointing at a missing file, the provider falls back to
+/// `<files_dir>/local-llm/<default>` (see `llm::local_qwen`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalLlmConfig {
+    #[serde(default)]
+    pub model_path: Option<String>,
+    #[serde(default)]
+    pub tokenizer_path: Option<String>,
+    /// Sampling temperature. Near-greedy (low) values make the small model follow
+    /// the `<tool_call>` format far more reliably than diverse sampling does.
+    #[serde(default = "default_local_temperature")]
+    pub temperature: f64,
+    /// Cap on generated tokens per round. Sized for tool calls and short replies
+    /// so the model cannot burn time rambling to a large cap.
+    #[serde(default = "default_local_max_new_tokens")]
+    pub max_new_tokens: usize,
+    /// Fixed sampling seed for reproducibility across runs.
+    #[serde(default = "default_local_seed")]
+    pub seed: u64,
+    /// Repeat penalty applied over the last `repeat_last_n` generated tokens.
+    #[serde(default = "default_local_repeat_penalty")]
+    pub repeat_penalty: f32,
+    #[serde(default = "default_local_repeat_last_n")]
+    pub repeat_last_n: usize,
+}
+
+impl Default for LocalLlmConfig {
+    fn default() -> Self {
+        Self {
+            model_path: None,
+            tokenizer_path: None,
+            temperature: default_local_temperature(),
+            max_new_tokens: default_local_max_new_tokens(),
+            seed: default_local_seed(),
+            repeat_penalty: default_local_repeat_penalty(),
+            repeat_last_n: default_local_repeat_last_n(),
+        }
+    }
+}
+
+fn default_local_temperature() -> f64 {
+    0.1
+}
+
+fn default_local_max_new_tokens() -> usize {
+    96
+}
+
+fn default_local_seed() -> u64 {
+    0
+}
+
+fn default_local_repeat_penalty() -> f32 {
+    1.1
+}
+
+fn default_local_repeat_last_n() -> usize {
+    64
 }
 
 /// Context engine configuration for long-running sessions.
