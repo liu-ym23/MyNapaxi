@@ -210,6 +210,9 @@ class ContextStatus {
   final int? preflightEstimatedTokens;
   final int cacheReadTokens;
   final int cacheWriteTokens;
+  final int? lastOutputTokens;
+  final int? lastTotalTokens;
+  final int? lastReasoningTokens;
   final String contextWindowSource;
   final int nativeContextWindowTokens;
   final String nativeContextWindowSource;
@@ -269,6 +272,9 @@ class ContextStatus {
     this.preflightEstimatedTokens,
     this.cacheReadTokens = 0,
     this.cacheWriteTokens = 0,
+    this.lastOutputTokens,
+    this.lastTotalTokens,
+    this.lastReasoningTokens,
     this.contextWindowSource = 'unknown',
     int? nativeContextWindowTokens,
     this.nativeContextWindowSource = 'unknown',
@@ -369,6 +375,9 @@ class ContextStatus {
       ),
       cacheReadTokens: _intValue(map['cache_read_tokens']),
       cacheWriteTokens: _intValue(map['cache_write_tokens']),
+      lastOutputTokens: _optionalIntValue(map['last_output_tokens']),
+      lastTotalTokens: _optionalIntValue(map['last_total_tokens']),
+      lastReasoningTokens: _optionalIntValue(map['last_reasoning_tokens']),
       contextWindowSource: map['context_window_source'] as String? ?? 'unknown',
       nativeContextWindowTokens:
           _optionalIntValue(map['native_context_window_tokens']) ??

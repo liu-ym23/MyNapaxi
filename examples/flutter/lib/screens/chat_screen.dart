@@ -1239,6 +1239,8 @@ class _ChatScreenState extends State<ChatScreen>
     return session.copyWith(messages: List.unmodifiable(messages));
   }
 
+  BenchmarkUiController? _benchmarkController;
+
   @override
   void initState() {
     super.initState();
@@ -1267,6 +1269,27 @@ class _ChatScreenState extends State<ChatScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_checkForUpdates(automatic: true));
     });
+    if (pendingBenchmarkPayload != null) {
+      unawaited(_startBenchmarkUiMode(pendingBenchmarkPayload!));
+    }
+  }
+
+  /// Benchmark UI mode (plan B): stage the model profile into the config
+  /// store, wait for the persisted-state restore to pick it up, then hand
+  /// control to the benchmark controller which drives the warm-up and
+  /// measured turns through the normal send pipeline.
+  Future<void> _startBenchmarkUiMode(Map<String, dynamic> payload) async {
+    final controller = BenchmarkUiController(
+      payload,
+      _BenchmarkUiHooks(this),
+    );
+    _benchmarkController = controller;
+    // Wait for the initial persisted-state restore so our staged profile
+    // is the one the UI chat pipeline configures.
+    try {
+      await _restorePersistedStateFuture;
+    } catch (_) {}
+    await controller.run();
   }
 
   @override
@@ -5842,6 +5865,13 @@ class _ChatScreenState extends State<ChatScreen>
           )
           .listen(
             (event) {
+              if (_benchmarkController != null && event is sdk.ToolCallEvent) {
+                _traceChat(
+                  'benchmark tool-call #${_benchmarkController!.result.toolCallCount + 1}: '
+                  '${event.name} ${event.arguments.length > 60 ? event.arguments.substring(0, 60) : event.arguments}',
+                );
+              }
+              _benchmarkController?.onEvent(event);
               if (!mounted) return;
               void markRun({
                 sdk.SessionRunStatus status = sdk.SessionRunStatus.running,
@@ -6331,6 +6361,7 @@ class _ChatScreenState extends State<ChatScreen>
               _traceChat(
                 'stream-done session=$sessionId assistant=$currentAssistantMessageId',
               );
+              _benchmarkController?.onStreamDone();
               final run = _sessionRuns[sessionId];
               final producedSince = run?.startedAt;
               if (run == null || !run.isTerminal) {
@@ -11324,4 +11355,127 @@ enum _UpdateInstallStage {
   installerOpened,
   permissionRequired,
   failed,
+}
+
+
+/// BenchmarkUiHooks implementation bound to the live ChatScreen state.
+class _BenchmarkUiHooks extends BenchmarkUiHooks {
+  _BenchmarkUiHooks(this._state);
+
+  final _ChatScreenState _state;
+
+  @override
+  Future<void> stageModelConfig(BenchmarkConfig config) async {
+    // Write the benchmark model profile through the normal config store so
+    // the chat pipeline (and the visible config UI) uses it.
+    final store = sdk.NapaxiConfigStore.instance;
+    final profile = LlmModelProfile(
+      id: 'benchmark-profile',
+      name: 'Benchmark Model',
+      provider: config.provider,
+      baseUrl: config.baseUrl,
+      apiKey: config.apiKey,
+      model: config.model,
+      maxTokens: 8192,
+    );
+    await store.saveProfile(
+      _storedProfileFromProfile(profile),
+      apiKey: config.apiKey,
+    );
+    final selection = await store.loadSelection();
+    await store.saveSelection(
+      sdk.NapaxiConfigSelection(
+        selectedProfileId: profile.id,
+        selectedProfileIdByCapability: selection.selectedProfileIdByCapability,
+        systemPrompt: selection.systemPrompt,
+        maxToolIterations: selection.maxToolIterations,
+        contextEngine: selection.contextEngine,
+      ),
+    );
+    // Push the staged config into the live UI state so _sendMessage uses it.
+    final profiles = <LlmModelProfile>[profile];
+    _state._handleConfigChanged(
+      LlmConfigState(
+        profiles: List.unmodifiable(profiles),
+        selectedProfileId: profile.id,
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+  }
+
+  @override
+  void send(String message) {
+    _state._inputController.text = message;
+    _state._sendMessage(const []);
+  }
+
+  @override
+  Future<void> collectTelemetry(BenchmarkResult result) async {
+    final client = await _state._getChatClient();
+    final session = _state._activeSession;
+    final agentId = _state._activeAgentId;
+    // Token usage via the context engine for the active thread.
+    try {
+      final sessionKey = await _state._getSdkSession(client, session.id, agentId);
+      final status = await client.contextStatus(
+        sessionKey.threadId,
+        agentId: agentId,
+      );
+      result.promptTokens = status.lastPromptTokens;
+      result.outputTokens = status.lastOutputTokens;
+      result.totalTokens =
+          status.lastTotalTokens ??
+          (status.lastPromptTokens == null && status.lastOutputTokens == null
+              ? null
+              : (status.lastPromptTokens ?? 0) + (status.lastOutputTokens ?? 0));
+      result.contextStatusRaw.addAll({
+        'last_prompt_tokens': status.lastPromptTokens,
+        'last_output_tokens': status.lastOutputTokens,
+        'cache_read_tokens': status.cacheReadTokens,
+        'cache_write_tokens': status.cacheWriteTokens,
+      });
+    } catch (error) {
+      result.contextStatusRaw['error'] = error.toString();
+    }
+    // LLM trace from the Rust dump for this thread.
+    try {
+      final sessionKey = await _state._getSdkSession(
+        client,
+        session.id,
+        agentId,
+      );
+      final filesDir = (client is NapaxiSdkChatClient)
+          ? client.activeFilesDir
+          : null;
+      if (filesDir != null) {
+        await collectLlmTraceInto(result, filesDir, sessionKey.threadId);
+      }
+    } catch (_) {}
+  }
+
+  @override
+  Future<void> discardPreliminaryTrace() async {
+    try {
+      final client = await _state._getChatClient();
+      final filesDir = (client is NapaxiSdkChatClient)
+          ? client.activeFilesDir
+          : null;
+      if (filesDir == null) return;
+      final session = _state._activeSession;
+      final agentId = _state._activeAgentId;
+      final sessionKey = await _state._getSdkSession(client, session.id, agentId);
+      await truncateLlmTraceBefore(
+        filesDir,
+        sessionKey.threadId,
+        DateTime.now(),
+      );
+    } catch (_) {}
+  }
+
+  @override
+  void benchmarkFinished() {
+    // Result file written; give the UI a moment to render the final state
+    // (useful for screen recordings), then exit so the harness can pull.
+    Future<void>.delayed(const Duration(seconds: 2), () => exit(0));
+  }
 }

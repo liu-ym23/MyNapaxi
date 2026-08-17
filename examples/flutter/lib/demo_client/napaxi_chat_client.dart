@@ -1285,6 +1285,10 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
   static const _legacyMockAgentAppProviderId = 'demo_provider';
 
   sdk.NapaxiEngine? _engine;
+
+  /// The engine's files dir, or null before the engine is created. Used by
+  /// the benchmark UI mode to locate the Rust LLM trace dumps.
+  String? get activeFilesDir => _engine?.filesDir;
   Future<List<sdk.AgentAppPackage>>? _connectedAppReconcileFuture;
   sdk.NapaxiCapabilitySelection _activeCapabilitySelection =
       _withDemoBaselineCapabilities(const sdk.NapaxiCapabilitySelection());
@@ -8115,6 +8119,10 @@ class _DemoAutomationToolExecutor extends sdk.McToolExecutor {
   }
 
   sdk.NapaxiEngine? _engine;
+
+  /// The engine's files dir, or null before the engine is created. Used by
+  /// the benchmark UI mode to locate the Rust LLM trace dumps.
+  String? get activeFilesDir => _engine?.filesDir;
   NapaxiSdkChatClient? _owner;
   String? _defaultTimezone;
   sdk.SessionKey? _currentSession;

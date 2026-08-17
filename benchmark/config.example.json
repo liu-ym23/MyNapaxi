@@ -1,0 +1,8 @@
+{
+  "provider": "openai_compatible",
+  "base_url": "https://api.inferera.com/v1",
+  "api_key": "<your-api-key>",
+  "model": "<model-name>",
+  "max_tool_iterations": 30,
+  "response_language": "zh"
+}
