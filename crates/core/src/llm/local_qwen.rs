@@ -237,17 +237,35 @@ fn build_prefix(_config: &PlatformLlmConfig, tools: &[ToolDescriptor]) -> String
             s.push_str(&format!("- {}{}\n", t.name, params));
         }
         // 0.5B models reliably *recognize* a tool but then describe it in prose
-        // ("I'll use set_alarm…") instead of emitting the <tool_call> block. A
-        // hard format nudge + a worked example is the highest-leverage fix short
-        // of constrained decoding (which candle lacks).
-        s.push_str(
-            "\n调用工具时，整条回复只放 <tool_call> 块，不要任何解释或多余文字。\
+        // ("I'll use set_alarm…") instead of emitting the <tool_call> block, and
+        // sometimes mistake a parameter name for the tool name. A hard format
+        // nudge + a worked example naming a real tool from the list above (with
+        // its real parameter) is the highest-leverage fix short of constrained
+        // decoding (which candle lacks).
+        let first_tool = tools.first();
+        let example = match first_tool {
+            Some(t) => {
+                let first_param = t
+                    .parameters
+                    .get("required")
+                    .and_then(|r| r.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("key");
+                format!(
+                    "{{\"name\": \"{}\", \"arguments\": {{\"{}\": \"value\"}}}}",
+                    t.name, first_param
+                )
+            }
+            None => "{\"name\": \"tool_name\", \"arguments\": {\"key\": \"value\"}}".to_string(),
+        };
+        s.push_str(&format!(
+            "\n调用工具时，整条回复只放一个 <tool_call> 块，不要任何解释。\
+             name 必须从上面列表里选，arguments 里填参数。\n\
              没有合适工具时直接简短回答用户。\n\
              格式示例：\n\
-             <tool_call>\n\
-             {\"name\": \"example_tool\", \"arguments\": {\"key\": \"value\"}}\n\
-             </tool_call>\n",
-        );
+             <tool_call>\n{example}\n</tool_call>\n",
+        ));
     }
     s.push_str("<|im_end|>\n");
     s
@@ -794,19 +812,29 @@ mod host_model_tests {
 
     #[test]
     #[ignore = "requires the Qwen2.5 q4_k_m GGUF staged under /tmp/napaxi-local-test"]
-    fn host_end_to_end_generation() {
+    fn host_tool_call_generation() {
         set_files_dir("/tmp/napaxi-local-test/files");
         let mut config = PlatformLlmConfig::default();
         config.provider = "local".to_string();
         let messages = vec![serde_json::json!({
             "role": "user",
-            "content": "用一句话介绍你自己",
+            "content": "请使用参数 command=\"uname -r\" 调用工具 shell。",
         })];
+        let tools = vec![
+            crate::tool_registry::ToolDescriptor {
+                name: "shell".to_string(),
+                description: "run a shell command".to_string(),
+                parameters: serde_json::json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}),
+                effect: Default::default(),
+            },
+        ];
         let turn = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(complete_raw(&config, &messages, &[]))
+            .block_on(complete_raw(&config, &messages, &tools))
             .expect("local turn");
-        assert!(!turn.content.trim().is_empty(), "got: {:?}", turn.content);
+        println!("content: {:?}", turn.content);
+        println!("tool_calls: {:#?}", turn.tool_calls);
+        assert!(!turn.content.trim().is_empty() || !turn.tool_calls.is_empty(), "empty turn");
         println!("output: {}", turn.content);
     }
 }

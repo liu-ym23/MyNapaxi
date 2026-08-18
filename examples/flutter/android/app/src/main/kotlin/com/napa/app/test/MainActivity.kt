@@ -65,10 +65,23 @@ class MainActivity : FlutterActivity() {
         thread(name = "local-llm-download") {
             try {
                 destDir.mkdirs()
-                // Already-complete model: nothing to do.
-                if (dest.isFile && dest.length() > 0) {
-                    handler.post { result.success(dest.length().toDouble()) }
-                    return@thread
+                // Already-complete model (full content length): nothing to do.
+                // A truncated leftover (interrupted install) falls through and
+                // curl's -C - resume completes it.
+                run {
+                    val have = dest.length()
+                    if (dest.isFile && have > 0) {
+                        val expected = fetchTotalLength(url)
+                        if (expected <= 0 || have == expected) {
+                            handler.post { result.success(have.toDouble()) }
+                            return@thread
+                        }
+                        // Stale partial without a .part: keep it — -C -
+                        // resumes from `have` bytes.
+                        if (have > expected) {
+                            dest.delete()
+                        }
+                    }
                 }
                 // Delegate to the system curl: HttpURLConnection stalls
                 // irrecoverably on the adb-reverse USB tunnel, while the
