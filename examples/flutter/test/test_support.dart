@@ -245,6 +245,9 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
   }
 
   @override
+  Future<void> warmupLocalLlm() async {}
+
+  @override
   Future<sdk.CodexAgentEngineConfigResult> syncCodexAgentEngineModel(
     LlmModelProfile profile,
   ) async {

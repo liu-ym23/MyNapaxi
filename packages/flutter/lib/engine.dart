@@ -492,6 +492,14 @@ class NapaxiEngine {
     return result;
   }
 
+  /// Warm the on-device local LLM (provider "local"): load the weights and
+  /// prefill the constant system+tools prefix so the KV cache is hot before
+  /// the first turn. No-op for cloud providers (the Rust side rejects them).
+  Future<Map<String, dynamic>> warmupLocalLlm() async {
+    final raw = await rust_init.warmupLocalLlm(handle: _handle);
+    return Map<String, dynamic>.from(jsonDecode(raw) as Map);
+  }
+
   /// Write Codex app-server configuration into the SDK-managed sandbox.
   ///
   /// Android stores these values under `/root/.codex/` inside the Napaxi Linux

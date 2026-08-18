@@ -33,6 +33,7 @@ pub use crate::runtime::{
 pub use crate::runtime::{
     cancel_session_handle_typed, delete_agent_handle_typed, get_config_handle_typed,
     retract_injected_message_handle_typed, update_config_handle_typed,
+    warmup_local_llm_handle,
     update_custom_tools_handle_typed,
 };
 

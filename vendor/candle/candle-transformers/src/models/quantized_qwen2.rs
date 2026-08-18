@@ -314,6 +314,21 @@ impl ModelWeights {
         }
     }
 
+    /// Truncate every layer's KV cache to its first `to_len` sequence positions
+    /// (dim 2), discarding any suffix / generated tokens while keeping the
+    /// constant prompt prefix cached. Lets a caller reuse a prefix's KV cache
+    /// across calls without re-prefilling it each turn.
+    pub fn truncate_kv_cache(&mut self, to_len: usize) -> Result<()> {
+        for layer in self.layers.iter_mut() {
+            if let Some((k, v)) = layer.kv_cache.take() {
+                let k = k.narrow(2, 0, to_len)?.contiguous()?;
+                let v = v.narrow(2, 0, to_len)?.contiguous()?;
+                layer.kv_cache = Some((k, v));
+            }
+        }
+        Ok(())
+    }
+
     pub fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let (_b_sz, seq_len) = x.dims2()?;
         let mask = if seq_len == 1 {

@@ -7,6 +7,46 @@ const String _debugHotReloadTargetFromEnvironment = String.fromEnvironment(
 const String _seenConnectedAppPackagesKey =
     'napaxi.connected_apps.seen_packages.v1';
 
+/// Top overlay shown while the on-device LLM is warming up (weights load +
+/// system-prompt prefix prefill) right after the weights landed. Closes
+/// automatically when the cache is hot.
+class _LocalModelInitBanner extends StatelessWidget {
+  const _LocalModelInitBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese =
+        _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    return SafeArea(
+      child: Card(
+        key: const Key('local_model_init_banner'),
+        margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        color: Theme.of(context).colorScheme.secondaryContainer,
+        elevation: 4,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2.4),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  chinese ? '正在初始化本地模型…' : 'Initializing on-device model…',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Top overlay shown while the on-device LLM weights are being sideloaded
 /// from the host (first launch after install). Closes automatically when the
 /// transfer completes.
@@ -1001,6 +1041,10 @@ class _ChatScreenState extends State<ChatScreen>
   /// Local-LLM model sideload progress: -1 = not downloading, 0..99 =
   /// downloading (percent), 100 = done. Drives the top overlay banner.
   int _localModelDownloadProgress = -1;
+
+  /// Local-LLM warm-up (weights load + system-prompt prefix prefill) in
+  /// progress. Drives the init banner shown right after the download banner.
+  bool _localModelInitializing = false;
   Future<void>? _restorePersistedStateFuture;
   bool _isCheckingForUpdate = false;
   List<DemoChannelInputSource> _channelInputSources = const [];
@@ -2737,6 +2781,13 @@ class _ChatScreenState extends State<ChatScreen>
   /// where the FUSE layer hides them from this app.
   Future<void> _maybeFetchLocalLlmModel() async {
     if (!Platform.isAndroid) return;
+    // Read the persisted toggle directly: at restore time this runs before
+    // `_config` has been repopulated, so `_config.localLlmEnabled` still
+    // holds the default (false).
+    final preferences = await SharedPreferences.getInstance();
+    final enabled =
+        preferences.getBool(_localLlmEnabledKey) ?? _config.localLlmEnabled;
+    if (!enabled) return;
     const channel = MethodChannel('com.napa.app.test/local_llm_tooling');
     channel.setMethodCallHandler((call) async {
       if (call.method == 'onProgress') {
@@ -2745,18 +2796,45 @@ class _ChatScreenState extends State<ChatScreen>
       }
       return null;
     });
+    var downloaded = false;
     try {
       if (mounted) setState(() => _localModelDownloadProgress = 0);
       await channel.invokeMethod<void>('downloadLocalLlmModel', {
         'url': 'http://127.0.0.1:8888/model.gguf',
         'filename': 'qwen2.5-0_5b-instruct-q4_k_m.gguf',
       });
+      downloaded = true;
       debugPrint('local llm model fetched from host');
     } catch (_) {
       // No host server mapped (normal standalone use) — the Rust side will
       // surface a clear error if the files are missing at inference time.
     } finally {
       if (mounted) setState(() => _localModelDownloadProgress = -1);
+    }
+    if (downloaded) {
+      await _warmupLocalLlmModel();
+    }
+  }
+
+  /// Load the on-device weights and prefill the system+tools prefix so the
+  /// KV cache is hot before the first turn. Shows the init banner while it
+  /// runs (right after the download banner closes). Requires the chat client
+  /// (engine) to exist; skipped silently when it doesn't yet.
+  Future<void> _warmupLocalLlmModel() async {
+    if (!mounted) return;
+    final preferences = await SharedPreferences.getInstance();
+    final enabled =
+        preferences.getBool(_localLlmEnabledKey) ?? _config.localLlmEnabled;
+    if (!enabled) return;
+    setState(() => _localModelInitializing = true);
+    try {
+      final client = await _getChatClient();
+      await client.warmupLocalLlm();
+      debugPrint('local llm prefix warmed');
+    } catch (error) {
+      debugPrint('local llm warmup skipped: $error');
+    } finally {
+      if (mounted) setState(() => _localModelInitializing = false);
     }
   }
 
@@ -10928,6 +11006,13 @@ $candidate
                 child: _LocalModelDownloadBanner(
                   progress: _localModelDownloadProgress,
                 ),
+              ),
+            if (_localModelInitializing)
+              const Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: _LocalModelInitBanner(),
               ),
         ],
       ),

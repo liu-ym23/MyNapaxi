@@ -85,6 +85,10 @@ pub struct Qwen {
     model: ModelWeights,
     tokens: TokenOutputStream,
     device: Device,
+    /// Cached prompt prefix (text + its token length) with its KV cache kept
+    /// warm in `model`, so multi-turn calls that share the same system/tools
+    /// prefix skip re-prefilling it. See [`generate_prompt_cached`].
+    cached_prefix: Option<(String, usize)>,
 }
 
 impl Qwen {
@@ -100,6 +104,7 @@ impl Qwen {
             model,
             tokens: TokenOutputStream::new(tokenizer),
             device,
+            cached_prefix: None,
         })
     }
 
@@ -196,6 +201,127 @@ impl Qwen {
             output.push_str(&text);
         }
         Ok(output)
+    }
+
+    /// Generates one response from a prompt split into a **constant prefix**
+    /// (e.g. the system + tools block, identical across turns) and a **suffix**
+    /// (history + user turn + assistant primer, which changes each turn). The
+    /// prefix's KV cache is forwarded once and reused on subsequent calls with
+    /// the same prefix, so only the suffix is re-prefilled each turn — a large
+    /// speedup for multi-turn dialogue. After generation the cache is
+    /// truncated back to the prefix so the next call can reuse it.
+    ///
+    /// `prefix` and `suffix` must split at a clean token boundary (e.g.
+    /// `...<|im_end|>\n` | `<|im_start|>user...`), which ChatML special tokens
+    /// guarantee, so encoding them separately equals encoding the whole prompt.
+    pub fn generate_prompt_cached(
+        &mut self,
+        prefix: &str,
+        suffix: &str,
+        config: &GenerationConfig,
+    ) -> Result<String> {
+        if config.max_new_tokens == 0 {
+            return Ok(String::new());
+        }
+        let eos = *self
+            .tokens
+            .tokenizer()
+            .get_vocab(true)
+            .get("<|im_end|>")
+            .ok_or_else(|| anyhow::anyhow!("missing <|im_end|> token"))?;
+
+        let prefix_len = self.ensure_prefix_cached(prefix)?;
+
+        let suffix_tokens = self
+            .tokens
+            .tokenizer()
+            .encode(suffix, true)
+            .map_err(E::msg)?
+            .get_ids()
+            .to_vec();
+
+        // Tokenizer borrows are released; now it's safe to mutate the decoder.
+        self.tokens.clear();
+
+        let mut sampler = make_sampler(config);
+        let mut generated_tokens = Vec::new();
+        let mut output = String::new();
+        let mut next_input = None;
+
+        for index in 0..config.max_new_tokens {
+            let logits = if let Some(token) = next_input {
+                let input = Tensor::new(&[token], &self.device)?.unsqueeze(0)?;
+                self.model
+                    .forward(&input, prefix_len + suffix_tokens.len() + index - 1)?
+                    .squeeze(0)?
+            } else {
+                let input =
+                    Tensor::new(suffix_tokens.as_slice(), &self.device)?.unsqueeze(0)?;
+                self.model.forward(&input, prefix_len)?.squeeze(0)?
+            };
+            let logits = if config.repeat_penalty == 1.0 {
+                logits
+            } else {
+                let start = generated_tokens.len().saturating_sub(config.repeat_last_n);
+                candle_transformers::utils::apply_repeat_penalty(
+                    &logits,
+                    config.repeat_penalty,
+                    &generated_tokens[start..],
+                )?
+            };
+
+            let token = sampler.sample(&logits)?;
+            if token == eos {
+                break;
+            }
+            generated_tokens.push(token);
+            next_input = Some(token);
+            if let Some(text) = self.tokens.next_token(token)? {
+                output.push_str(&text);
+            }
+        }
+
+        if let Some(text) = self.tokens.decode_rest()? {
+            output.push_str(&text);
+        }
+
+        // Reset the cache to just the prefix so the next call reuses it.
+        self.model.truncate_kv_cache(prefix_len)?;
+
+        Ok(output)
+    }
+
+    /// Forward `prefix` through the model and record it as the cached prefix
+    /// (no token generation). Warm-up entry point: lets a caller pay the
+    /// prefix prefill cost ahead of the first real turn. Returns the cached
+    /// prefix token length. A no-op returning the existing length when the
+    /// same prefix is already cached.
+    pub fn prefill_prefix(&mut self, prefix: &str) -> Result<usize> {
+        self.ensure_prefix_cached(prefix)
+    }
+
+    /// (Re)build the prefix KV cache only when the prefix text changes; on a
+    /// cache hit the prefix is already in `model`'s KV cache from the
+    /// previous call's truncation (or a prior `prefill_prefix`).
+    fn ensure_prefix_cached(&mut self, prefix: &str) -> Result<usize> {
+        if let Some((cached, len)) = self.cached_prefix.as_ref() {
+            if cached == prefix {
+                return Ok(*len);
+            }
+        }
+        self.model.clear_kv_cache();
+        let prefix_tokens = self
+            .tokens
+            .tokenizer()
+            .encode(prefix, true)
+            .map_err(E::msg)?
+            .get_ids()
+            .to_vec();
+        let input = Tensor::new(prefix_tokens.as_slice(), &self.device)?.unsqueeze(0)?;
+        self.model.forward(&input, 0)?;
+        let prefix_len = prefix_tokens.len();
+        self.cached_prefix = Some((prefix.to_string(), prefix_len));
+        Ok(prefix_len)
     }
 }
 

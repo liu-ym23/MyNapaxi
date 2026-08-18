@@ -98,7 +98,12 @@ fn resolve_one_path(configured: Option<&str>, fallback_name: &str) -> Option<Str
 /// Run the loaded model against a pre-built ChatML `prompt`. Generation is
 /// CPU-bound, so it happens on a blocking thread; the singleton model is loaded
 /// lazily on the first call.
-async fn generate(config: &PlatformLlmConfig, prompt: String, max_new_tokens: usize) -> Result<String> {
+async fn generate(
+    config: &PlatformLlmConfig,
+    prefix: String,
+    suffix: String,
+    max_new_tokens: usize,
+) -> Result<String> {
     let mut gen_cfg = generation_config_from(config);
     gen_cfg.max_new_tokens = max_new_tokens;
     // Extract the bundled tokenizer asset to files_dir on first use (one-time).
@@ -116,10 +121,37 @@ async fn generate(config: &PlatformLlmConfig, prompt: String, max_new_tokens: us
             *guard = Some(Qwen::from_files(&model_path, &tokenizer_path)?);
         }
         let qwen = guard.as_mut().expect("local model just loaded");
-        // `generate_raw` takes an already-formatted ChatML prompt (no template
-        // re-wrapping); `generate` would wrap the whole transcript in a single
-        // user turn, which is wrong for multi-turn tool dialogue.
-        qwen.generate_raw(&prompt, &gen_cfg)
+        // Cache the constant prefix's KV across turns; only the suffix is
+        // re-prefilled. `generate_raw` would re-prefill the whole prompt each
+        // call (and `generate` would mis-wrap it in a single user turn).
+        qwen.generate_prompt_cached(&prefix, &suffix, &gen_cfg)
+    })
+    .await?
+}
+
+/// Load the model (if not yet loaded) and prefill the constant system+tools
+/// prefix so its KV cache is warm before the first real turn. Returns the
+/// cached prefix token length. Same blocking-thread pattern as [`generate`];
+/// callers on Android should ensure the tokenizer asset is staged first.
+pub(crate) async fn warmup_prefix(
+    config: &PlatformLlmConfig,
+    prefix: String,
+) -> Result<usize> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = tokio::task::spawn_blocking(ensure_local_llm_files).await;
+    }
+    let (model_path, tokenizer_path) = resolve_paths(config)?;
+    tokio::task::spawn_blocking(move || -> Result<usize> {
+        let mut guard = LOCAL_QWEN
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            *guard = Some(Qwen::from_files(&model_path, &tokenizer_path)?);
+        }
+        let qwen = guard.as_mut().expect("local model just loaded");
+        qwen.prefill_prefix(&prefix)
     })
     .await?
 }
@@ -130,9 +162,12 @@ pub(super) async fn complete_raw(
     messages: &[Value],
     tools: &[ToolDescriptor],
 ) -> Result<LlmTurn> {
-    let prompt = build_local_prompt(config, messages, tools);
-    dump_prompt_debug(&prompt, tools.len());
-    let text = generate(config, prompt, config.local_llm.max_new_tokens).await?;
+    // Split the prompt into a constant prefix (system + tools) and a per-turn
+    // suffix (history + user + assistant primer). The candle backend keeps the
+    // prefix's KV cache warm across turns, so only the suffix is re-prefilled.
+    let (prefix, suffix) = build_prompt_parts(config, messages, tools);
+    dump_prompt_debug(&format!("{prefix}{suffix}"), tools.len());
+    let text = generate(config, prefix, suffix, config.local_llm.max_new_tokens).await?;
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     Ok(parse_local_turn_with_names(&text, &tool_names))
 }
@@ -186,19 +221,30 @@ where
 
 // ── Prompt assembly ──────────────────────────────────────────────────────
 
-/// Assemble a Qwen2.5 ChatML prompt: cached system prefix (base prompt + tool
-/// catalogue) + recent history + an assistant primer. This is the single
-/// builder used by both production and tests.
+/// Assemble a Qwen2.5 ChatML prompt split into a constant prefix (the system
+/// and tool catalogue, identical across turns) and a per-turn suffix (recent
+/// history plus the assistant primer). The split is at the `<|im_end|>\n` then
+/// `<|im_start|>` boundary (a clean special-token boundary), so the candle
+/// backend can cache the prefix's KV across turns.
+fn build_prompt_parts(
+    config: &PlatformLlmConfig,
+    messages: &[Value],
+    tools: &[ToolDescriptor],
+) -> (String, String) {
+    let prefix = build_prefix(config, tools);
+    let suffix = format!("{}<|im_start|>assistant\n", render_history(messages));
+    (prefix, suffix)
+}
+
+/// Assemble the full ChatML prompt (prefix + suffix). Used by tests.
+#[cfg(test)]
 fn build_local_prompt(
     config: &PlatformLlmConfig,
     messages: &[Value],
     tools: &[ToolDescriptor],
 ) -> String {
-    let mut s = String::new();
-    s.push_str(&build_prefix(config, tools));
-    s.push_str(&render_history(messages));
-    s.push_str("<|im_start|>assistant\n");
-    s
+    let (prefix, suffix) = build_prompt_parts(config, messages, tools);
+    format!("{prefix}{suffix}")
 }
 
 /// The system-prefix turn. Local 0.5B models get a deliberately *short*, fixed
@@ -207,7 +253,7 @@ fn build_local_prompt(
 /// onboarding/behavior script (1500+ chars of scenario + skills) which a 0.5B
 /// model cannot follow and which dominates prefill (every prompt token is a
 /// forward pass on the CPU). `config` is accepted for signature symmetry only.
-fn build_prefix(_config: &PlatformLlmConfig, tools: &[ToolDescriptor]) -> String {
+pub(crate) fn build_prefix(_config: &PlatformLlmConfig, tools: &[ToolDescriptor]) -> String {
     let mut s = String::new();
     s.push_str("<|im_start|>system\n");
     s.push_str(
@@ -812,6 +858,49 @@ mod host_model_tests {
 
     #[test]
     #[ignore = "requires the Qwen2.5 q4_k_m GGUF staged under /tmp/napaxi-local-test"]
+    fn host_warmup_then_two_turns_reuse_prefix() {
+        set_files_dir("/tmp/napaxi-local-test/files");
+        let mut config = PlatformLlmConfig::default();
+        config.provider = "local".to_string();
+        let tools = vec![crate::tool_registry::ToolDescriptor {
+            name: "shell".to_string(),
+            description: "run a shell command".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}),
+            effect: Default::default(),
+        }];
+        let prefix = build_prefix(&config, &tools);
+        // Warm-up: prefill the prefix once.
+        let warmed = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(warmup_prefix(&config, prefix.clone()))
+            .expect("warmup");
+        assert!(warmed > 0, "prefix token count: {warmed}");
+
+        // Turn 1 (hits the warmed prefix) and turn 2 (hits turn 1's truncated
+        // cache): both must produce a well-formed shell call.
+        for prompt in [
+            "请使用参数 command=\"uname -r\" 调用工具 shell。",
+            "请使用参数 command=\"pwd\" 调用工具 shell。",
+        ] {
+            let messages = vec![serde_json::json!({
+                "role": "user",
+                "content": prompt,
+            })];
+            let turn = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(complete_raw(&config, &messages, &tools))
+                .expect("local turn");
+            assert!(
+                turn.tool_calls.iter().any(|call| call.name == "shell"),
+                "expected shell call, got content={:?} calls={:?}",
+                turn.content,
+                turn.tool_calls,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the Qwen2.5 q4_k_m GGUF staged under /tmp/napaxi-local-test"]
     fn host_tool_call_generation() {
         set_files_dir("/tmp/napaxi-local-test/files");
         let mut config = PlatformLlmConfig::default();
@@ -836,5 +925,37 @@ mod host_model_tests {
         println!("tool_calls: {:#?}", turn.tool_calls);
         assert!(!turn.content.trim().is_empty() || !turn.tool_calls.is_empty(), "empty turn");
         println!("output: {}", turn.content);
+    }
+}
+
+#[cfg(test)]
+mod kv_deadlock_tests {
+    use super::*;
+
+    /// Mimic the FFI thread calling the warm-up handle: a plain tokio runtime
+    /// blocking on the warm-up, then a normal turn — reproduces the on-device
+    /// deadlock setup (or proves it clean).
+    #[test]
+    #[ignore = "requires the Qwen2.5 q4_k_m GGUF staged under /tmp/napaxi-local-test"]
+    fn warmup_then_turn_no_deadlock() {
+        set_files_dir("/tmp/napaxi-local-test/files");
+        let mut config = PlatformLlmConfig::default();
+        config.provider = "local".to_string();
+        let tools = vec![crate::tool_registry::ToolDescriptor {
+            name: "shell".to_string(),
+            description: "run".to_string(),
+            parameters: serde_json::json!({}),
+            effect: Default::default(),
+        }];
+        let prefix = build_prefix(&config, &tools);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let warmed = rt.block_on(warmup_prefix(&config, prefix)).expect("warm");
+        assert!(warmed > 0);
+        // Turn on the SAME runtime (like the FRB worker reusing one runtime).
+        let messages = vec![serde_json::json!({"role":"user","content":"你好"})];
+        let turn = rt
+            .block_on(complete_raw(&config, &messages, &tools))
+            .expect("turn after warmup");
+        assert!(!turn.content.is_empty());
     }
 }
