@@ -95,3 +95,8 @@ packages/flutter/android/jniLibs/*/libnapaxi_api_bridge.so
 
 # Local Xcode derived data
 examples/flutter/ios/DerivedDataDevice/
+
+# benchmark
+benchmark/config.local.json
+benchmark/results/
+benchmark/recorder-src/build/
