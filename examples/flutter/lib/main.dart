@@ -34,6 +34,8 @@ import 'package:xterm/xterm.dart';
 
 import 'demo_client/demo_git_provider.dart';
 
+import 'benchmark/benchmark_runner.dart';
+
 part 'models/demo_agent.dart';
 part 'app/analytics.dart';
 part 'app/app.dart';
@@ -160,8 +162,22 @@ String _automationRunMessage(
   return fallback;
 }
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Benchmark UI mode (plan B): when launched with a benchmark payload the
+  // app still renders the real chat UI; the benchmark controller (wired in
+  // ChatScreen) stages the model config, drives the warm-up + measured turns
+  // through the normal send pipeline and writes the result file. The headless
+  // variant remains available via NAPAXI_HEADLESS_BENCHMARK=1.
+  final benchmarkPayload = await readBenchmarkPayload();
+  if (benchmarkPayload != null) {
+    final headless = Platform.environment['NAPAXI_HEADLESS_BENCHMARK'] == '1';
+    if (headless) {
+      await runHeadlessBenchmark(benchmarkPayload);
+      exit(0);
+    }
+    pendingBenchmarkPayload = benchmarkPayload;
+  }
   DemoAnalytics.initialize();
   runApp(const NapaxiApp());
 }

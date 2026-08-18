@@ -1,0 +1,3 @@
+{"id": "alarm-easy", "prompt": "帮我设置一个明天早上 7:30 的闹钟，备注「起床」。", "timeout_seconds": 300, "expect": {"min_tool_calls": 1, "must_contain": ["7:30"]}}
+{"id": "alarm-medium", "prompt": "帮我设置两个闹钟：工作日每天早上 7:00「晨跑」，以及明天晚上 22:30「复盘」。", "timeout_seconds": 300, "expect": {"min_tool_calls": 2}}
+{"id": "alarm-hard", "prompt": "帮我规划下周的提醒：周一到周五每天早上 6:30「早起读书」，周六上午 9:00「羽毛球」，周日晚上 21:00「周计划」。", "timeout_seconds": 300, "expect": {"min_tool_calls": 3}}

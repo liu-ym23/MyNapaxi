@@ -1,5 +1,7 @@
 package com.napa.app.test
 
+import android.content.Intent
+import android.system.Os
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -9,6 +11,12 @@ import java.net.URL
 import kotlin.concurrent.thread
 
 /// Demo activity.
+///
+/// Benchmark launches: a `benchmark_b64` string extra is surfaced through the
+/// "startup extras" method channel so the Dart benchmark runner can drive a
+/// case without UI interaction, and the Rust-side LLM request trace
+/// (crates/core/src/tools/loop/llm_trace.rs) is enabled via an env var before
+/// the Flutter engine starts.
 ///
 /// Model sideload channel — `downloadLocalLlmModel` streams a
 /// GGUF from `url` into `<filesDir>/local-llm/<filename>` on a worker thread
@@ -29,9 +37,31 @@ import kotlin.concurrent.thread
 ///                 'filename': 'qwen2.5-0_5b-instruct-q4_k_m.gguf'})
 class MainActivity : FlutterActivity() {
     private var toolingChannel: MethodChannel? = null
+    private var startupChannel: MethodChannel? = null
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        val isBenchmarkLaunch =
+            intent?.getStringExtra("benchmark_b64") != null
+        if (isBenchmarkLaunch) {
+            runCatching { Os.setenv("NAPAXI_LLM_TRACE", "1", true) }
+        }
+        super.onCreate(savedInstanceState)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        startupChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "com.napa.app.test/startup",
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                if (call.method == "getLaunchExtras") {
+                    result.success(intent?.getStringExtra("benchmark_b64"))
+                } else {
+                    result.notImplemented()
+                }
+            }
+        }
         toolingChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "com.napa.app.test/local_llm_tooling",
@@ -65,10 +95,25 @@ class MainActivity : FlutterActivity() {
         thread(name = "local-llm-download") {
             try {
                 destDir.mkdirs()
-                // Already-complete model: nothing to do.
-                if (dest.isFile && dest.length() > 0) {
-                    handler.post { result.success(dest.length().toDouble()) }
-                    return@thread
+                // Already-complete model (full content length): nothing to do.
+                // A truncated leftover (interrupted install) falls through and
+                // curl's -C - resume completes it.
+                run {
+                    val have = dest.length()
+                    if (dest.isFile && have > 0) {
+                        val expected = fetchTotalLength(url)
+                        if (expected <= 0 || have == expected) {
+                            handler.post { result.success(have.toDouble()) }
+                            return@thread
+                        }
+                        // Stale partial without a .part: restart clean so -C -
+                        // resumes from a size we trust.
+                        if (have < expected) {
+                            // keep it — resume continues from `have` bytes
+                        } else {
+                            dest.delete()
+                        }
+                    }
                 }
                 // Delegate to the system curl: HttpURLConnection stalls
                 // irrecoverably on the adb-reverse USB tunnel, while the
@@ -145,7 +190,14 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        startupChannel?.setMethodCallHandler(null)
+        startupChannel = null
         toolingChannel?.setMethodCallHandler(null)
         toolingChannel = null
         super.cleanUpFlutterEngine(flutterEngine)

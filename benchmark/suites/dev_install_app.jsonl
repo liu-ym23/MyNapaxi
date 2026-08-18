@@ -1,0 +1,1 @@
+{"id": "dev-app-todo", "prompt": "请给我开发并安装一个实用的 Android 应用：一个番茄钟计时器（25分钟工作/5分钟休息循环，有开始暂停按钮）。开发完把 APK 安装到手机上。", "timeout_seconds": 900, "expect": {"required_tool": "install_apk"}, "early_success_tool": "install_apk"}
