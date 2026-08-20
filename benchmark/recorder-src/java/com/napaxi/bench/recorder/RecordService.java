@@ -16,7 +16,8 @@ import android.os.IBinder;
 import java.io.File;
 
 /** Foreground service mirroring the default display into an H264 mp4 until
- * stopped (harness sends `am stopservice` / force-stop). */
+ * the harness delivers the com.napaxi.bench.recorder.STOP action (which
+ * finalizes the container via onDestroy) or force-stops the process. */
 public class RecordService extends Service {
     private MediaProjection projection;
     private VirtualDisplay display;
@@ -28,6 +29,14 @@ public class RecordService extends Service {
     @Override
     @SuppressWarnings({"deprecation", "UnspecifiedRegisterReceiverFlag"})
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // Explicit stop action: finalize the mp4 (MediaRecorder.stop() writes
+        // the moov index) and shut down. `am stopservice` cannot stop a
+        // media-projection foreground service on some ROMs, and force-stop
+        // skips onDestroy entirely — both leave the container unplayable.
+        if (intent != null && "com.napaxi.bench.recorder.STOP".equals(intent.getAction())) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         startInForeground();
         int resultCode = intent != null ? intent.getIntExtra("result_code", 0) : 0;
         Intent data = intent != null ? intent.getParcelableExtra("data") : null;

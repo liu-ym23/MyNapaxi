@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Rebuild the companion screen-recorder APK from source (javac + d8 + aapt2,
-# no gradle needed). Output overwrites ../../bench-recorder.apk.
+# no gradle needed). Output overwrites ../bench-recorder.apk (the copy the
+# harness installs).
 #
 # Requires: Android SDK build-tools (36.x) and platforms/android-36.
 set -euo pipefail
@@ -30,5 +31,5 @@ if [ ! -f "$HERE/build/debug.keystore" ]; then
         -storepass android -keypass android -dname "CN=bench" -keyalg RSA -validity 3650
 fi
 "$BT/apksigner" sign --ks "$HERE/build/debug.keystore" --ks-pass pass:android \
-    --out "$HERE/../../bench-recorder.apk" "$HERE/build/aligned.apk"
-echo "rebuilt: $HERE/../../bench-recorder.apk"
+    --out "$HERE/../bench-recorder.apk" "$HERE/build/aligned.apk"
+echo "rebuilt: $HERE/../bench-recorder.apk"
