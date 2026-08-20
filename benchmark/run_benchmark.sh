@@ -259,10 +259,21 @@ for m in re.finditer(r"text=\"(允许|继续)\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\
 
 stop_and_pull_recording() {
     local fname="$1" dest="$2"
+    # Graceful stop: force-stop kills the process without running
+    # onDestroy, so MediaRecorder.stop() never fires and the mp4 is written
+    # without its moov index (unplayable). The STOP action makes the service
+    # stopSelf() — onDestroy then finalizes the container. force-stop follows
+    # as a belt-and-braces cleanup. Every step is best-effort: a recording
+    # glitch must never abort the run's measurements (set -e would otherwise
+    # kill the whole harness on one failed adb call).
+    "$ADB" -s "$SERIAL" shell am startservice -n "$RECORDER_PACKAGE/.RecordService" \
+        -a com.napaxi.bench.recorder.STOP >/dev/null 2>&1 </dev/null || true
+    sleep 4
     "$ADB" -s "$SERIAL" shell am force-stop "$RECORDER_PACKAGE" >/dev/null 2>&1 </dev/null
-    sleep 1
-    "$ADB" -s "$SERIAL" pull "$recorder_files_dir/$fname" "$dest" >/dev/null 2>&1 </dev/null
-    "$ADB" -s "$SERIAL" shell rm -f "$recorder_files_dir/$fname" >/dev/null 2>&1 </dev/null
+    if ! "$ADB" -s "$SERIAL" pull "$recorder_files_dir/$fname" "$dest" >/dev/null 2>&1 </dev/null; then
+        log_warn "recording pull failed — case metrics still collected: $fname"
+    fi
+    "$ADB" -s "$SERIAL" shell rm -f "$recorder_files_dir/$fname" >/dev/null 2>&1 </dev/null || true
 }
 
 ensure_recorder_installed() {
