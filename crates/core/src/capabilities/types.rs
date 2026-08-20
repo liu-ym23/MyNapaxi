@@ -88,7 +88,7 @@ pub enum LlmProviderRoute {
     Anthropic,
     Gemini,
     /// On-device CPU inference (vendored candle / Qwen2 GGUF). No api key, no
-    /// transport; routed through `llm::local_qwen`.
+    /// transport; routed through `llm::local_lfm`.
     Local,
 }
 

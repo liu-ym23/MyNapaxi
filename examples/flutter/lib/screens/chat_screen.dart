@@ -7,6 +7,46 @@ const String _debugHotReloadTargetFromEnvironment = String.fromEnvironment(
 const String _seenConnectedAppPackagesKey =
     'napaxi.connected_apps.seen_packages.v1';
 
+/// Top overlay shown while the on-device LLM is warming up (weights load +
+/// system-prompt prefix prefill) right after the weights landed. Closes
+/// automatically when the cache is hot.
+class _LocalModelInitBanner extends StatelessWidget {
+  const _LocalModelInitBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final chinese =
+        _AppLanguageScope.languageOf(context) == AppLanguage.chinese;
+    return SafeArea(
+      child: Card(
+        key: const Key('local_model_init_banner'),
+        margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        color: Theme.of(context).colorScheme.secondaryContainer,
+        elevation: 4,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2.4),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  chinese ? '正在初始化本地模型…' : 'Initializing on-device model…',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Top overlay shown while the on-device LLM weights are being sideloaded
 /// from the host (first launch after install). Closes automatically when the
 /// transfer completes.
@@ -1001,6 +1041,10 @@ class _ChatScreenState extends State<ChatScreen>
   /// Local-LLM model sideload progress: -1 = not downloading, 0..99 =
   /// downloading (percent), 100 = done. Drives the top overlay banner.
   int _localModelDownloadProgress = -1;
+
+  /// Local-LLM warm-up (weights load + system-prompt prefix prefill) in
+  /// progress. Drives the init banner shown right after the download banner.
+  bool _localModelInitializing = false;
   Future<void>? _restorePersistedStateFuture;
   bool _isCheckingForUpdate = false;
   List<DemoChannelInputSource> _channelInputSources = const [];
@@ -1302,6 +1346,8 @@ class _ChatScreenState extends State<ChatScreen>
     return session.copyWith(messages: List.unmodifiable(messages));
   }
 
+  BenchmarkUiController? _benchmarkController;
+
   @override
   void initState() {
     super.initState();
@@ -1330,6 +1376,27 @@ class _ChatScreenState extends State<ChatScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_checkForUpdates(automatic: true));
     });
+    if (pendingBenchmarkPayload != null) {
+      unawaited(_startBenchmarkUiMode(pendingBenchmarkPayload!));
+    }
+  }
+
+  /// Benchmark UI mode (plan B): stage the model profile into the config
+  /// store, wait for the persisted-state restore to pick it up, then hand
+  /// control to the benchmark controller which drives the warm-up and
+  /// measured turns through the normal send pipeline.
+  Future<void> _startBenchmarkUiMode(Map<String, dynamic> payload) async {
+    final controller = BenchmarkUiController(
+      payload,
+      _BenchmarkUiHooks(this),
+    );
+    _benchmarkController = controller;
+    // Wait for the initial persisted-state restore so our staged profile
+    // is the one the UI chat pipeline configures.
+    try {
+      await _restorePersistedStateFuture;
+    } catch (_) {}
+    await controller.run();
   }
 
   @override
@@ -2737,6 +2804,13 @@ class _ChatScreenState extends State<ChatScreen>
   /// where the FUSE layer hides them from this app.
   Future<void> _maybeFetchLocalLlmModel() async {
     if (!Platform.isAndroid) return;
+    // Read the persisted toggle directly: at restore time this runs before
+    // `_config` has been repopulated, so `_config.localLlmEnabled` still
+    // holds the default (false).
+    final preferences = await SharedPreferences.getInstance();
+    final enabled =
+        preferences.getBool(_localLlmEnabledKey) ?? _config.localLlmEnabled;
+    if (!enabled) return;
     const channel = MethodChannel('com.napa.app.test/local_llm_tooling');
     channel.setMethodCallHandler((call) async {
       if (call.method == 'onProgress') {
@@ -2745,18 +2819,45 @@ class _ChatScreenState extends State<ChatScreen>
       }
       return null;
     });
+    var downloaded = false;
     try {
       if (mounted) setState(() => _localModelDownloadProgress = 0);
       await channel.invokeMethod<void>('downloadLocalLlmModel', {
         'url': 'http://127.0.0.1:8888/model.gguf',
-        'filename': 'qwen2.5-0_5b-instruct-q4_k_m.gguf',
+        'filename': 'LFM2.5-1.2B-Instruct-Q4_K_M.gguf',
       });
+      downloaded = true;
       debugPrint('local llm model fetched from host');
     } catch (_) {
       // No host server mapped (normal standalone use) — the Rust side will
       // surface a clear error if the files are missing at inference time.
     } finally {
       if (mounted) setState(() => _localModelDownloadProgress = -1);
+    }
+    if (downloaded) {
+      await _warmupLocalLlmModel();
+    }
+  }
+
+  /// Load the on-device weights and prefill the system+tools prefix so the
+  /// KV cache is hot before the first turn. Shows the init banner while it
+  /// runs (right after the download banner closes). Requires the chat client
+  /// (engine) to exist; skipped silently when it doesn't yet.
+  Future<void> _warmupLocalLlmModel() async {
+    if (!mounted) return;
+    final preferences = await SharedPreferences.getInstance();
+    final enabled =
+        preferences.getBool(_localLlmEnabledKey) ?? _config.localLlmEnabled;
+    if (!enabled) return;
+    setState(() => _localModelInitializing = true);
+    try {
+      final client = await _getChatClient();
+      await client.warmupLocalLlm();
+      debugPrint('local llm prefix warmed');
+    } catch (error) {
+      debugPrint('local llm warmup skipped: $error');
+    } finally {
+      if (mounted) setState(() => _localModelInitializing = false);
     }
   }
 
@@ -5941,6 +6042,13 @@ class _ChatScreenState extends State<ChatScreen>
           )
           .listen(
             (event) {
+              if (_benchmarkController != null && event is sdk.ToolCallEvent) {
+                _traceChat(
+                  'benchmark tool-call #${_benchmarkController!.result.toolCallCount + 1}: '
+                  '${event.name} ${event.arguments.length > 60 ? event.arguments.substring(0, 60) : event.arguments}',
+                );
+              }
+              _benchmarkController?.onEvent(event);
               if (!mounted) return;
               void markRun({
                 sdk.SessionRunStatus status = sdk.SessionRunStatus.running,
@@ -6430,6 +6538,7 @@ class _ChatScreenState extends State<ChatScreen>
               _traceChat(
                 'stream-done session=$sessionId assistant=$currentAssistantMessageId',
               );
+              _benchmarkController?.onStreamDone();
               final run = _sessionRuns[sessionId];
               final producedSince = run?.startedAt;
               if (run == null || !run.isTerminal) {
@@ -10929,6 +11038,13 @@ $candidate
                   progress: _localModelDownloadProgress,
                 ),
               ),
+            if (_localModelInitializing)
+              const Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: _LocalModelInitBanner(),
+              ),
         ],
       ),
     );
@@ -11432,4 +11548,150 @@ enum _UpdateInstallStage {
   installerOpened,
   permissionRequired,
   failed,
+}
+
+
+/// BenchmarkUiHooks implementation bound to the live ChatScreen state.
+class _BenchmarkUiHooks extends BenchmarkUiHooks {
+  _BenchmarkUiHooks(this._state);
+
+  final _ChatScreenState _state;
+
+  @override
+  Future<void> stageModelConfig(BenchmarkConfig config) async {
+    // On-device provider: flip the local-LLM toggle instead of staging a
+    // cloud profile — the synthetic local profile drives chat from there.
+    // Then block until the sideload channel finishes (a freshly reset app
+    // re-downloads the ~470MB GGUF from the host); on a no-server host this
+    // fails fast and the warm-up surfaces the missing-model error instead.
+    if (config.provider == 'local') {
+      _state._handleConfigChanged(
+        _state._config.copyWith(localLlmEnabled: true),
+      );
+      debugPrint('[benchmark-ui] waiting for local model files ...');
+      try {
+        const channel = MethodChannel('com.napa.app.test/local_llm_tooling');
+        await channel.invokeMethod<void>('downloadLocalLlmModel', {
+          'url': 'http://127.0.0.1:8888/model.gguf',
+          'filename': 'LFM2.5-1.2B-Instruct-Q4_K_M.gguf',
+        }).timeout(const Duration(minutes: 10));
+        debugPrint('[benchmark-ui] local model files ready');
+      } catch (error) {
+        debugPrint('[benchmark-ui] local model wait failed: $error');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      return;
+    }
+    // Write the benchmark model profile through the normal config store so
+    // the chat pipeline (and the visible config UI) uses it.
+    final store = sdk.NapaxiConfigStore.instance;
+    final profile = LlmModelProfile(
+      id: 'benchmark-profile',
+      name: 'Benchmark Model',
+      provider: config.provider,
+      baseUrl: config.baseUrl,
+      apiKey: config.apiKey,
+      model: config.model,
+      maxTokens: 8192,
+    );
+    await store.saveProfile(
+      _storedProfileFromProfile(profile),
+      apiKey: config.apiKey,
+    );
+    final selection = await store.loadSelection();
+    await store.saveSelection(
+      sdk.NapaxiConfigSelection(
+        selectedProfileId: profile.id,
+        selectedProfileIdByCapability: selection.selectedProfileIdByCapability,
+        systemPrompt: selection.systemPrompt,
+        maxToolIterations: selection.maxToolIterations,
+        contextEngine: selection.contextEngine,
+      ),
+    );
+    // Push the staged config into the live UI state so _sendMessage uses it.
+    final profiles = <LlmModelProfile>[profile];
+    _state._handleConfigChanged(
+      LlmConfigState(
+        profiles: List.unmodifiable(profiles),
+        selectedProfileId: profile.id,
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+  }
+
+  @override
+  void send(String message) {
+    _state._inputController.text = message;
+    _state._sendMessage(const []);
+  }
+
+  @override
+  Future<void> collectTelemetry(BenchmarkResult result) async {
+    final client = await _state._getChatClient();
+    final session = _state._activeSession;
+    final agentId = _state._activeAgentId;
+    // Token usage via the context engine for the active thread.
+    try {
+      final sessionKey = await _state._getSdkSession(client, session.id, agentId);
+      final status = await client.contextStatus(
+        sessionKey.threadId,
+        agentId: agentId,
+      );
+      result.promptTokens = status.lastPromptTokens;
+      result.outputTokens = status.lastOutputTokens;
+      result.totalTokens =
+          status.lastTotalTokens ??
+          (status.lastPromptTokens == null && status.lastOutputTokens == null
+              ? null
+              : (status.lastPromptTokens ?? 0) + (status.lastOutputTokens ?? 0));
+      result.contextStatusRaw.addAll({
+        'last_prompt_tokens': status.lastPromptTokens,
+        'last_output_tokens': status.lastOutputTokens,
+        'cache_read_tokens': status.cacheReadTokens,
+        'cache_write_tokens': status.cacheWriteTokens,
+      });
+    } catch (error) {
+      result.contextStatusRaw['error'] = error.toString();
+    }
+    // LLM trace from the Rust dump for this thread.
+    try {
+      final sessionKey = await _state._getSdkSession(
+        client,
+        session.id,
+        agentId,
+      );
+      final filesDir = (client is NapaxiSdkChatClient)
+          ? client.activeFilesDir
+          : null;
+      if (filesDir != null) {
+        await collectLlmTraceInto(result, filesDir, sessionKey.threadId);
+      }
+    } catch (_) {}
+  }
+
+  @override
+  Future<void> discardPreliminaryTrace() async {
+    try {
+      final client = await _state._getChatClient();
+      final filesDir = (client is NapaxiSdkChatClient)
+          ? client.activeFilesDir
+          : null;
+      if (filesDir == null) return;
+      final session = _state._activeSession;
+      final agentId = _state._activeAgentId;
+      final sessionKey = await _state._getSdkSession(client, session.id, agentId);
+      await truncateLlmTraceBefore(
+        filesDir,
+        sessionKey.threadId,
+        DateTime.now(),
+      );
+    } catch (_) {}
+  }
+
+  @override
+  void benchmarkFinished() {
+    // Result file written; give the UI a moment to render the final state
+    // (useful for screen recordings), then exit so the harness can pull.
+    Future<void>.delayed(const Duration(seconds: 2), () => exit(0));
+  }
 }

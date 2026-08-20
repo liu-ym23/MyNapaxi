@@ -42,7 +42,7 @@ napaxi_skills = { package = "napaxi_skills", path = "../features/skills" }
 # Local on-device LLM (CPU-only Qwen2 GGUF inference via vendored candle).
 # `vendor/candle` is excluded from the workspace; `candle-qwen` resolves its
 # own `workspace = true` deps against `vendor/candle/Cargo.toml`.
-candle-qwen = { path = "../../vendor/candle/candle-qwen" }
+candle-lfm = { path = "../../vendor/candle/candle-lfm" }
 
 # ============================================================================
 # HTTP client

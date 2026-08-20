@@ -95,3 +95,12 @@ packages/flutter/android/jniLibs/*/libnapaxi_api_bridge.so
 
 # Local Xcode derived data
 examples/flutter/ios/DerivedDataDevice/
+
+# On-device LLM: model GGUFs are too large for git. Obtain separately from
+# HuggingFace and sideload to <files_dir>/local-llm/.
+examples/flutter/android/app/src/main/assets/*.gguf
+
+# benchmark
+benchmark/config.local.json
+benchmark/results/
+benchmark/recorder-src/build/

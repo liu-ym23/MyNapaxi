@@ -6,86 +6,22 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-Future<String> registerProject({
-  required PlatformInt64 handle,
-  required String projectId,
-  required String accountId,
-  required String agentId,
-  required String name,
-}) => RustLib.instance.api.crateBridgeProjectRegisterProject(
-  handle: handle,
-  projectId: projectId,
-  accountId: accountId,
-  agentId: agentId,
-  name: name,
-);
 
-Future<String> listProjects({
-  required PlatformInt64 handle,
-  required String accountId,
-  required String agentId,
-}) => RustLib.instance.api.crateBridgeProjectListProjects(
-  handle: handle,
-  accountId: accountId,
-  agentId: agentId,
-);
+            
 
-Future<String> archiveProject({
-  required PlatformInt64 handle,
-  required String projectId,
-  required String accountId,
-  required String agentId,
-}) => RustLib.instance.api.crateBridgeProjectArchiveProject(
-  handle: handle,
-  projectId: projectId,
-  accountId: accountId,
-  agentId: agentId,
-);
+            Future<String>  registerProject({required PlatformInt64 handle , required String projectId , required String accountId , required String agentId , required String name }) => RustLib.instance.api.crateBridgeProjectRegisterProject(handle: handle, projectId: projectId, accountId: accountId, agentId: agentId, name: name);
 
-Future<String> getSessionPlacement({
-  required PlatformInt64 handle,
-  required String sessionKeyJson,
-}) => RustLib.instance.api.crateBridgeProjectGetSessionPlacement(
-  handle: handle,
-  sessionKeyJson: sessionKeyJson,
-);
+Future<String>  listProjects({required PlatformInt64 handle , required String accountId , required String agentId }) => RustLib.instance.api.crateBridgeProjectListProjects(handle: handle, accountId: accountId, agentId: agentId);
 
-Future<String> listSessionPlacements({
-  required PlatformInt64 handle,
-  required String accountId,
-  required String agentId,
-}) => RustLib.instance.api.crateBridgeProjectListSessionPlacements(
-  handle: handle,
-  accountId: accountId,
-  agentId: agentId,
-);
+Future<String>  archiveProject({required PlatformInt64 handle , required String projectId , required String accountId , required String agentId }) => RustLib.instance.api.crateBridgeProjectArchiveProject(handle: handle, projectId: projectId, accountId: accountId, agentId: agentId);
 
-Future<String> moveSessionToProject({
-  required PlatformInt64 handle,
-  required String sessionKeyJson,
-  String? projectId,
-  required String workspacePolicy,
-  PlatformInt64? expectedRevision,
-}) => RustLib.instance.api.crateBridgeProjectMoveSessionToProject(
-  handle: handle,
-  sessionKeyJson: sessionKeyJson,
-  projectId: projectId,
-  workspacePolicy: workspacePolicy,
-  expectedRevision: expectedRevision,
-);
+Future<String>  getSessionPlacement({required PlatformInt64 handle , required String sessionKeyJson }) => RustLib.instance.api.crateBridgeProjectGetSessionPlacement(handle: handle, sessionKeyJson: sessionKeyJson);
 
-Future<String> listProjectFiles({
-  required PlatformInt64 handle,
-  required String projectId,
-  required String accountId,
-  required String agentId,
-  String? subdir,
-  required bool recursive,
-}) => RustLib.instance.api.crateBridgeProjectListProjectFiles(
-  handle: handle,
-  projectId: projectId,
-  accountId: accountId,
-  agentId: agentId,
-  subdir: subdir,
-  recursive: recursive,
-);
+Future<String>  listSessionPlacements({required PlatformInt64 handle , required String accountId , required String agentId }) => RustLib.instance.api.crateBridgeProjectListSessionPlacements(handle: handle, accountId: accountId, agentId: agentId);
+
+Future<String>  moveSessionToProject({required PlatformInt64 handle , required String sessionKeyJson , String? projectId , required String workspacePolicy , PlatformInt64? expectedRevision }) => RustLib.instance.api.crateBridgeProjectMoveSessionToProject(handle: handle, sessionKeyJson: sessionKeyJson, projectId: projectId, workspacePolicy: workspacePolicy, expectedRevision: expectedRevision);
+
+Future<String>  listProjectFiles({required PlatformInt64 handle , required String projectId , required String accountId , required String agentId , String? subdir , required bool recursive }) => RustLib.instance.api.crateBridgeProjectListProjectFiles(handle: handle, projectId: projectId, accountId: accountId, agentId: agentId, subdir: subdir, recursive: recursive);
+
+            
+            

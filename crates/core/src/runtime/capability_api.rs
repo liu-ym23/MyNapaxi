@@ -67,6 +67,34 @@ pub fn update_config_handle_typed(handle: i64, config_json: &str) -> CoreResult<
     }
 }
 
+/// Warm up the on-device local LLM: load the model (if needed) and prefill
+/// the constant system+tools prefix so the KV cache is hot before the first
+/// turn. Enumerates the engine's tool registry and applies the same capability
+/// filter the tool loop uses, so the warmed prefix matches the first turn's
+/// prefix. Returns `{"ok":true,"prefix_tokens":N}` or
+/// `{"ok":false,"error":"..."}`.
+pub async fn warmup_local_llm_handle(handle: i64) -> String {
+    // SAFETY: `handle` is a live engine handle produced by `create_engine_handle`; `handle_to_arc` returns `None` for a `0`/invalid handle rather than dereferencing it.
+    let Some(engine) = (unsafe { handle_to_arc(handle) }) else {
+        return invalid_handle_json().to_string();
+    };
+    let config = engine.config();
+    if config.provider != "local" {
+        return r#"{"ok":false,"error":"provider is not local"}"#.to_string();
+    }
+    let tools = crate::tool_loop::gather_tool_descriptors_for_config(
+        &config,
+        Some(&engine.tools()),
+        Vec::new(),
+    )
+    .await;
+    let prefix = crate::llm::local_lfm::build_prefix(&config, &tools);
+    match crate::llm::local_lfm::warmup_prefix(&config, prefix).await {
+        Ok(tokens) => format!(r#"{{"ok":true,"prefix_tokens":{tokens}}}"#),
+        Err(error) => format!(r#"{{"ok":false,"error":{:?}}}"#, format!("{error:#}")),
+    }
+}
+
 pub fn get_config_handle(handle: i64) -> String {
     // SAFETY: `handle` is a live engine handle produced by `create_engine_handle`; `handle_to_arc` returns `None` for a `0`/invalid handle rather than dereferencing it.
     let Some(engine) = (unsafe { handle_to_arc(handle) }) else {

@@ -85,6 +85,12 @@ struct ContextStatus<'a> {
     preflight_estimated_tokens: Option<usize>,
     cache_read_tokens: usize,
     cache_write_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_output_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_total_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_reasoning_tokens: Option<usize>,
     context_window_source: &'a str,
     native_context_window_tokens: usize,
     native_context_window_source: &'a str,
@@ -673,6 +679,20 @@ pub(crate) fn context_status_for_config(
             .as_ref()
             .map(|snapshot| snapshot.cache_write_tokens)
             .unwrap_or(0),
+        last_output_tokens: state
+            .last_prompt_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.output_tokens)
+            .filter(|tokens| *tokens > 0),
+        last_total_tokens: state
+            .last_prompt_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.total_tokens),
+        last_reasoning_tokens: state
+            .last_prompt_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.reasoning_tokens)
+            .filter(|tokens| *tokens > 0),
         context_window_source,
         native_context_window_tokens: window.native_tokens,
         native_context_window_source: window.native_source,

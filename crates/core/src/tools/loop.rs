@@ -13,6 +13,8 @@ mod descriptors;
 mod execution;
 #[path = "loop/limits.rs"]
 mod limits;
+#[path = "loop/llm_trace.rs"]
+mod llm_trace;
 #[path = "loop/runtime.rs"]
 mod runtime;
 #[path = "loop/trace.rs"]
@@ -277,6 +279,12 @@ where
         );
         let active_descriptors =
             descriptors_for_skill_protocol(&config.system_prompt, &messages, &descriptors);
+        llm_trace::dump_llm_request(
+            tool_execution_context.as_ref(),
+            config,
+            &messages,
+            &active_descriptors,
+        );
         let turn = llm::complete_turn_with_raw_messages(config, &messages, &active_descriptors)
             .await
             .map_err(|e| e.to_string())?;
@@ -479,6 +487,12 @@ where
         );
         let active_descriptors =
             descriptors_for_skill_protocol(&config.system_prompt, &messages, &descriptors);
+        llm_trace::dump_llm_request(
+            tool_execution_context.as_ref(),
+            config,
+            &messages,
+            &active_descriptors,
+        );
         let mut tool_call_stream_state = StreamingToolCallState::default();
         let turn = llm::stream_turn_with_raw_messages(
             config,

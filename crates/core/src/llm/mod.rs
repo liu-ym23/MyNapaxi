@@ -5,7 +5,7 @@ mod cache_policy;
 mod dispatch;
 mod gemini;
 mod http;
-pub(crate) mod local_qwen;
+pub(crate) mod local_lfm;
 mod messages;
 mod openai_compatible;
 mod output_cap;

@@ -40,7 +40,7 @@ pub use handle::{
 // Capability + config handle wrappers.
 pub use capability_api::{
     capability_status_json_handle, get_config_handle, get_config_handle_typed,
-    update_config_handle, update_config_handle_typed,
+    update_config_handle, update_config_handle_typed, warmup_local_llm_handle,
 };
 
 // Agent registry handle wrappers.

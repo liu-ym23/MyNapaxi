@@ -245,6 +245,12 @@ class FakeNapaxiChatClient implements NapaxiChatClient {
   }
 
   @override
+  Future<void> warmupLocalLlm() async {}
+
+  @override
+  String? get activeFilesDir => null;
+
+  @override
   Future<sdk.CodexAgentEngineConfigResult> syncCodexAgentEngineModel(
     LlmModelProfile profile,
   ) async {

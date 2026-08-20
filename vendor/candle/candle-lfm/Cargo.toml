@@ -1,0 +1,23 @@
+[package]
+name = "candle-lfm"
+version.workspace = true
+edition.workspace = true
+description = "CPU-only LFM2 / LFM2.5 quantized inference library built on Candle"
+license.workspace = true
+publish = false
+
+[lib]
+name = "candle_lfm"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+anyhow = { workspace = true }
+candle = { workspace = true }
+candle-transformers = { workspace = true }
+hf-hub = { workspace = true, optional = true }
+tokenizers = { workspace = true, features = ["fancy-regex"] }
+
+[features]
+default = []
+hf-hub = ["dep:hf-hub"]

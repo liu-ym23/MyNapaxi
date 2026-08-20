@@ -196,6 +196,13 @@ pub mod init {
         )
     }
 
+    /// Warm the on-device local LLM: load weights and prefill the constant
+    /// system+tools prefix so the KV cache is hot before the first turn.
+    /// Returns {"ok":true,"prefix_tokens":N} / {"ok":false,"error":"..."}.
+    pub async fn warmup_local_llm(handle: i64) -> String {
+        napaxi_core::api::engine::warmup_local_llm_handle(handle).await
+    }
+
     #[flutter_rust_bridge::frb(sync)]
     pub fn get_config(handle: i64) -> String {
         wire_string_or_default(

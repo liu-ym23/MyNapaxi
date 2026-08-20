@@ -1,0 +1,4 @@
+{"id": "btc-shell-uname", "prompt": "请使用参数 command=\"uname -r\" 调用工具 shell。", "timeout_seconds": 900, "required_tool": "shell", "required_arguments": {"command": "uname -r"}}
+{"id": "btc-read-file", "prompt": "请先创建文件 /workspace/bench_read.txt 内容为 hello-trace-fixture，然后本轮对话中再使用参数 path=\"/workspace/bench_read.txt\" 调用工具 read_file 读取它。", "timeout_seconds": 900, "setup_prompt": "请创建文件 /workspace/bench_read.txt，内容为一行文本 hello-trace-fixture，创建完成后简单确认即可。", "required_tool": "read_file", "required_arguments": {"path": "/workspace/bench_read.txt"}}
+{"id": "btc-apply-patch", "prompt": "请调用工具 apply_patch，使用 patch 参数在 /workspace/bench_patch.txt 创建文件，内容为一行文本 patched-by-benchmark。", "timeout_seconds": 900, "required_tool": "apply_patch", "required_arguments": {}}
+{"id": "btc-memory-tree", "prompt": "请使用参数 depth=2 调用工具 memory_tree。", "timeout_seconds": 900, "required_tool": "memory_tree", "required_arguments": {"depth": 2}}

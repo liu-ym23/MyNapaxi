@@ -3,7 +3,7 @@ members = [
     "candle-core",
     "candle-nn",
     "candle-transformers",
-    "candle-qwen",
+    "candle-lfm",
 ]
 resolver = "2"
 

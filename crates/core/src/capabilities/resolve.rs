@@ -139,13 +139,15 @@ pub fn tool_capability_id(tool_name: &str) -> Option<String> {
     }
     match tool_name {
         "ask_human" => Some("napaxi.tool.ask_human".to_string()),
-        "memory_read" | "memory_write" | "memory_append" | "memory_search" | "session_recall"
-        | "profile_read" | "profile_write" => Some("napaxi.tool.memory".to_string()),
+        "memory_read" | "memory_write" | "memory_append" | "memory_search" | "memory_tree"
+        | "session_recall" | "profile_read" | "profile_write" => {
+            Some("napaxi.tool.memory".to_string())
+        }
         "read_file" | "apply_patch" | "write_file" | "append_file" | "delete_file"
         | "list_files" | "search_files" | "import_file" => Some("napaxi.tool.file".to_string()),
         "web_search" => Some("napaxi.tool.web_search".to_string()),
         "web_fetch" => Some("napaxi.tool.web_fetch".to_string()),
-        "http_request" => Some("napaxi.tool.http".to_string()),
+        "http_request" | "http" => Some("napaxi.tool.http".to_string()),
         "shell" => Some("napaxi.tool.shell".to_string()),
         "git" | "git_status" | "git_diff" | "git_apply" | "git_clone" | "git_list_branches"
         | "git_switch_branch" | "git_list_remotes" | "git_set_remote" | "git_fetch" => {

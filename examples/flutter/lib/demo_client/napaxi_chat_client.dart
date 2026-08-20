@@ -705,6 +705,14 @@ abstract class NapaxiChatClient {
     sdk.NapaxiCapabilitySelection capabilitySelection,
   );
 
+  /// Warm the on-device local LLM's prefix KV cache. Only meaningful in
+  /// local-LLM mode; resolves after the warm-up completes (or fails).
+  Future<void> warmupLocalLlm();
+
+  /// The engine's files dir, or null before the engine is created. Used by
+  /// tooling to locate Rust-side diagnostic dumps.
+  String? get activeFilesDir;
+
   Future<sdk.CodexAgentEngineConfigResult> syncCodexAgentEngineModel(
     LlmModelProfile profile,
   );
@@ -1285,6 +1293,10 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
   static const _legacyMockAgentAppProviderId = 'demo_provider';
 
   sdk.NapaxiEngine? _engine;
+
+  /// The engine's files dir, or null before the engine is created. Used by
+  /// the benchmark UI mode to locate the Rust LLM trace dumps.
+  String? get activeFilesDir => _engine?.filesDir;
   Future<List<sdk.AgentAppPackage>>? _connectedAppReconcileFuture;
   sdk.NapaxiCapabilitySelection _activeCapabilitySelection =
       _withDemoBaselineCapabilities(const sdk.NapaxiCapabilitySelection());
@@ -1459,6 +1471,25 @@ class NapaxiSdkChatClient implements NapaxiChatClient {
     final engine = _engine;
     if (engine == null) return;
     await _ensureEngine(engine.config);
+  }
+
+  @override
+  Future<void> warmupLocalLlm() async {
+    try {
+      // Build the engine with the synthetic local profile when it doesn't
+      // exist yet (restore-time warm-up runs before any turn configured
+      // it); an existing engine is warmed as-is — if it was last configured
+      // for a cloud provider the Rust side rejects the warm-up harmlessly.
+      await _ensureEngine(localModelProfile.toSdkConfig(
+        responseLanguage: 'zh',
+      ));
+      final engine = _engine;
+      if (engine == null) return;
+      await engine.warmupLocalLlm();
+    } catch (_) {
+      // Warm-up is best-effort; a miss here just means the first turn pays
+      // the prefill cost.
+    }
   }
 
   @override

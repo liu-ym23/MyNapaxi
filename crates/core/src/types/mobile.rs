@@ -106,7 +106,7 @@ fn default_interrupt_marker_enabled() -> bool {
 /// struct then carries the model/tokenizer locations and generation knobs.
 /// `model_path` / `tokenizer_path` are optional explicit overrides — when unset
 /// or pointing at a missing file, the provider falls back to
-/// `<files_dir>/local-llm/<default>` (see `llm::local_qwen`).
+/// `<files_dir>/local-llm/<default>` (see `llm::local_lfm`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalLlmConfig {
     #[serde(default)]

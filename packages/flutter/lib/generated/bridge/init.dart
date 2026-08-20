@@ -42,6 +42,11 @@ Stream<String>  sendToSessionStream({required PlatformInt64 handle , required St
 
 bool  updateConfig({required PlatformInt64 handle , required String configJson }) => RustLib.instance.api.crateBridgeInitUpdateConfig(handle: handle, configJson: configJson);
 
+/// Warm the on-device local LLM: load weights and prefill the constant
+/// system+tools prefix so the KV cache is hot before the first turn.
+/// Returns {"ok":true,"prefix_tokens":N} / {"ok":false,"error":"..."}.
+Future<String>  warmupLocalLlm({required PlatformInt64 handle }) => RustLib.instance.api.crateBridgeInitWarmupLocalLlm(handle: handle);
+
 String  getConfig({required PlatformInt64 handle }) => RustLib.instance.api.crateBridgeInitGetConfig(handle: handle);
 
 void  disposeEngine({required PlatformInt64 handle }) => RustLib.instance.api.crateBridgeInitDisposeEngine(handle: handle);

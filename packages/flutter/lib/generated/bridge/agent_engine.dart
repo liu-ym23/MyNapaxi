@@ -6,21 +6,14 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-String configureCodexAgentEngineJson({
-  required PlatformInt64 handle,
-  required String requestJson,
-}) => RustLib.instance.api.crateBridgeAgentEngineConfigureCodexAgentEngineJson(
-  handle: handle,
-  requestJson: requestJson,
-);
+
+            
+
+            String  configureCodexAgentEngineJson({required PlatformInt64 handle , required String requestJson }) => RustLib.instance.api.crateBridgeAgentEngineConfigureCodexAgentEngineJson(handle: handle, requestJson: requestJson);
 
 /// Intentionally asynchronous at the FRB boundary: native history RPC may
 /// wait for a Codex app-server process and must never block the Flutter UI.
-Future<String> queryCodexAgentEngineHistoryJson({
-  required PlatformInt64 handle,
-  required String requestJson,
-}) =>
-    RustLib.instance.api.crateBridgeAgentEngineQueryCodexAgentEngineHistoryJson(
-      handle: handle,
-      requestJson: requestJson,
-    );
+Future<String>  queryCodexAgentEngineHistoryJson({required PlatformInt64 handle , required String requestJson }) => RustLib.instance.api.crateBridgeAgentEngineQueryCodexAgentEngineHistoryJson(handle: handle, requestJson: requestJson);
+
+            
+            

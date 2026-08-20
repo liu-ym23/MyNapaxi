@@ -55,7 +55,7 @@ pub fn create_engine_handle(config_json: &str, platform_context_json: &str) -> C
     crate::agent_runtime::runs::mark_stale_running_runs_lost(&context.files_dir);
     // Record the files dir so the on-device local LLM can resolve its model /
     // tokenizer (configured paths, else `<files_dir>/local-llm/<default>`).
-    crate::llm::local_qwen::set_files_dir(&context.files_dir);
+    crate::llm::local_lfm::set_files_dir(&context.files_dir);
 
     crate::agent_engine::codex::register_android_native_library_dir(
         &context.files_dir,
