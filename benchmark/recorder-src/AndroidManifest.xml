@@ -12,7 +12,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <service android:name=".RecordService" android:exported="false"
+        <!-- exported so the harness (adb shell, uid 2000) can deliver the
+             com.napaxi.bench.recorder.STOP action; no intent-filter, so only
+             explicit intents reach it. -->
+        <service android:name=".RecordService" android:exported="true"
             android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>
