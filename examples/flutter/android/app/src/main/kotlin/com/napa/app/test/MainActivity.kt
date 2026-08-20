@@ -39,6 +39,14 @@ class MainActivity : FlutterActivity() {
     private var toolingChannel: MethodChannel? = null
     private var startupChannel: MethodChannel? = null
 
+    // Single-flight guard: a download in progress absorbs later requests —
+    // they wait for the SAME outcome instead of spawning a second curl that
+    // would race the first on the same output file (-C - resume from two
+    // writers corrupts the size accounting and neither loop ever converges).
+    private val downloadLock = Object()
+    private var downloadInFlight = false
+    private val downloadWaiters = ArrayList<(Boolean, String?) -> Unit>()
+
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         val isBenchmarkLaunch =
             intent?.getStringExtra("benchmark_b64") != null
@@ -89,9 +97,24 @@ class MainActivity : FlutterActivity() {
         filename: String,
         result: MethodChannel.Result,
     ) {
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        // Single-flight: if a download for the same destination is already
+        // running, piggyback on it instead of racing a second curl.
+        synchronized(downloadLock) {
+            if (downloadInFlight) {
+                downloadWaiters.add { ok, message ->
+                    if (ok) {
+                        handler.post { result.success(0.0) }
+                    } else {
+                        handler.post { result.error("download_failed", message, null) }
+                    }
+                }
+                return
+            }
+            downloadInFlight = true
+        }
         val destDir = File(filesDir, "local-llm")
         val dest = File(destDir, filename)
-        val handler = android.os.Handler(android.os.Looper.getMainLooper())
         thread(name = "local-llm-download") {
             try {
                 destDir.mkdirs()
@@ -104,6 +127,7 @@ class MainActivity : FlutterActivity() {
                         val expected = fetchTotalLength(url)
                         if (expected <= 0 || have == expected) {
                             handler.post { result.success(have.toDouble()) }
+                            settleWaiters(true, null)
                             return@thread
                         }
                         // Stale partial without a .part: restart clean so -C -
@@ -173,10 +197,24 @@ class MainActivity : FlutterActivity() {
                     )
                 }
                 handler.post { result.success(dest.length().toDouble()) }
+                settleWaiters(true, null)
             } catch (e: Exception) {
                 handler.post { result.error("download_failed", e.message, null) }
+                settleWaiters(false, e.message)
             }
         }
+    }
+
+    /// Release the single-flight guard and deliver the outcome to every
+    /// piggybacked caller.
+    private fun settleWaiters(ok: Boolean, message: String?) {
+        val toNotify: List<(Boolean, String?) -> Unit>
+        synchronized(downloadLock) {
+            downloadInFlight = false
+            toNotify = ArrayList(downloadWaiters)
+            downloadWaiters.clear()
+        }
+        for (cb in toNotify) cb(ok, message)
     }
 
     private fun fetchTotalLength(url: String): Long {
