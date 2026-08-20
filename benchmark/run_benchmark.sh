@@ -297,7 +297,11 @@ ensure_recorder_installed() {
 stream_app_heartbeat() {
     local -n seen_ref="$1"
     local pid lines new_count line
-    pid="$("$ADB" -s "$SERIAL" shell pidof "$PACKAGE" 2>/dev/null </dev/null | tr -d '\r')"
+    # `|| true`: pidof exits 1 once the app process is gone (e.g. killed by
+    # the lowmemorykiller mid-case) and adb propagates that; under
+    # pipefail + set -e an unguarded pipeline here would abort the whole
+    # run instead of letting the case record its timeout.
+    pid="$("$ADB" -s "$SERIAL" shell pidof "$PACKAGE" 2>/dev/null </dev/null | tr -d '\r' || true)"
     [ -z "$pid" ] && return 0
     lines="$("$ADB" -s "$SERIAL" shell logcat -d --pid="$pid" -t 400 2>/dev/null </dev/null \
         | grep -E '\[benchmark|napaxiChatTrace' | grep -vE 'stream-done|response-delta-first' || true)"
