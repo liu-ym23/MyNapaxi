@@ -164,8 +164,8 @@ def build_judge_messages(result):
 {chr(10).join(status_bits)}
 
 {RUBRIC}
-请先简要分析助手行为，然后仅输出一行 JSON（不要多余文字、不要代码块标记）：
-{{"score": <0到1的两位小数>, "rationale": "<80字以内的中文评分理由>"}}"""
+请输出一个 JSON 对象（不得输出 JSON 之外的任何文字），先在 analysis 字段中简要分析助手行为，再给分：
+{{"analysis": "<简要分析助手行为>", "score": <0到1的两位小数>, "rationale": "<80字以内的中文评分理由>"}}"""
     return [
         {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
@@ -177,17 +177,25 @@ def parse_verdict(text):
     text = text.strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
     candidate = fenced.group(1) if fenced else text
-    match = re.search(r"\{[^{}]*\"score\"[^{}]*\}", candidate, re.S)
-    if not match:
+    data = None
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        match = re.search(r"\{[^{}]*\"score\"[^{}]*\}", candidate, re.S)
+        if match:
+            try:
+                data = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                data = None
+    if not isinstance(data, dict) or "score" not in data:
         return None
     try:
-        data = json.loads(match.group(0))
         score = float(data["score"])
-        if not 0.0 <= score <= 1.0:
-            return None
-        return {"score": round(score, 2), "rationale": str(data.get("rationale", ""))[:200]}
-    except (KeyError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return None
+    if not 0.0 <= score <= 1.0:
+        return None
+    return {"score": round(score, 2), "rationale": str(data.get("rationale", ""))[:200]}
 
 
 def call_judge(config, messages):
@@ -195,6 +203,7 @@ def call_judge(config, messages):
         "model": config["model"],
         "messages": messages,
         "temperature": 0,
+        "response_format": {"type": "json_object"},
     }).encode("utf-8")
     request = urllib.request.Request(
         config["base_url"].rstrip("/") + "/chat/completions",
@@ -208,8 +217,13 @@ def call_judge(config, messages):
         payload = json.load(response)
     message = payload["choices"][0]["message"]
     usage = payload.get("usage") or {}
+    # Prefer the visible content; thinking models sometimes emit the verdict
+    # only in reasoning_content when the content channel misbehaves.
+    text = message.get("content") or ""
+    if '"score"' not in text and message.get("reasoning_content"):
+        text = f"{text}\n{message['reasoning_content']}"
     return (
-        message.get("content") or "",
+        text,
         usage.get("prompt_tokens"),
         usage.get("completion_tokens"),
     )
