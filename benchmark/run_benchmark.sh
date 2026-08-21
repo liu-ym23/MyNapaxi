@@ -37,6 +37,7 @@ ACTIVITY="$PACKAGE/.MainActivity"
 DEVICE_DIR="/storage/emulated/0/Android/data/$PACKAGE/files/benchmark"
 
 SKIP_BUILD=0
+SKIP_JUDGE=0
 RESET_MODE=reinstall
 SUITES=""
 CASES_FILTER=""
@@ -48,6 +49,7 @@ RECORDER_APK="$BENCH_DIR/bench-recorder.apk"
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-build) SKIP_BUILD=1 ;;
+        --skip-judge) SKIP_JUDGE=1 ;;
         --reset-mode) RESET_MODE="$2"; shift ;;
         --suites) SUITES="$2"; shift ;;
         --cases) CASES_FILTER="$2"; shift ;;
@@ -434,20 +436,10 @@ def print(*args, **kwargs):
 path, wall = sys.argv[1], int(sys.argv[2])
 d = json.load(open(path))
 m = d.get("metrics") or {}
-score = m.get("completion_score")
-grade = m.get("completion_grade") or ""
 outcome = d.get("outcome") or {}
 err = outcome.get("error") or ""
-
-if score is None:
-    verdict, color = "FAILED", RED
-    score_s = "-"
-else:
-    score_s = f"{score:g}"
-    if score >= 1: verdict, color = "PASS", GREEN
-    elif score > 0: verdict, color = "PARTIAL", YELLOW
-    else: verdict, color = "MISS", RED
-
+# Completion is scored off-device by the LLM judge after the run; at case
+# time we only report the outcome and the latency metrics.
 dur = m.get("duration_ms")
 ttft = m.get("ttft_ms")
 tokens = (m.get("tokens") or {}).get("total")
@@ -457,9 +449,10 @@ import datetime
 def stamp():
     return datetime.datetime.now().strftime("%H:%M:%S")
 
-label = f"{verdict:<8}"
-print(f"{stamp()} {color}|{label}|{RESET} {color}{BOLD}score={score_s}{RESET}" + (f"  grade={grade}" if grade else "") +
-      (f"  dur={dur/1000:.1f}s" if dur else ""))
+if err:
+    print(f"{stamp()} {RED}|DONE    |{RESET} {RED}turn ended with error{RESET}" + (f"  dur={dur/1000:.1f}s" if dur else ""))
+else:
+    print(f"{stamp()} {GREEN}|DONE    |{RESET} turn finished" + (f"  dur={dur/1000:.1f}s" if dur else ""))
 if dur is not None or tokens or calls.get("count"):
     extras = []
     if ttft: extras.append(f"ttft={ttft/1000:.1f}s")
@@ -506,6 +499,13 @@ for suite in $SUITES; do
 done
 
 [ "$idx" -gt 0 ] || err "no cases selected"
+
+if [ "$SKIP_JUDGE" != "1" ]; then
+    log_phase "Judging $idx results (LLM-as-a-judge)"
+    if ! python3 "$BENCH_DIR/judge.py" "$OUT_DIR"; then
+        log_warn "judge pass failed — report will lack judge scores for some cases"
+    fi
+fi
 
 log_phase "Aggregating $idx results"
 python3 "$BENCH_DIR/aggregate.py" "$OUT_DIR" >/dev/null

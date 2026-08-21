@@ -1,42 +1,42 @@
-{"id": "btc-shell-uname", "prompt": "请使用参数 command=\"uname -r\" 调用工具 shell。", "timeout_seconds": 300, "required_tool": "shell", "required_arguments": {"command": "uname -r"}}
-{"id": "btc-shell-pwd", "prompt": "请使用参数 command=\"pwd\" 调用工具 shell。", "timeout_seconds": 300, "required_tool": "shell", "required_arguments": {"command": "pwd"}}
-{"id": "btc-shell-uname-all", "prompt": "请使用参数 command=\"uname -a\" 调用工具 shell。", "timeout_seconds": 300, "required_tool": "shell", "required_arguments": {"command": "uname -a"}}
-{"id": "btc-read-file", "prompt": "请先创建文件 /workspace/bench_read.txt 内容为 hello-trace-fixture，然后本轮对话中再使用参数 path=\"/workspace/bench_read.txt\" 调用工具 read_file 读取它。", "timeout_seconds": 300, "setup_prompt": "请创建文件 /workspace/bench_read.txt，内容为一行文本 hello-trace-fixture，创建完成后简单确认即可。", "required_tool": "read_file", "required_arguments": {"path": "/workspace/bench_read.txt"}}
-{"id": "btc-apply-patch", "prompt": "请调用工具 apply_patch，使用 patch 参数在 /workspace/bench_patch.txt 创建文件，内容为一行文本 patched-by-benchmark。", "timeout_seconds": 300, "required_tool": "apply_patch", "required_arguments": {}}
-{"id": "btc-memory-write", "prompt": "不要用技能，直接使用参数 target=\"user\" 和 content=\"benchmark-user-prefers-americano\" 调用工具 memory_write。", "timeout_seconds": 300, "required_tool": "memory_write", "required_arguments": {"target": "user", "content": "benchmark-user-prefers-americano"}}
-{"id": "btc-memory-tree", "prompt": "请使用参数 depth=2 调用工具 memory_tree。", "timeout_seconds": 300, "required_tool": "memory_tree", "required_arguments": {"depth": 2}}
-{"id": "btc-memory-search", "prompt": "请使用参数 query=\"benchmark\" 调用工具 memory_search。", "timeout_seconds": 300, "required_tool": "memory_search", "required_arguments": {"query": "benchmark"}}
-{"id": "btc-memory-read", "prompt": "请使用参数 path=\"USER.md\" 调用工具 memory_read。", "timeout_seconds": 300, "required_tool": "memory_read", "required_arguments": {"path": "USER.md"}}
-{"id": "btc-session-recall", "prompt": "请使用参数 query=\"本会话\" 调用工具 session_recall。", "timeout_seconds": 300, "required_tool": "session_recall", "required_arguments": {}}
-{"id": "btc-skill-list", "prompt": "请调用工具 skill_list（参数留空）。", "timeout_seconds": 300, "required_tool": "skill_list", "required_arguments": {}}
-{"id": "btc-skill-search", "prompt": "请使用参数 query=\"apk\" 调用工具 skill_search。", "timeout_seconds": 300, "required_tool": "skill_search", "required_arguments": {"query": "apk"}}
-{"id": "btc-skill-info", "prompt": "请使用参数 name=\"android-apk-build\" 调用工具 skill_info。", "timeout_seconds": 300, "required_tool": "skill_info", "required_arguments": {}}
-{"id": "btc-mcp-server-list", "prompt": "请调用工具 mcp_server_list（参数留空）。", "timeout_seconds": 300, "required_tool": "mcp_server_list", "required_arguments": {}}
-{"id": "btc-mcp-tool-list", "prompt": "请调用工具 mcp_tool_list（参数留空）。", "timeout_seconds": 300, "required_tool": "mcp_tool_list", "required_arguments": {}}
-{"id": "btc-http", "prompt": "请使用参数 url=\"https://httpbin.org/get\" 和 method=\"GET\" 调用工具 http。", "timeout_seconds": 300, "required_tool": "http", "required_arguments": {"url": "https://httpbin.org/get", "method": "GET"}}
-{"id": "btc-web-fetch", "prompt": "请使用参数 url=\"https://example.com\" 调用工具 web_fetch。", "timeout_seconds": 300, "required_tool": "web_fetch", "required_arguments": {"url": "https://example.com"}}
-{"id": "btc-web-search", "prompt": "请使用参数 query=\"napaxi antgroup\" 调用工具 web_search。", "timeout_seconds": 300, "required_tool": "web_search", "required_arguments": {"query": "napaxi antgroup"}}
-{"id": "btc-get-device-info", "prompt": "请调用工具 get_device_info（参数留空），把设备信息告诉我。", "timeout_seconds": 300, "required_tool": "get_device_info", "required_arguments": {}}
-{"id": "btc-get-clipboard", "prompt": "请调用工具 get_clipboard（参数留空），告诉我当前剪贴板内容。", "timeout_seconds": 300, "required_tool": "get_clipboard", "required_arguments": {}}
-{"id": "btc-set-clipboard", "prompt": "请使用参数 text=\"benchmark-clipboard-payload\" 调用工具 set_clipboard。", "timeout_seconds": 300, "required_tool": "set_clipboard", "required_arguments": {"text": "benchmark-clipboard-payload"}}
-{"id": "btc-get-contacts", "prompt": "请调用工具 get_contacts，参数使用 query=\"\"（不过滤）和 limit=5。", "timeout_seconds": 300, "required_tool": "get_contacts", "required_arguments": {}}
-{"id": "btc-get-location", "prompt": "请调用工具 get_location（参数留空），告诉我当前位置。", "timeout_seconds": 300, "required_tool": "get_location", "required_arguments": {}}
-{"id": "btc-list-calendar", "prompt": "请调用工具 list_calendar_events，参数 start=\"2026-01-01T00:00:00+08:00\"，end=\"2026-12-31T23:59:59+08:00\"。", "timeout_seconds": 300, "required_tool": "list_calendar_events", "required_arguments": {}}
-{"id": "btc-create-calendar", "prompt": "请调用工具 create_calendar_event，参数 title=\"benchmark-event\"，start=\"2027-01-01T10:00:00+08:00\"，end=\"2027-01-01T11:00:00+08:00\"。", "timeout_seconds": 300, "required_tool": "create_calendar_event", "required_arguments": {"title": "benchmark-event"}}
-{"id": "btc-send-notification", "prompt": "请调用工具 send_notification，参数 title=\"benchmark\"，body=\"napaxi-benchmark-notification\"。", "timeout_seconds": 300, "required_tool": "send_notification", "required_arguments": {"title": "benchmark", "body": "napaxi-benchmark-notification"}}
-{"id": "btc-set-alarm", "prompt": "请调用工具 set_alarm，参数 time=\"2099-01-01T08:00:00+08:00\"，message=\"benchmark-alarm\"。", "timeout_seconds": 300, "required_tool": "set_alarm", "required_arguments": {"message": "benchmark-alarm"}}
-{"id": "btc-open-url", "prompt": "请调用工具 open_url，参数 url=\"https://example.com\"。", "timeout_seconds": 300, "required_tool": "open_url", "required_arguments": {"url": "https://example.com"}}
-{"id": "btc-make-call", "prompt": "请调用工具 make_call，参数 phone_number=\"10086\"（只是打开拨号界面，不会真的拨出）。", "timeout_seconds": 300, "required_tool": "make_call", "required_arguments": {"phone_number": "10086"}}
-{"id": "btc-send-sms", "prompt": "请调用工具 send_sms，参数 phone_number=\"10086\"，body=\"benchmark-sms\"（只是打开短信编辑界面，不会真的发送）。", "timeout_seconds": 300, "required_tool": "send_sms", "required_arguments": {"phone_number": "10086"}}
-{"id": "btc-take-photo", "prompt": "请调用工具 take_photo（参数留空），打开相机拍照界面。", "timeout_seconds": 300, "required_tool": "take_photo", "required_arguments": {}, "early_success_tool": "take_photo"}
-{"id": "btc-record-audio", "prompt": "请调用工具 record_audio，参数 duration_seconds=1，录音 1 秒。", "timeout_seconds": 300, "required_tool": "record_audio", "required_arguments": {}}
-{"id": "btc-media-library", "prompt": "请调用工具 media_library，参数 action=\"search\"，media_types=[\"image\"]，limit=5。", "timeout_seconds": 300, "required_tool": "media_library", "required_arguments": {"action": "search"}}
-{"id": "btc-install-apk", "prompt": "请调用工具 install_apk，参数 apk_path=\"/workspace/does-not-exist-benchmark.apk\"（路径不存在，仅验证调用行为）。", "timeout_seconds": 300, "required_tool": "install_apk", "required_arguments": {"apk_path": "/workspace/does-not-exist-benchmark.apk"}}
-{"id": "btc-ask-human", "prompt": "请调用工具 ask_human，参数 question=\"benchmark-test: 这是一条测试提问，无需认真回答\"，options=[\"A\", \"B\"]。", "timeout_seconds": 300, "required_tool": "ask_human", "required_arguments": {"question": "benchmark-test: 这是一条测试提问，无需认真回答"}, "early_success_tool": "ask_human"}
-{"id": "btc-mcp-server-add", "prompt": "请调用工具 mcp_server_add，参数 name=\"bench-mcp\"，url=\"https://example.com/mcp\"。", "timeout_seconds": 300, "required_tool": "mcp_server_add", "required_arguments": {"name": "bench-mcp"}}
-{"id": "btc-mcp-server-activate", "prompt": "请先添加名为 bench-mcp、url 为 https://example.com/mcp 的 MCP 服务器，然后本轮再调用工具 mcp_server_activate，参数 name=\"bench-mcp\"。", "timeout_seconds": 300, "setup_prompt": "请调用 mcp_server_add 工具添加一个 MCP 服务器：name 为 bench-mcp，url 为 https://example.com/mcp。添加完简单确认即可。", "required_tool": "mcp_server_activate", "required_arguments": {"name": "bench-mcp"}}
-{"id": "btc-mcp-server-deactivate", "prompt": "请先添加名为 bench-mcp、url 为 https://example.com/mcp 的 MCP 服务器，然后本轮再调用工具 mcp_server_deactivate，参数 name=\"bench-mcp\"。", "timeout_seconds": 300, "setup_prompt": "请调用 mcp_server_add 工具添加一个 MCP 服务器：name 为 bench-mcp，url 为 https://example.com/mcp。添加完简单确认即可。", "required_tool": "mcp_server_deactivate", "required_arguments": {"name": "bench-mcp"}}
-{"id": "btc-mcp-server-remove", "prompt": "请先添加名为 bench-mcp、url 为 https://example.com/mcp 的 MCP 服务器，然后本轮再调用工具 mcp_server_remove，参数 name=\"bench-mcp\"。", "timeout_seconds": 300, "setup_prompt": "请调用 mcp_server_add 工具添加一个 MCP 服务器：name 为 bench-mcp，url 为 https://example.com/mcp。添加完简单确认即可。", "required_tool": "mcp_server_remove", "required_arguments": {"name": "bench-mcp"}}
-{"id": "btc-skill-install", "prompt": "请调用工具 skill_install，使用 content 参数安装一个技能，content 为一个完整 SKILL.md，开头 frontmatter 为 name: bench-skill-test、version: \"1.0.0\"、description: benchmark test skill，正文一句话即可。", "timeout_seconds": 300, "required_tool": "skill_install", "required_arguments": {}}
-{"id": "btc-skill-remove", "prompt": "请先安装名为 bench-skill-test 的技能（name: bench-skill-test、version: \"1.0.0\"），然后本轮再调用工具 skill_remove，参数 name=\"bench-skill-test\"。", "timeout_seconds": 300, "setup_prompt": "请调用 skill_install 工具，用 content 参数安装技能，SKILL.md frontmatter 为 name: bench-skill-test、version: \"1.0.0\"、description: benchmark test skill，正文一句话。安装完简单确认即可。", "required_tool": "skill_remove", "required_arguments": {"name": "bench-skill-test"}}
-{"id": "btc-skill-load", "prompt": "请调用工具 skill_load，参数 name=\"summarizer\"，加载总结技能的完整说明。", "timeout_seconds": 300, "required_tool": "skill_load", "required_arguments": {}}
+{"id": "btc-shell-uname", "prompt": "请使用参数 command=\"uname -r\" 调用工具 shell。", "timeout_seconds": 300}
+{"id": "btc-shell-pwd", "prompt": "请使用参数 command=\"pwd\" 调用工具 shell。", "timeout_seconds": 300}
+{"id": "btc-shell-uname-all", "prompt": "请使用参数 command=\"uname -a\" 调用工具 shell。", "timeout_seconds": 300}
+{"id": "btc-read-file", "prompt": "请先创建文件 /workspace/bench_read.txt 内容为 hello-trace-fixture，然后本轮对话中再使用参数 path=\"/workspace/bench_read.txt\" 调用工具 read_file 读取它。", "timeout_seconds": 300, "setup_prompt": "请创建文件 /workspace/bench_read.txt，内容为一行文本 hello-trace-fixture，创建完成后简单确认即可。"}
+{"id": "btc-apply-patch", "prompt": "请调用工具 apply_patch，使用 patch 参数在 /workspace/bench_patch.txt 创建文件，内容为一行文本 patched-by-benchmark。", "timeout_seconds": 300}
+{"id": "btc-memory-write", "prompt": "不要用技能，直接使用参数 target=\"user\" 和 content=\"benchmark-user-prefers-americano\" 调用工具 memory_write。", "timeout_seconds": 300}
+{"id": "btc-memory-tree", "prompt": "请使用参数 depth=2 调用工具 memory_tree。", "timeout_seconds": 300}
+{"id": "btc-memory-search", "prompt": "请使用参数 query=\"benchmark\" 调用工具 memory_search。", "timeout_seconds": 300}
+{"id": "btc-memory-read", "prompt": "请使用参数 path=\"USER.md\" 调用工具 memory_read。", "timeout_seconds": 300}
+{"id": "btc-session-recall", "prompt": "请使用参数 query=\"本会话\" 调用工具 session_recall。", "timeout_seconds": 300}
+{"id": "btc-skill-list", "prompt": "请调用工具 skill_list（参数留空）。", "timeout_seconds": 300}
+{"id": "btc-skill-search", "prompt": "请使用参数 query=\"apk\" 调用工具 skill_search。", "timeout_seconds": 300}
+{"id": "btc-skill-info", "prompt": "请使用参数 name=\"android-apk-build\" 调用工具 skill_info。", "timeout_seconds": 300}
+{"id": "btc-mcp-server-list", "prompt": "请调用工具 mcp_server_list（参数留空）。", "timeout_seconds": 300}
+{"id": "btc-mcp-tool-list", "prompt": "请调用工具 mcp_tool_list（参数留空）。", "timeout_seconds": 300}
+{"id": "btc-http", "prompt": "请使用参数 url=\"https://httpbin.org/get\" 和 method=\"GET\" 调用工具 http。", "timeout_seconds": 300}
+{"id": "btc-web-fetch", "prompt": "请使用参数 url=\"https://example.com\" 调用工具 web_fetch。", "timeout_seconds": 300}
+{"id": "btc-web-search", "prompt": "请使用参数 query=\"napaxi antgroup\" 调用工具 web_search。", "timeout_seconds": 300}
+{"id": "btc-get-device-info", "prompt": "请调用工具 get_device_info（参数留空），把设备信息告诉我。", "timeout_seconds": 300}
+{"id": "btc-get-clipboard", "prompt": "请调用工具 get_clipboard（参数留空），告诉我当前剪贴板内容。", "timeout_seconds": 300}
+{"id": "btc-set-clipboard", "prompt": "请使用参数 text=\"benchmark-clipboard-payload\" 调用工具 set_clipboard。", "timeout_seconds": 300}
+{"id": "btc-get-contacts", "prompt": "请调用工具 get_contacts，参数使用 query=\"\"（不过滤）和 limit=5。", "timeout_seconds": 300}
+{"id": "btc-get-location", "prompt": "请调用工具 get_location（参数留空），告诉我当前位置。", "timeout_seconds": 300}
+{"id": "btc-list-calendar", "prompt": "请调用工具 list_calendar_events，参数 start=\"2026-01-01T00:00:00+08:00\"，end=\"2026-12-31T23:59:59+08:00\"。", "timeout_seconds": 300}
+{"id": "btc-create-calendar", "prompt": "请调用工具 create_calendar_event，参数 title=\"benchmark-event\"，start=\"2027-01-01T10:00:00+08:00\"，end=\"2027-01-01T11:00:00+08:00\"。", "timeout_seconds": 300}
+{"id": "btc-send-notification", "prompt": "请调用工具 send_notification，参数 title=\"benchmark\"，body=\"napaxi-benchmark-notification\"。", "timeout_seconds": 300}
+{"id": "btc-set-alarm", "prompt": "请调用工具 set_alarm，参数 time=\"2099-01-01T08:00:00+08:00\"，message=\"benchmark-alarm\"。", "timeout_seconds": 300}
+{"id": "btc-open-url", "prompt": "请调用工具 open_url，参数 url=\"https://example.com\"。", "timeout_seconds": 300}
+{"id": "btc-make-call", "prompt": "请调用工具 make_call，参数 phone_number=\"10086\"（只是打开拨号界面，不会真的拨出）。", "timeout_seconds": 300}
+{"id": "btc-send-sms", "prompt": "请调用工具 send_sms，参数 phone_number=\"10086\"，body=\"benchmark-sms\"（只是打开短信编辑界面，不会真的发送）。", "timeout_seconds": 300}
+{"id": "btc-take-photo", "prompt": "请调用工具 take_photo（参数留空），打开相机拍照界面。", "timeout_seconds": 300, "early_success_tool": "take_photo"}
+{"id": "btc-record-audio", "prompt": "请调用工具 record_audio，参数 duration_seconds=1，录音 1 秒。", "timeout_seconds": 300}
+{"id": "btc-media-library", "prompt": "请调用工具 media_library，参数 action=\"search\"，media_types=[\"image\"]，limit=5。", "timeout_seconds": 300}
+{"id": "btc-install-apk", "prompt": "请调用工具 install_apk，参数 apk_path=\"/workspace/does-not-exist-benchmark.apk\"（路径不存在，仅验证调用行为）。", "timeout_seconds": 300}
+{"id": "btc-ask-human", "prompt": "请调用工具 ask_human，参数 question=\"benchmark-test: 这是一条测试提问，无需认真回答\"，options=[\"A\", \"B\"]。", "timeout_seconds": 300, "early_success_tool": "ask_human"}
+{"id": "btc-mcp-server-add", "prompt": "请调用工具 mcp_server_add，参数 name=\"bench-mcp\"，url=\"https://example.com/mcp\"。", "timeout_seconds": 300}
+{"id": "btc-mcp-server-activate", "prompt": "请先添加名为 bench-mcp、url 为 https://example.com/mcp 的 MCP 服务器，然后本轮再调用工具 mcp_server_activate，参数 name=\"bench-mcp\"。", "timeout_seconds": 300, "setup_prompt": "请调用 mcp_server_add 工具添加一个 MCP 服务器：name 为 bench-mcp，url 为 https://example.com/mcp。添加完简单确认即可。"}
+{"id": "btc-mcp-server-deactivate", "prompt": "请先添加名为 bench-mcp、url 为 https://example.com/mcp 的 MCP 服务器，然后本轮再调用工具 mcp_server_deactivate，参数 name=\"bench-mcp\"。", "timeout_seconds": 300, "setup_prompt": "请调用 mcp_server_add 工具添加一个 MCP 服务器：name 为 bench-mcp，url 为 https://example.com/mcp。添加完简单确认即可。"}
+{"id": "btc-mcp-server-remove", "prompt": "请先添加名为 bench-mcp、url 为 https://example.com/mcp 的 MCP 服务器，然后本轮再调用工具 mcp_server_remove，参数 name=\"bench-mcp\"。", "timeout_seconds": 300, "setup_prompt": "请调用 mcp_server_add 工具添加一个 MCP 服务器：name 为 bench-mcp，url 为 https://example.com/mcp。添加完简单确认即可。"}
+{"id": "btc-skill-install", "prompt": "请调用工具 skill_install，使用 content 参数安装一个技能，content 为一个完整 SKILL.md，开头 frontmatter 为 name: bench-skill-test、version: \"1.0.0\"、description: benchmark test skill，正文一句话即可。", "timeout_seconds": 300}
+{"id": "btc-skill-remove", "prompt": "请先安装名为 bench-skill-test 的技能（name: bench-skill-test、version: \"1.0.0\"），然后本轮再调用工具 skill_remove，参数 name=\"bench-skill-test\"。", "timeout_seconds": 300, "setup_prompt": "请调用 skill_install 工具，用 content 参数安装技能，SKILL.md frontmatter 为 name: bench-skill-test、version: \"1.0.0\"、description: benchmark test skill，正文一句话。安装完简单确认即可。"}
+{"id": "btc-skill-load", "prompt": "请调用工具 skill_load，参数 name=\"summarizer\"，加载总结技能的完整说明。", "timeout_seconds": 300}
