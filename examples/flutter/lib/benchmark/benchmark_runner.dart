@@ -44,14 +44,7 @@ class BenchmarkCase {
       prompt = map['prompt'] as String? ?? '',
       setupPrompt = map['setup_prompt'] as String?,
       timeoutSeconds = (map['timeout_seconds'] as num?)?.toInt() ?? 300,
-      expect = Map<String, dynamic>.from(map['expect'] as Map? ?? const {}),
-      requiredTool = (map['required_tool'] as String?) ??
-          (map['expect'] as Map?)?['required_tool'] as String?,
-      requiredArguments = Map<String, dynamic>.from(
-        map['required_arguments'] as Map? ?? const {},
-      ),
-      earlySuccessTool = (map['early_success_tool'] as String?) ??
-          (map['expect'] as Map?)?['early_success_tool'] as String?;
+      earlySuccessTool = map['early_success_tool'] as String?;
 
   final String id;
   final String prompt;
@@ -63,26 +56,13 @@ class BenchmarkCase {
   final String? setupPrompt;
 
   final int timeoutSeconds;
-  final Map<String, dynamic> expect;
 
-  /// The tool the case requires the agent to invoke (basic-tool-call rubric
-  /// when [requiredArguments] pins arguments; otherwise "called at all"
-  /// counts as success — used by scenario suites such as dev-install-app).
-  final String? requiredTool;
-
-  /// Basic-tool-call suite: the arguments the prompt pins down. A call counts
-  /// as "correct" when every entry here appears in the call's parsed
-  /// arguments with a matching value (string compared loosely, ignoring
-  /// surrounding whitespace).
-  final Map<String, dynamic> requiredArguments;
-
-  /// Tool whose invocation alone marks the case successful — the turn is cut
-  /// short (process exits) as soon as its ToolCallEvent arrives, without
-  /// waiting for the tool result. Used for tools that block forever in a
-  /// headless environment (take_photo, ask_human).
+  /// Tool whose invocation cuts the turn short (process exits) as soon as its
+  /// ToolCallEvent arrives, without waiting for the tool result. Used for
+  /// tools that block forever in a headless environment (take_photo,
+  /// ask_human). This is execution control only — the case is scored
+  /// afterwards by the host-side LLM judge from the recorded trajectory.
   final String? earlySuccessTool;
-
-  bool get isToolCallCase => requiredTool != null && requiredTool!.isNotEmpty;
 }
 
 class BenchmarkConfig {
@@ -116,8 +96,9 @@ class BenchmarkResult {
   final BenchmarkConfig config;
   final BenchmarkCase caseSpec;
 
-  // The six harness metrics.
-  double completionScore = 0;
+  // The harness metrics. Completion is scored off-device by the host-side
+  // LLM judge from the recorded trajectory (see benchmark/judge.py); the app
+  // only captures timing, tokens, tool-call counts and the full trace.
   int totalDurationMs = 0;
   int? ttftMs;
   int? totalTokens;
@@ -127,17 +108,10 @@ class BenchmarkResult {
   int toolCallSuccessCount = 0;
   int toolCallErrorCount = 0;
 
-  // Basic-tool-call scoring detail: which call (if any) satisfied the
-  // required tool + arguments, and whether it was the first call of the turn.
-  String completionGrade = '';
-  String? matchedCallId;
-
   // Supporting detail.
   String finalResponse = '';
   String runStatus = '';
   String error = '';
-  final List<String> matchedExpectations = [];
-  final List<String> missedExpectations = [];
   final List<Map<String, dynamic>> toolCalls = [];
   final Map<String, dynamic> contextStatusRaw = {};
 
@@ -161,18 +135,16 @@ class BenchmarkResult {
   bool earlySuccessTriggered = false;
 
   Map<String, dynamic> toMap() => {
-    'schema': 'napaxi-benchmark-result/2',
+    'schema': 'napaxi-benchmark-result/3',
     'run_id': config.runId,
     'suite': config.suite,
     'wall_seconds': wallSeconds,
     'case': {
       'id': caseSpec.id,
       'prompt': caseSpec.prompt,
-      if (caseSpec.isToolCallCase) ...{
-        'required_tool': caseSpec.requiredTool,
-        'required_arguments': caseSpec.requiredArguments,
-      } else if (caseSpec.expect.isNotEmpty)
-        'expect': caseSpec.expect,
+      if (caseSpec.setupPrompt != null) 'setup_prompt': caseSpec.setupPrompt,
+      if (caseSpec.earlySuccessTool != null)
+        'early_success_tool': caseSpec.earlySuccessTool,
     },
     'model': {
       'provider': config.provider,
@@ -180,8 +152,6 @@ class BenchmarkResult {
       'model': config.model,
     },
     'metrics': {
-      'completion_score': completionScore,
-      'completion_grade': completionGrade,
       'duration_ms': totalDurationMs,
       'ttft_ms': ttftMs,
       'tokens': {
@@ -199,11 +169,6 @@ class BenchmarkResult {
       'status': runStatus,
       'error': error,
       'response': finalResponse,
-    },
-    'completion_detail': {
-      'matched_call_id': matchedCallId,
-      'matched': matchedExpectations,
-      'missed': missedExpectations,
     },
     'context_status': contextStatusRaw,
     'trace': _buildTrace(),
@@ -321,223 +286,6 @@ class BenchmarkResult {
     }
     return true;
   }
-}
-
-/// Rebuilds the full ordered tool-call list for scoring by merging two
-/// sources, deduplicated by call_id:
-///
-/// 1. [BenchmarkResult.toolCalls] — the event-stream records (offsets,
-///    results), which see every visible tool call including ones issued
-///    after the last LLM request snapshot (e.g. a final install_apk);
-/// 2. the trace snapshots' assistant messages — which additionally capture
-///    hidden tools such as `skill_load` whose execution emits no event.
-///
-/// Entries carry {seq, call_id, name, arguments}.
-List<Map<String, dynamic>> _toolCallsFromTrace(BenchmarkResult result) {
-  final byId = <String, Map<String, dynamic>>{};
-  final ordered = <Map<String, dynamic>>[];
-
-  void add(String callId, String name, String arguments) {
-    if (callId.isNotEmpty && byId.containsKey(callId)) return;
-    final entry = {
-      'seq': ordered.length + 1,
-      'call_id': callId,
-      'name': name,
-      'arguments': arguments,
-    };
-    ordered.add(entry);
-    if (callId.isNotEmpty) byId[callId] = entry;
-  }
-
-  // Event-stream records first (they own the authoritative ordering of
-  // visible calls), then trace-snapshot calls to pick up hidden ones.
-  for (final call in result.toolCalls) {
-    add(
-      (call['call_id'] ?? '') as String,
-      (call['name'] ?? '') as String,
-      (call['arguments'] ?? '') as String,
-    );
-  }
-  for (final entry in result.llmTrace) {
-    final messages = (entry['messages'] as List?) ?? const [];
-    for (final message in messages) {
-      if (message is! Map || message['role'] != 'assistant') continue;
-      final toolCalls = message['tool_calls'];
-      if (toolCalls is! List) continue;
-      for (final call in toolCalls) {
-        if (call is! Map) continue;
-        final function = call['function'];
-        if (function is! Map) continue;
-        add(
-          (call['id'] ?? '') as String,
-          (function['name'] ?? '') as String,
-          (function['arguments'] ?? '').toString(),
-        );
-      }
-    }
-  }
-  // Re-number after dedup merged hidden calls into the stream order.
-  for (var i = 0; i < ordered.length; i++) {
-    ordered[i]['seq'] = i + 1;
-  }
-  return ordered;
-}
-
-/// Scores a case.
-///
-/// **Basic tool call suite** (`required_tool` + `required_arguments` set):
-/// graded on the three-tier rubric —
-/// - 1.0: the FIRST tool call of the turn invoked `required_tool` with every
-///   `required_arguments` entry present and equal,
-/// - 0.5: some later call in the turn matched,
-/// - 0.0: the tool was never invoked with the required arguments.
-///
-/// **Other suites / plain cases**: rule-based scoring against the `expect`
-/// block (`must_contain` / `must_not_contain` / `min_length` /
-/// `min_tool_calls`), score = matched rules / total rules.
-void scoreCompletion(BenchmarkResult result) {
-  final caseSpec = result.caseSpec;
-  if (caseSpec.isToolCallCase) {
-    _scoreToolCallCase(result);
-    return;
-  }
-  _scoreExpectationRules(result);
-}
-
-/// Whether a recorded tool call matches the case's required tool+arguments.
-/// `arguments` is the raw JSON string captured from the ToolCallEvent.
-bool _callMatchesRequirement(
-  Map<String, dynamic> call,
-  String requiredTool,
-  Map<String, dynamic> requiredArguments,
-) {
-  if (call['name'] != requiredTool) return false;
-  if (requiredArguments.isEmpty) return true;
-  final Map<String, dynamic> args;
-  try {
-    final decoded = jsonDecode(call['arguments'] as String);
-    if (decoded is! Map<String, dynamic>) return false;
-    args = decoded;
-  } catch (_) {
-    return false;
-  }
-  for (final entry in requiredArguments.entries) {
-    final actual = args[entry.key];
-    if (actual == null) return false;
-    if (actual is String && entry.value is String) {
-      if (actual.trim() != (entry.value as String).trim()) return false;
-    } else if (actual.toString() != entry.value.toString()) {
-      return false;
-    }
-  }
-  return true;
-}
-
-void _scoreToolCallCase(BenchmarkResult result) {
-  final requiredTool = result.caseSpec.requiredTool!;
-  final requiredArguments = result.caseSpec.requiredArguments;
-  Map<String, dynamic>? firstMatch;
-
-  // Score against the full call sequence including hidden tools (e.g.
-  // skill_load) that execute without emitting ToolCallEvents — rebuilt from
-  // the assistant messages of the collected trace snapshots.
-  final allCalls = _toolCallsFromTrace(result);
-  for (final call in allCalls) {
-    if (_callMatchesRequirement(call, requiredTool, requiredArguments)) {
-      firstMatch = call;
-      break;
-    }
-  }
-
-  if (firstMatch == null) {
-    result.completionScore = 0;
-    result.completionGrade = 'missed';
-    result.missedExpectations.add(
-      'no call to $requiredTool with $requiredArguments '
-      '(calls made: ${result.toolCalls.map((c) => c['name']).join(', ')})',
-    );
-    return;
-  }
-
-  // A turn that ended in an error event can never be a completed task.
-  if (result.error.isNotEmpty) {
-    result.completionScore = 0;
-    result.completionGrade = 'error';
-    return;
-  }
-
-  result.matchedCallId = firstMatch['call_id'] as String?;
-  final seq = firstMatch['seq'] as int? ?? 0;
-  if (seq == 1) {
-    result.completionScore = 1;
-    result.completionGrade = 'first_call';
-    result.matchedExpectations.add('$requiredTool on first call with $requiredArguments');
-  } else {
-    result.completionScore = 0.5;
-    result.completionGrade = 'later_call';
-    result.matchedExpectations.add(
-      '$requiredTool with $requiredArguments on call #$seq '
-      '(after ${seq - 1} other call(s))',
-    );
-  }
-}
-
-void _scoreExpectationRules(BenchmarkResult result) {
-  final response = result.finalResponse.toLowerCase();
-  final expect = result.caseSpec.expect;
-  int total = 0;
-  int matched = 0;
-
-  final mustContain = (expect['must_contain'] as List?)?.cast<String>() ?? const [];
-  for (final needle in mustContain) {
-    total += 1;
-    if (response.contains(needle.toLowerCase())) {
-      matched += 1;
-      result.matchedExpectations.add('must_contain:$needle');
-    } else {
-      result.missedExpectations.add('must_contain:$needle');
-    }
-  }
-
-  final mustNotContain = (expect['must_not_contain'] as List?)?.cast<String>() ?? const [];
-  for (final forbidden in mustNotContain) {
-    total += 1;
-    if (!response.contains(forbidden.toLowerCase())) {
-      matched += 1;
-      result.matchedExpectations.add('must_not_contain:$forbidden');
-    } else {
-      result.missedExpectations.add('must_not_contain:$forbidden');
-    }
-  }
-
-  final minLength = (expect['min_length'] as num?)?.toInt();
-  if (minLength != null) {
-    total += 1;
-    if (result.finalResponse.length >= minLength) {
-      matched += 1;
-      result.matchedExpectations.add('min_length:$minLength');
-    } else {
-      result.missedExpectations.add('min_length:$minLength');
-    }
-  }
-
-  final minToolCalls = (expect['min_tool_calls'] as num?)?.toInt();
-  if (minToolCalls != null) {
-    total += 1;
-    if (result.toolCallCount >= minToolCalls) {
-      matched += 1;
-      result.matchedExpectations.add('min_tool_calls:$minToolCalls');
-    } else {
-      result.missedExpectations.add('min_tool_calls:$minToolCalls (got ${result.toolCallCount})');
-    }
-  }
-
-  // A turn that ended in an error event can never be a completed task.
-  if (result.error.isNotEmpty) {
-    result.completionScore = 0;
-    return;
-  }
-  result.completionScore = total == 0 ? 0 : matched / total;
 }
 
 /// Writes [payload] to `<externalFilesDir>/benchmark/<file>` and appends a
@@ -673,13 +421,10 @@ Future<BenchmarkResult> runBenchmarkCase(BenchmarkConfig config) async {
     // Collect the request-level LLM trace dumped by the Rust tool loop for
     // the measured turn (system prompt + messages + visible tools per call).
     await _collectLlmTrace(result, engine.filesDir, session.threadId);
-    debugPrint('[benchmark] scoring');
     result.warmupMessageCount = _countWarmupMessages(
       result.llmTrace,
       config.caseSpec.prompt,
     );
-
-    scoreCompletion(result);
   } catch (error) {
     result.error = '$error';
   } finally {
@@ -837,9 +582,6 @@ void _checkEarlySuccess(BenchmarkResult result, sdk.ChatEvent event) {
   if (event is! sdk.ToolCallEvent || event.name != target) return;
 
   result.earlySuccessTriggered = true;
-  result.completionScore = 1;
-  result.completionGrade = 'early_success';
-  result.matchedExpectations.add('$target invoked (early success, result not awaited)');
   _collectLlmTrace(result, _activeFilesDir, _activeThreadId).then((_) {
     result.totalDurationMs = result.toolCalls.last['offset_ms'] as int;
     return writeResultFile(
@@ -910,7 +652,7 @@ Future<void> runHeadlessBenchmark(Map<String, dynamic> payload) async {
   debugPrint('[benchmark] case=${config.caseSpec.id} model=${config.model}');
   final result = await runBenchmarkCase(config);
   final json = const JsonEncoder.withIndent('  ').convert(result.toMap());
-  debugPrint('[benchmark] score=${result.completionScore} ttft=${result.ttftMs}ms');
+  debugPrint('[benchmark] done ttft=${result.ttftMs}ms');
   await writeResultFile('result-${config.runId}.json', json);
 }
 
@@ -1042,9 +784,6 @@ class BenchmarkUiController {
     }
     if (event is! sdk.ToolCallEvent || event.name != target) return;
     result.earlySuccessTriggered = true;
-    result.completionScore = 1;
-    result.completionGrade = 'early_success';
-    result.matchedExpectations.add('$target invoked (early success)');
     debugPrint('[benchmark-ui] early success on $target');
     // Blocking tools never let the stream close; give the UI a few seconds
     // to show the invoked tool, then finish on our own.
@@ -1064,13 +803,7 @@ class BenchmarkUiController {
     } catch (error) {
       debugPrint('[benchmark-ui] telemetry error: $error');
     }
-    if (!result.earlySuccessTriggered) {
-      scoreCompletion(result);
-    }
-    debugPrint(
-      '[benchmark-ui] done score=${result.completionScore} '
-      'ttft=${result.ttftMs}ms',
-    );
+    debugPrint('[benchmark-ui] done ttft=${result.ttftMs}ms');
     await writeResultFile(
       'result-${config.runId}.json',
       const JsonEncoder.withIndent('  ').convert(result.toMap()),

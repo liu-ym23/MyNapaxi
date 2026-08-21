@@ -23,9 +23,10 @@ def load_results(directory: Path):
     return results
 
 
-# metric key -> (container, field) inside a v2 result JSON.
+# metric key -> (container, field) inside a result JSON. Judge verdicts are
+# written into each result by benchmark/judge.py (LLM-as-a-judge).
 METRIC_PATHS = {
-    "completion_score": ("metrics", "completion_score"),
+    "judge_score": ("judge", "score"),
     "duration_ms": ("metrics", "duration_ms"),
     "ttft_ms": ("metrics", "ttft_ms"),
     "tokens_total": ("metrics", "tokens", "total"),
@@ -48,11 +49,11 @@ def metric_of(result, key):
         value = value.get(field)
     if value is None:
         return None
-    if (result.get("outcome") or {}).get("error"):
+    if (result.get("outcome") or {}).get("error") and key not in ("duration_ms", "judge_score"):
         # A failed case still reports wall-clock style durations when present,
-        # but quality metrics are meaningless.
-        if key not in ("duration_ms",):
-            return None
+        # and the judge grades whatever behavior was recorded — only the other
+        # quality metrics are meaningless.
+        return None
     return value
 
 
@@ -88,8 +89,7 @@ def _ok_percent(result):
 
 COLUMNS = [
     ("case", lambda r: r.get("case", {}).get("id", "?")),
-    ("score", lambda r: fmt(metric_of(r, "completion_score"))),
-    ("grade", lambda r: (r.get("metrics") or {}).get("completion_grade") or "-"),
+    ("judge", lambda r: fmt(metric_of(r, "judge_score"))),
     ("time_s", lambda r: fmt(_ms_to_s(metric_of(r, "duration_ms")))),
     ("ttft_s", lambda r: fmt(_ms_to_s(metric_of(r, "ttft_ms")))),
     ("tokens", lambda r: fmt(metric_of(r, "tokens_total"))),
@@ -113,7 +113,7 @@ def collect(results, key, transform=lambda v: v):
 def summarize(results):
     summary = {
         "n_cases": len(results),
-        "completion_score": stats_line(collect(results, "completion_score")),
+        "judge_score": stats_line(collect(results, "judge_score")),
         "duration_ms": stats_line(collect(results, "duration_ms")),
         "ttft_ms": stats_line(collect(results, "ttft_ms")),
         "tokens_total": stats_line(collect(results, "tokens_total")),
@@ -131,7 +131,7 @@ def summarize(results):
 
 def summary_lines(results, indent=""):
     lines = []
-    for key in ("completion_score", "duration_ms", "ttft_ms",
+    for key in ("judge_score", "duration_ms", "ttft_ms",
                 "tokens_total", "tool_calls_count"):
         values = collect(results, key)
         lines.append(
@@ -174,7 +174,7 @@ def main():
         for result in suite_results:
             lines.append("| " + " | ".join(str(fn(result)) for _, fn in COLUMNS) + " |")
         lines.append("")
-        lines.append(f"### {suite} summary (successful cases only)")
+        lines.append(f"### {suite} summary (judged cases only)")
         lines.append("")
         lines.extend(summary_lines(suite_results))
         lines.append("")
