@@ -243,23 +243,27 @@ recorder_files_dir="/storage/emulated/0/Android/data/$RECORDER_PACKAGE/files"
 
 start_recording() {
     local fname="$1"
+    # Best-effort throughout (same rationale as stop_and_pull_recording): a
+    # recording glitch must never abort the run's measurements. In the wild,
+    # `adb shell cat` of a missing dump file (uiautomator failed under device
+    # memory pressure) returned 1 and set -e + pipefail killed the harness.
     "$ADB" -s "$SERIAL" shell am start -n "$RECORDER_PACKAGE/.RecordActivity" \
-        --es out_path "$fname" >/dev/null 2>&1 </dev/null
+        --es out_path "$fname" >/dev/null 2>&1 </dev/null || true
     # The system media-projection consent dialog appears; tap 允许/继续.
     local attempt coords
     for attempt in 1 2 3 4 5 6; do
         sleep 1
         "$ADB" -s "$SERIAL" shell timeout 5 uiautomator dump /sdcard/bench_ui.xml >/dev/null 2>&1 </dev/null || true
-        coords="$("$ADB" -s "$SERIAL" shell cat /sdcard/bench_ui.xml 2>/dev/null | python3 -c '
+        coords="$("$ADB" -s "$SERIAL" shell cat /sdcard/bench_ui.xml 2>/dev/null </dev/null | python3 -c '
 import sys, re
 for m in re.finditer(r"text=\"(允许|继续)\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", sys.stdin.read()):
     l, t, r, b = map(int, m.groups()[1:])
     print(f"{(l + r) // 2} {(t + b) // 2}")
     break
-' 2>/dev/null)"
+' 2>/dev/null || true)"
         if [ -n "$coords" ]; then
             # shellcheck disable=SC2086
-            "$ADB" -s "$SERIAL" shell input tap $coords >/dev/null 2>&1 </dev/null
+            "$ADB" -s "$SERIAL" shell input tap $coords >/dev/null 2>&1 </dev/null || true
             break
         fi
     done
