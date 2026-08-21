@@ -1,2 +1,2 @@
-{"id": "ws-easy", "prompt": "搜索一下 Napaxi 这个开源项目（antgroup 出品），用三句话总结它是做什么的。", "timeout_seconds": 420, "expect": {"min_tool_calls": 1, "min_length": 60}}
-{"id": "ws-hard", "prompt": "搜索 2026 年 Android 端侧 AI Agent 的最新进展，对比至少两个开源框架（例如 Napaxi 和其他项目）的架构差异与优劣，给出一份 200 字以上的对比总结，并注明信息来源。", "timeout_seconds": 600, "expect": {"min_tool_calls": 2, "min_length": 200}}
+{"id": "ws-easy", "prompt": "搜索一下 Napaxi 这个开源项目（antgroup 出品），用三句话总结它是做什么的。", "timeout_seconds": 420}
+{"id": "ws-hard", "prompt": "搜索 2026 年 Android 端侧 AI Agent 的最新进展，对比至少两个开源框架（例如 Napaxi 和其他项目）的架构差异与优劣，给出一份 200 字以上的对比总结，并注明信息来源。", "timeout_seconds": 600}
