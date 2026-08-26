@@ -610,7 +610,15 @@ void _recordEvent(BenchmarkResult result, sdk.ChatEvent event, Stopwatch stopwat
       result.finalResponse = content;
     case sdk.ReasoningDeltaEvent():
       result.ttftMs ??= offset;
+    case sdk.ToolCallDeltaEvent():
+      // Agentic turns often open with a tool call and no text/reasoning at
+      // all; the first streamed tool-call chunk is then the first token.
+      result.ttftMs ??= offset;
     case sdk.ToolCallEvent(:final callId, :final name, :final arguments):
+      // Belt-and-braces: providers whose deltas were never surfaced still
+      // get a TTFT when the complete call arrives (??= keeps the earlier
+      // ToolCallDelta stamp when both fire).
+      result.ttftMs ??= offset;
       result.toolCallCount += 1;
       result.toolCalls.add({
         'call_id': callId,
@@ -739,7 +747,15 @@ class BenchmarkUiController {
         result.finalResponse = content;
       case sdk.ReasoningDeltaEvent():
         result.ttftMs ??= offset;
+      case sdk.ToolCallDeltaEvent():
+        // Agentic turns often open with a tool call and no text/reasoning at
+        // all; the first streamed tool-call chunk is then the first token.
+        result.ttftMs ??= offset;
       case sdk.ToolCallEvent(:final callId, :final name, :final arguments):
+        // Belt-and-braces: providers whose deltas were never surfaced still
+        // get a TTFT when the complete call arrives (??= keeps the earlier
+        // ToolCallDelta stamp when both fire).
+        result.ttftMs ??= offset;
         result.toolCallCount += 1;
         result.toolCalls.add({
           'call_id': callId,
